@@ -351,7 +351,7 @@ var _ = Describe("Default networking provisioner", func() {
 
 			err := provisioner.Provision(ctx, "nat-tenant")
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("no ExternalIP pool with available capacity"))
+			Expect(err.Error()).To(ContainSubstring("no READY ExternalIP pool with available capacity"))
 		})
 	})
 

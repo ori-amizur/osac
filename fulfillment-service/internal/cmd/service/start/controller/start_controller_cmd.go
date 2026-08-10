@@ -835,7 +835,7 @@ func (r *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 		return fmt.Errorf("failed to create tenant reconciler function: %w", err)
 	}
 	tenantEventFilter := "has(event.tenant)"
-	for _, resource := range []string{"virtual_network", "subnet", "security_group", "nat_gateway"} {
+	for _, resource := range []string{"virtual_network", "subnet", "security_group", "nat_gateway", "external_ip"} {
 		tenantEventFilter += fmt.Sprintf(
 			" || (has(event.%s) && event.%s.metadata.labels['osac.openshift.io/default'] == 'true')",
 			resource, resource,

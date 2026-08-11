@@ -73,3 +73,36 @@ func SelectExternalIPPool(
 
 	return candidates[0], nil
 }
+
+// UpdatePoolCapacity adjusts the allocated/available counters of an ExternalIPPool
+// by the given delta (+N to allocate, -N to release). The pool row is locked with
+// SELECT FOR UPDATE to serialize concurrent capacity changes.
+func UpdatePoolCapacity(
+	ctx context.Context,
+	poolDao *dao.GenericDAO[*privatev1.ExternalIPPool],
+	poolID string,
+	delta int64,
+) error {
+	getResponse, err := poolDao.Get().
+		SetId(poolID).
+		SetLock(true).
+		Do(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get ExternalIPPool for capacity update: %w", err)
+	}
+
+	pool := getResponse.GetObject()
+	newAllocated := pool.GetStatus().GetAllocated() + delta
+	newAvailable := pool.GetStatus().GetAvailable() - delta
+	if newAvailable < 0 {
+		return fmt.Errorf("ExternalIP pool '%s' has no available capacity", poolID)
+	}
+	pool.GetStatus().SetAllocated(newAllocated)
+	pool.GetStatus().SetAvailable(newAvailable)
+
+	_, err = poolDao.Update().SetObject(pool).Do(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to update ExternalIPPool capacity: %w", err)
+	}
+	return nil
+}

@@ -195,7 +195,7 @@ var _ = Describe("Private clusters server", func() {
 				Id: "test-vnet",
 				Metadata: privatev1.Metadata_builder{
 					Name:   "test-vnet",
-					Tenant: auth.SharedTenant,
+					Tenant: auth.SystemTenant,
 				}.Build(),
 			}.Build()).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
@@ -210,7 +210,7 @@ var _ = Describe("Private clusters server", func() {
 					Id: subnetID,
 					Metadata: privatev1.Metadata_builder{
 						Name:   subnetID,
-						Tenant: auth.SharedTenant,
+						Tenant: auth.SystemTenant,
 					}.Build(),
 					Spec: privatev1.SubnetSpec_builder{
 						VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: "test-vnet"}.Build(),
@@ -222,6 +222,54 @@ var _ = Describe("Private clusters server", func() {
 				}.Build()).Do(ctx)
 				Expect(err).ToNot(HaveOccurred())
 			}
+
+			sgDao, err := dao.NewGenericDAO[*privatev1.SecurityGroup]().
+				SetLogger(logger).
+				SetTenancyLogic(tenancy).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+			_, err = sgDao.Create().SetObject(privatev1.SecurityGroup_builder{
+				Id: "default-sg",
+				Metadata: privatev1.Metadata_builder{
+					Name:   "default-sg",
+					Tenant: auth.SystemTenant,
+				}.Build(),
+				Spec: privatev1.SecurityGroupSpec_builder{
+					VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: "test-vnet"}.Build(),
+				}.Build(),
+				Status: privatev1.SecurityGroupStatus_builder{
+					State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+				}.Build(),
+			}.Build()).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = sgDao.Create().SetObject(privatev1.SecurityGroup_builder{
+				Id: "sg-2",
+				Metadata: privatev1.Metadata_builder{
+					Name:   "sg-2",
+					Tenant: auth.SystemTenant,
+				}.Build(),
+				Spec: privatev1.SecurityGroupSpec_builder{
+					VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: "test-vnet"}.Build(),
+				}.Build(),
+				Status: privatev1.SecurityGroupStatus_builder{
+					State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+				}.Build(),
+			}.Build()).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = sgDao.Create().SetObject(privatev1.SecurityGroup_builder{
+				Id: "sg-3",
+				Metadata: privatev1.Metadata_builder{
+					Name:   "sg-3",
+					Tenant: auth.SystemTenant,
+				}.Build(),
+				Spec: privatev1.SecurityGroupSpec_builder{
+					VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: "test-vnet"}.Build(),
+				}.Build(),
+				Status: privatev1.SecurityGroupStatus_builder{
+					State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+				}.Build(),
+			}.Build()).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
 
 			// Create numbered templates for list tests:
 			for i := range 10 {
@@ -764,7 +812,8 @@ var _ = Describe("Private clusters server", func() {
 				Object: privatev1.Cluster_builder{
 					Id: object.GetId(),
 					Spec: privatev1.ClusterSpec_builder{
-						Template: object.GetSpec().GetTemplate(),
+						Template:          object.GetSpec().GetTemplate(),
+						NetworkAttachment: object.GetSpec().GetNetworkAttachment(),
 					}.Build(),
 					Status: privatev1.ClusterStatus_builder{
 						Hub: "your_hub",
@@ -1395,7 +1444,7 @@ var _ = Describe("Private clusters server", func() {
 			}
 
 			It("Rejects changing subnet via whole attachment replacement", func() {
-				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build()})
+				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "default-sg"}.Build()})
 
 				_, err := server.Update(ctx, privatev1.ClustersUpdateRequest_builder{
 					Object: privatev1.Cluster_builder{
@@ -1403,7 +1452,7 @@ var _ = Describe("Private clusters server", func() {
 						Spec: privatev1.ClusterSpec_builder{
 							NetworkAttachment: privatev1.ClusterNetworkAttachment_builder{
 								Subnet:         privatev1.SubnetLocalReference_builder{Id: "subnet-2"}.Build(),
-								SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build()},
+								SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "default-sg"}.Build()},
 							}.Build(),
 						}.Build(),
 					}.Build(),
@@ -1421,7 +1470,7 @@ var _ = Describe("Private clusters server", func() {
 			})
 
 			It("Rejects removing network_attachment when one exists", func() {
-				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build()})
+				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "default-sg"}.Build()})
 
 				_, err := server.Update(ctx, privatev1.ClustersUpdateRequest_builder{
 					Object: privatev1.Cluster_builder{
@@ -1476,7 +1525,7 @@ var _ = Describe("Private clusters server", func() {
 			})
 
 			It("Allows changing security_groups with same subnet", func() {
-				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build()})
+				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "default-sg"}.Build()})
 
 				updateResponse, err := server.Update(ctx, privatev1.ClustersUpdateRequest_builder{
 					Object: privatev1.Cluster_builder{
@@ -1484,7 +1533,7 @@ var _ = Describe("Private clusters server", func() {
 						Spec: privatev1.ClusterSpec_builder{
 							NetworkAttachment: privatev1.ClusterNetworkAttachment_builder{
 								Subnet:         privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(),
-								SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build(), privatev1.SecurityGroupLocalReference_builder{Id: "sg-2"}.Build()},
+								SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "default-sg"}.Build(), privatev1.SecurityGroupLocalReference_builder{Id: "sg-2"}.Build()},
 							}.Build(),
 						}.Build(),
 					}.Build(),
@@ -1496,12 +1545,12 @@ var _ = Describe("Private clusters server", func() {
 				updated := updateResponse.GetObject()
 				Expect(updated.GetSpec().GetNetworkAttachment().GetSubnet().GetId()).To(Equal("subnet-1"))
 				Expect(updated.GetSpec().GetNetworkAttachment().GetSecurityGroups()).To(HaveLen(2))
-				Expect(updated.GetSpec().GetNetworkAttachment().GetSecurityGroups()[0].GetId()).To(Equal("sg-1"))
+				Expect(updated.GetSpec().GetNetworkAttachment().GetSecurityGroups()[0].GetId()).To(Equal("default-sg"))
 				Expect(updated.GetSpec().GetNetworkAttachment().GetSecurityGroups()[1].GetId()).To(Equal("sg-2"))
 			})
 
 			It("Allows updating security_groups via sub-field mask", func() {
-				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build()})
+				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "default-sg"}.Build()})
 
 				updateResponse, err := server.Update(ctx, privatev1.ClustersUpdateRequest_builder{
 					Object: privatev1.Cluster_builder{
@@ -1524,7 +1573,7 @@ var _ = Describe("Private clusters server", func() {
 			})
 
 			It("Passes through when mask does not include network_attachment", func() {
-				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build()})
+				object := createClusterWithNetworkAttachment(privatev1.SubnetLocalReference_builder{Id: "subnet-1"}.Build(), []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "default-sg"}.Build()})
 
 				updateResponse, err := server.Update(ctx, privatev1.ClustersUpdateRequest_builder{
 					Object: privatev1.Cluster_builder{

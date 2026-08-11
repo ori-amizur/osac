@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -54,6 +53,7 @@ type PrivateComputeInstancesServer struct {
 	privatev1.UnimplementedComputeInstancesServer
 
 	logger                  *slog.Logger
+	tenancyLogic            auth.TenancyLogic
 	generic                 *GenericServer[*privatev1.ComputeInstance]
 	templatesDao            *dao.GenericDAO[*privatev1.ComputeInstanceTemplate]
 	catalogItemsDao         *dao.GenericDAO[*privatev1.ComputeInstanceCatalogItem]
@@ -200,6 +200,7 @@ func (b *PrivateComputeInstancesServerBuilder) Build() (result *PrivateComputeIn
 	// Create and populate the object:
 	result = &PrivateComputeInstancesServer{
 		logger:                  b.logger,
+		tenancyLogic:            b.tenancyLogic,
 		generic:                 generic,
 		templatesDao:            templatesDao,
 		catalogItemsDao:         catalogItemsDao,
@@ -225,79 +226,20 @@ func (s *PrivateComputeInstancesServer) Get(ctx context.Context,
 	return
 }
 
-func (s *PrivateComputeInstancesServer) findDefaultSubnet(ctx context.Context) (*privatev1.Subnet, error) {
-	filter := fmt.Sprintf("this.metadata.labels[\"%s\"] == \"true\" && has(this.spec.ipv4_cidr)", defaultLabel)
-	listResponse, err := s.subnetsDao.List().
-		SetFilter(filter).
-		Do(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var items []*privatev1.Subnet
-	for _, subnet := range listResponse.GetItems() {
-		if subnet.GetMetadata().HasDeletionTimestamp() {
-			continue
+func (s *PrivateComputeInstancesServer) injectDefaultNetworkAttachments(ctx context.Context,
+	vm *privatev1.ComputeInstance) error {
+	tenant := vm.GetMetadata().GetTenant()
+	if tenant == "" {
+		var tenantErr error
+		tenant, tenantErr = s.tenancyLogic.DetermineDefaultTenant(ctx)
+		if tenantErr != nil {
+			s.logger.ErrorContext(ctx, "failed to determine target tenant", slog.Any("error", tenantErr))
+			return grpcstatus.Errorf(grpccodes.Internal, "failed to determine target tenant")
 		}
-		if subnet.GetStatus().GetState() != privatev1.SubnetState_SUBNET_STATE_READY {
-			continue
-		}
-		items = append(items, subnet)
 	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	sort.Slice(items, func(i, j int) bool {
-		ti := items[i].GetMetadata().GetCreationTimestamp().AsTime()
-		tj := items[j].GetMetadata().GetCreationTimestamp().AsTime()
-		return ti.After(tj)
-	})
-	if len(items) > 1 {
-		s.logger.WarnContext(ctx, "multiple default Subnets found, using newest",
-			slog.Int("count", len(items)),
-		)
-	}
-	return items[0], nil
-}
 
-func (s *PrivateComputeInstancesServer) findDefaultSecurityGroup(ctx context.Context, virtualNetworkID string) (*privatev1.SecurityGroup, error) {
-	filter := fmt.Sprintf("this.metadata.labels[\"%s\"] == \"true\"", defaultLabel)
-	listResponse, err := s.securityGroupsDao.List().
-		SetFilter(filter).
-		Do(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var items []*privatev1.SecurityGroup
-	for _, sg := range listResponse.GetItems() {
-		if sg.GetMetadata().HasDeletionTimestamp() {
-			continue
-		}
-		if sg.GetStatus().GetState() != privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY {
-			continue
-		}
-		if refKey(sg.GetSpec().GetVirtualNetwork()) != virtualNetworkID {
-			continue
-		}
-		items = append(items, sg)
-	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	sort.Slice(items, func(i, j int) bool {
-		ti := items[i].GetMetadata().GetCreationTimestamp().AsTime()
-		tj := items[j].GetMetadata().GetCreationTimestamp().AsTime()
-		return ti.After(tj)
-	})
-	if len(items) > 1 {
-		s.logger.WarnContext(ctx, "multiple default SecurityGroups found, using newest",
-			slog.Int("count", len(items)),
-		)
-	}
-	return items[0], nil
-}
-
-func (s *PrivateComputeInstancesServer) injectDefaultNetworkAttachments(ctx context.Context, spec *privatev1.ComputeInstanceSpec) error {
-	subnet, err := s.findDefaultSubnet(ctx)
+	spec := vm.GetSpec()
+	subnet, err := findDefaultSubnet(ctx, s.logger, s.subnetsDao, tenant)
 	if err != nil {
 		return grpcstatus.Errorf(grpccodes.Internal, "failed to look up default subnet: %v", err)
 	}
@@ -311,7 +253,7 @@ func (s *PrivateComputeInstancesServer) injectDefaultNetworkAttachments(ctx cont
 	}.Build()
 
 	virtualNetworkID := refKey(subnet.GetSpec().GetVirtualNetwork())
-	sg, err := s.findDefaultSecurityGroup(ctx, virtualNetworkID)
+	sg, err := findDefaultSecurityGroup(ctx, s.logger, s.securityGroupsDao, virtualNetworkID, tenant)
 	if err != nil {
 		return grpcstatus.Errorf(grpccodes.Internal, "failed to look up default security group: %v", err)
 	}
@@ -337,7 +279,7 @@ func (s *PrivateComputeInstancesServer) Create(ctx context.Context,
 	request *privatev1.ComputeInstancesCreateRequest) (response *privatev1.ComputeInstancesCreateResponse, err error) {
 	// Auto-inject default network attachments if none provided:
 	if len(request.GetObject().GetSpec().GetNetworkAttachments()) == 0 {
-		err = s.injectDefaultNetworkAttachments(ctx, request.GetObject().GetSpec())
+		err = s.injectDefaultNetworkAttachments(ctx, request.GetObject())
 		if err != nil {
 			return
 		}

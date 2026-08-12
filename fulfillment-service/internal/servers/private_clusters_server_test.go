@@ -130,6 +130,11 @@ var _ = Describe("Private clusters server", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Create the host types:
+			fabricInterfaces := []*privatev1.NetworkInterface{
+				privatev1.NetworkInterface_builder{
+					Name: "data-0", Role: "fabric", Description: "100GbE data interface",
+				}.Build(),
+			}
 			_, err = hostTypesDao.Create().
 				SetObject(
 					privatev1.HostType_builder{
@@ -140,6 +145,7 @@ var _ = Describe("Private clusters server", func() {
 						}.Build(),
 						Title:       "ACME 1TiB",
 						Description: "ACME 1TiB.",
+						Interfaces:  fabricInterfaces,
 					}.Build(),
 				).
 				Do(ctx)
@@ -154,6 +160,7 @@ var _ = Describe("Private clusters server", func() {
 						}.Build(),
 						Title:       "ACME GPU",
 						Description: "ACME GPU.",
+						Interfaces:  fabricInterfaces,
 					}.Build(),
 				).
 				Do(ctx)

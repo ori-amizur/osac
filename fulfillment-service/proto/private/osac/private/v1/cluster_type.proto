@@ -152,6 +152,13 @@ message ClusterNetworkAttachment {
 message ClusterNodeSet {
   HostTypeReference host_type = 1;
   int32 size = 2;
+
+  // Name of the network interface on the HostType used for tenant fabric traffic.
+  //
+  // System-populated during cluster creation by selecting the first interface with
+  // role "fabric" from the HostType's interfaces list. Not user-settable.
+  // Empty when the cluster has no network_attachment.
+  string fabric_interface = 3;
 }
 
 // Local reference to a Cluster resource.

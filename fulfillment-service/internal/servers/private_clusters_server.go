@@ -301,6 +301,15 @@ func (s *PrivateClustersServer) Create(ctx context.Context,
 		networkAttachmentErr = s.validateNetworkAttachmentState(ctx, request.GetObject())
 	}
 
+	// Resolve fabric_interface for each node set when the cluster has a
+	// network attachment. The HostType's interfaces list is searched for
+	// the first interface with role "fabric".
+	if spec.GetNetworkAttachment() != nil {
+		if err = s.resolveFabricInterfaces(ctx, spec); err != nil {
+			return
+		}
+	}
+
 	// Attempt to persist — generic.Create validates tenant existence, so if the
 	// tenant is invalid, the tenant error takes priority over a network error.
 	err = s.generic.Create(ctx, request, &response)
@@ -992,6 +1001,38 @@ func (s *PrivateClustersServer) validateAutoExternalIPImmutability(ctx context.C
 	if oldVal != newVal {
 		return grpcstatus.Errorf(grpccodes.InvalidArgument,
 			"cannot change spec.auto_external_ip_attachment: auto_external_ip_attachment is immutable after creation")
+	}
+	return nil
+}
+
+// resolveFabricInterfaces populates fabric_interface on each node set by
+// looking up the HostType and selecting the first interface with role "fabric".
+func (s *PrivateClustersServer) resolveFabricInterfaces(ctx context.Context, spec *privatev1.ClusterSpec) error {
+	for name, nodeSet := range spec.GetNodeSets() {
+		hostTypeKey := refKey(nodeSet.GetHostType())
+		if hostTypeKey == "" {
+			continue
+		}
+		hostType, err := s.lookupHostType(ctx, hostTypeKey)
+		if err != nil {
+			return err
+		}
+		if hostType == nil {
+			continue
+		}
+		fabricInterface := ""
+		for _, ni := range hostType.GetInterfaces() {
+			if strings.EqualFold(ni.GetRole(), "fabric") {
+				fabricInterface = ni.GetName()
+				break
+			}
+		}
+		if fabricInterface == "" {
+			return grpcstatus.Errorf(grpccodes.FailedPrecondition,
+				"node_sets[%s]: host type '%s' has no interface with role 'fabric'",
+				name, hostTypeKey)
+		}
+		nodeSet.SetFabricInterface(fabricInterface)
 	}
 	return nil
 }

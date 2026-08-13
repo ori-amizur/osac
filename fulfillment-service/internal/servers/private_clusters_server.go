@@ -56,6 +56,9 @@ type PrivateClustersServer struct {
 	catalogItemsDao    *dao.GenericDAO[*privatev1.ClusterCatalogItem]
 	hostTypesDao       *dao.GenericDAO[*privatev1.HostType]
 	clusterVersionsDao *dao.GenericDAO[*privatev1.ClusterVersion]
+	subnetsDao         *dao.GenericDAO[*privatev1.Subnet]
+	virtualNetworksDao *dao.GenericDAO[*privatev1.VirtualNetwork]
+	networkClassesDao  *dao.GenericDAO[*privatev1.NetworkClass]
 	generic            *GenericServer[*privatev1.Cluster]
 }
 
@@ -140,6 +143,33 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		return
 	}
 
+	subnetsDao, err := dao.NewGenericDAO[*privatev1.Subnet]().
+		SetLogger(b.logger).
+		SetTenancyLogic(b.tenancyLogic).
+		SetMetricsRegisterer(b.metricsRegisterer).
+		Build()
+	if err != nil {
+		return
+	}
+
+	virtualNetworksDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+		SetLogger(b.logger).
+		SetTenancyLogic(b.tenancyLogic).
+		SetMetricsRegisterer(b.metricsRegisterer).
+		Build()
+	if err != nil {
+		return
+	}
+
+	networkClassesDao, err := dao.NewGenericDAO[*privatev1.NetworkClass]().
+		SetLogger(b.logger).
+		SetTenancyLogic(b.tenancyLogic).
+		SetMetricsRegisterer(b.metricsRegisterer).
+		Build()
+	if err != nil {
+		return
+	}
+
 	// Create the generic server:
 	generic, err := NewGenericServer[*privatev1.Cluster]().
 		SetLogger(b.logger).
@@ -160,6 +190,9 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		catalogItemsDao:    catalogItemsDao,
 		hostTypesDao:       hostTypesDao,
 		clusterVersionsDao: clusterVersionsDao,
+		subnetsDao:         subnetsDao,
+		virtualNetworksDao: virtualNetworksDao,
+		networkClassesDao:  networkClassesDao,
 		generic:            generic,
 	}
 	return
@@ -225,6 +258,12 @@ func (s *PrivateClustersServer) Create(ctx context.Context,
 		if err != nil {
 			return
 		}
+	}
+
+	// Reject creation if the network attachment resolves to a NetworkClass
+	// without a k8s_manager — CaaS clusters need MetalLB for VIP allocation.
+	if err = s.validateNetworkAttachmentRequiresK8SManager(ctx, request.GetObject()); err != nil {
+		return
 	}
 
 	err = s.generic.Create(ctx, request, &response)
@@ -688,6 +727,75 @@ func (s *PrivateClustersServer) validateNetworkAttachmentImmutability(ctx contex
 			"cannot change spec.network_attachment.subnet from '%s' to '%s': subnet is immutable",
 			refKey(existingSubnet), refKey(newSubnet),
 		)
+	}
+
+	return nil
+}
+
+// validateNetworkAttachmentRequiresK8SManager rejects Cluster creation when the
+// network attachment resolves (Subnet → VirtualNetwork → NetworkClass) to a
+// NetworkClass with no k8s_manager. Without k8s_manager, the hosting cluster has
+// no MetalLB IPAddressPool and CaaS VIP allocation cannot function.
+// Dangling references are skipped — they fail independently during provisioning.
+func (s *PrivateClustersServer) validateNetworkAttachmentRequiresK8SManager(
+	ctx context.Context, cluster *privatev1.Cluster) error {
+	if cluster == nil || cluster.GetSpec() == nil || cluster.GetSpec().GetNetworkAttachment() == nil {
+		return nil
+	}
+
+	subnetKey := refKey(cluster.GetSpec().GetNetworkAttachment().GetSubnet())
+	if subnetKey == "" {
+		return nil
+	}
+
+	subnetResp, err := s.subnetsDao.Get().SetId(subnetKey).Do(ctx)
+	if err != nil {
+		var notFoundErr *dao.ErrNotFound
+		if errors.As(err, &notFoundErr) {
+			return nil
+		}
+		s.logger.ErrorContext(ctx, "failed to query subnet for k8s_manager validation",
+			slog.String("subnet_key", subnetKey), slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate network class")
+	}
+
+	virtualNetworkKey := refKey(subnetResp.GetObject().GetSpec().GetVirtualNetwork())
+	if virtualNetworkKey == "" {
+		return nil
+	}
+
+	vnResp, err := s.virtualNetworksDao.Get().SetId(virtualNetworkKey).Do(ctx)
+	if err != nil {
+		var notFoundErr *dao.ErrNotFound
+		if errors.As(err, &notFoundErr) {
+			return nil
+		}
+		s.logger.ErrorContext(ctx, "failed to query virtual network for k8s_manager validation",
+			slog.String("virtual_network_key", virtualNetworkKey), slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate network class")
+	}
+
+	networkClassKey := refKey(vnResp.GetObject().GetSpec().GetNetworkClass())
+	if networkClassKey == "" {
+		return nil
+	}
+
+	ncResp, err := s.networkClassesDao.Get().SetId(networkClassKey).Do(ctx)
+	if err != nil {
+		var notFoundErr *dao.ErrNotFound
+		if errors.As(err, &notFoundErr) {
+			return nil
+		}
+		s.logger.ErrorContext(ctx, "failed to query network class for k8s_manager validation",
+			slog.String("network_class_key", networkClassKey), slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate network class")
+	}
+
+	if !ncResp.GetObject().HasK8SManager() {
+		return grpcstatus.Errorf(grpccodes.FailedPrecondition,
+			"network_attachment: subnet '%s' uses NetworkClass '%s' which has no 'k8s_manager'; "+
+				"clusters require a k8s manager for MetalLB VIP allocation",
+			subnetKey, networkClassKey)
 	}
 
 	return nil

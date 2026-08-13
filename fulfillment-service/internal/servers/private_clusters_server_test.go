@@ -1543,6 +1543,141 @@ var _ = Describe("Private clusters server", func() {
 			})
 		})
 
+		Describe("k8s_manager validation", func() {
+			It("Rejects creation when NetworkClass has no k8s_manager", func() {
+				ncDao, err := dao.NewGenericDAO[*privatev1.NetworkClass]().
+					SetLogger(logger).SetTenancyLogic(tenancy).Build()
+				Expect(err).ToNot(HaveOccurred())
+				vnDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+					SetLogger(logger).SetTenancyLogic(tenancy).Build()
+				Expect(err).ToNot(HaveOccurred())
+				subDao, err := dao.NewGenericDAO[*privatev1.Subnet]().
+					SetLogger(logger).SetTenancyLogic(tenancy).Build()
+				Expect(err).ToNot(HaveOccurred())
+
+				// NetworkClass with fabric_manager only (no k8s_manager)
+				ncResp, err := ncDao.Create().SetObject(privatev1.NetworkClass_builder{
+					Metadata:               privatev1.Metadata_builder{Name: "bm-only-nc", Tenant: auth.SharedTenant}.Build(),
+					Title:                  "BM-only",
+					ImplementationStrategy: "netris",
+					FabricManager:          new("netris"),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				ncID := ncResp.GetObject().GetId()
+
+				_, err = vnDao.Create().SetObject(privatev1.VirtualNetwork_builder{
+					Id:       "bm-only-vnet",
+					Metadata: privatev1.Metadata_builder{Name: "bm-only-vnet", Tenant: auth.SharedTenant}.Build(),
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						NetworkClass: privatev1.NetworkClassReference_builder{Id: ncID}.Build(),
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = subDao.Create().SetObject(privatev1.Subnet_builder{
+					Id:       "bm-only-subnet",
+					Metadata: privatev1.Metadata_builder{Name: "bm-only-subnet", Tenant: auth.SharedTenant}.Build(),
+					Spec: privatev1.SubnetSpec_builder{
+						VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: "bm-only-vnet"}.Build(),
+						Ipv4Cidr:       new("10.99.0.0/24"),
+					}.Build(),
+					Status: privatev1.SubnetStatus_builder{
+						State: privatev1.SubnetState_SUBNET_STATE_READY,
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = server.Create(ctx, privatev1.ClustersCreateRequest_builder{
+					Object: privatev1.Cluster_builder{
+						Metadata: privatev1.Metadata_builder{Name: "test-bm-only-cluster"}.Build(),
+						Spec: privatev1.ClusterSpec_builder{
+							Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+							NetworkAttachment: privatev1.ClusterNetworkAttachment_builder{
+								Subnet: privatev1.SubnetLocalReference_builder{Id: "bm-only-subnet"}.Build(),
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build())
+				Expect(err).To(HaveOccurred())
+				status, ok := grpcstatus.FromError(err)
+				Expect(ok).To(BeTrue())
+				Expect(status.Code()).To(Equal(grpccodes.FailedPrecondition))
+				Expect(status.Message()).To(ContainSubstring("no 'k8s_manager'"))
+			})
+
+			It("Allows creation when NetworkClass has k8s_manager", func() {
+				ncDao, err := dao.NewGenericDAO[*privatev1.NetworkClass]().
+					SetLogger(logger).SetTenancyLogic(tenancy).Build()
+				Expect(err).ToNot(HaveOccurred())
+				vnDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+					SetLogger(logger).SetTenancyLogic(tenancy).Build()
+				Expect(err).ToNot(HaveOccurred())
+				subDao, err := dao.NewGenericDAO[*privatev1.Subnet]().
+					SetLogger(logger).SetTenancyLogic(tenancy).Build()
+				Expect(err).ToNot(HaveOccurred())
+
+				// NetworkClass with both managers
+				ncResp, err := ncDao.Create().SetObject(privatev1.NetworkClass_builder{
+					Metadata:               privatev1.Metadata_builder{Name: "full-nc", Tenant: auth.SharedTenant}.Build(),
+					Title:                  "Full",
+					ImplementationStrategy: "cudn",
+					FabricManager:          new("netris"),
+					K8SManager:             new("cudn_localnet"),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				ncID := ncResp.GetObject().GetId()
+
+				_, err = vnDao.Create().SetObject(privatev1.VirtualNetwork_builder{
+					Id:       "full-vnet",
+					Metadata: privatev1.Metadata_builder{Name: "full-vnet", Tenant: auth.SharedTenant}.Build(),
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						NetworkClass: privatev1.NetworkClassReference_builder{Id: ncID}.Build(),
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = subDao.Create().SetObject(privatev1.Subnet_builder{
+					Id:       "full-subnet",
+					Metadata: privatev1.Metadata_builder{Name: "full-subnet", Tenant: auth.SharedTenant}.Build(),
+					Spec: privatev1.SubnetSpec_builder{
+						VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: "full-vnet"}.Build(),
+						Ipv4Cidr:       new("10.98.0.0/24"),
+					}.Build(),
+					Status: privatev1.SubnetStatus_builder{
+						State: privatev1.SubnetState_SUBNET_STATE_READY,
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				resp, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
+					Object: privatev1.Cluster_builder{
+						Metadata: privatev1.Metadata_builder{Name: "test-full-cluster"}.Build(),
+						Spec: privatev1.ClusterSpec_builder{
+							Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+							NetworkAttachment: privatev1.ClusterNetworkAttachment_builder{
+								Subnet: privatev1.SubnetLocalReference_builder{Id: "full-subnet"}.Build(),
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(resp.GetObject()).ToNot(BeNil())
+			})
+
+			It("Skips validation when no network_attachment is set", func() {
+				resp, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
+					Object: privatev1.Cluster_builder{
+						Metadata: privatev1.Metadata_builder{Name: "test-no-na-cluster"}.Build(),
+						Spec: privatev1.ClusterSpec_builder{
+							Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(resp.GetObject()).ToNot(BeNil())
+			})
+		})
+
 		Describe("Catalog item", func() {
 			var catalogItemsDao *dao.GenericDAO[*privatev1.ClusterCatalogItem]
 

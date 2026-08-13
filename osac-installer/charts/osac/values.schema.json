@@ -724,6 +724,10 @@
                         "SingleReplica"
                       ]
                     },
+                    "PARKING_VNET_NAME": {
+                      "type": "string",
+                      "description": "Name of the parking V-Net where idle CaaS agents sit before cluster assignment (effective default: idle-agents-network)"
+                    },
                     "IMPORT_AGENTS_NAMESPACE": {
                       "type": "string",
                       "description": "Namespace for BareMetalHost, Agent, and InfraEnv CRs (effective default: hardware-inventory)"

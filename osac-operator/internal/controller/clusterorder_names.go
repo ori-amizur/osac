@@ -17,6 +17,11 @@ const (
 	hubAccessClusterRoleBaseName string = "hub-access-hosted-clusters"
 )
 
+const (
+	osacAPIEndpointAnnotation     = osacPrefix + "/api-endpoint"
+	osacIngressEndpointAnnotation = osacPrefix + "/ingress-endpoint"
+)
+
 var (
 	osacClusterOrderNameLabel         string = fmt.Sprintf("%s/clusterorder", osacPrefix)
 	osacClusterOrderIDLabel           string = fmt.Sprintf("%s/clusterorder-uuid", osacPrefix)

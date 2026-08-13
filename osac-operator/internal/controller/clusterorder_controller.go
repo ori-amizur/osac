@@ -172,6 +172,8 @@ func (r *ClusterOrderReconciler) patchStatusWithRetry(ctx context.Context, key c
 		latest.Status.NodeRequests = computed.NodeRequests
 		latest.Status.ProvisioningJobs = computed.ProvisioningJobs
 		latest.Status.DesiredConfigVersion = computed.DesiredConfigVersion
+		latest.Status.ApiEndpoint = computed.ApiEndpoint
+		latest.Status.IngressEndpoint = computed.IngressEndpoint
 		for _, c := range computed.Conditions {
 			meta.SetStatusCondition(&latest.Status.Conditions, c)
 		}
@@ -367,6 +369,10 @@ func (r *ClusterOrderReconciler) handleHostedCluster(ctx context.Context, instan
 		}
 	}
 
+	// Copy VIP endpoints from annotations (written by the CaaS template's
+	// external_access step) into status fields for the feedback controller.
+	reconcileVIPEndpoints(instance)
+
 	// Fetch the node pools and handle them:
 	nodePools := &hypershiftv1beta1.NodePoolList{}
 	if err := r.List(ctx, nodePools, client.InNamespace(hc.Namespace), labelSelectorFromInstance(instance)); err != nil {
@@ -376,6 +382,21 @@ func (r *ClusterOrderReconciler) handleHostedCluster(ctx context.Context, instan
 		return err
 	}
 	return nil
+}
+
+// reconcileVIPEndpoints copies VIP annotations written by the CaaS template
+// into the ClusterOrder status fields consumed by the feedback controller.
+func reconcileVIPEndpoints(instance *v1alpha1.ClusterOrder) {
+	annotations := instance.GetAnnotations()
+	if annotations == nil {
+		return
+	}
+	if v := annotations[osacAPIEndpointAnnotation]; v != "" {
+		instance.Status.ApiEndpoint = v
+	}
+	if v := annotations[osacIngressEndpointAnnotation]; v != "" {
+		instance.Status.IngressEndpoint = v
+	}
 }
 
 func (r *ClusterOrderReconciler) handleNodePools(ctx context.Context, instance *v1alpha1.ClusterOrder,

@@ -228,7 +228,7 @@ func (b *ReconcilerBuilder[O]) Build() (result *Reconciler[O], err error) {
 		getMethod:      getMethod,
 		getRequest:     getRequest,
 		getResponse:    getResponse,
-		objectChannel:  make(chan O),
+		objectChannel:  make(chan O, 64),
 		eventsClient:   eventsClient,
 	}
 
@@ -496,12 +496,15 @@ func (c *Reconciler[O]) watchEvents(ctx context.Context) error {
 		event := response.Event.ProtoReflect()
 		if event.Has(c.payloadField) {
 			object := event.Get(c.payloadField).Message().Interface().(O)
-			c.logger.DebugContext(
-				ctx,
-				"Enqueueing object",
-				slog.Any("object", object),
-			)
-			c.objectChannel <- object
+			select {
+			case c.objectChannel <- object:
+				c.logger.DebugContext(ctx, "Enqueueing object", slog.Any("object", object))
+			default:
+				// Main loop is busy; the object will be reconciled on the next sync cycle
+				// or when the next event for it arrives. Safe to skip because the main loop
+				// always fetches fresh state via getObject before reconciling.
+				c.logger.DebugContext(ctx, "Object channel full, skipping enqueue", slog.Any("object", object))
+			}
 		} else {
 			c.logger.DebugContext(
 				ctx,

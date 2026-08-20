@@ -348,6 +348,7 @@ func setupClusterControllers(
 				localMgr.GetClient(), localMgr.GetAPIReader(), localMgr.GetScheme(),
 				os.Getenv(envClusterOrderNamespace),
 				os.Getenv(envAgentNamespace),
+				os.Getenv(envNetworkingNamespace),
 				provider, pollInterval, maxJobHistory,
 			).SetupWithManager(mgr)
 		},

@@ -28,6 +28,8 @@ var (
 	osacFinalizer                     string = fmt.Sprintf("%s/finalizer", osacPrefix)
 	osacManagementStateAnnotation     string = fmt.Sprintf("%s/management-state", osacPrefix)
 	osacClusterOrderFeedbackFinalizer string = fmt.Sprintf("%s/clusterorder-feedback", osacPrefix)
+	osacAutoProvisionedLabel          string = fmt.Sprintf("%s/auto-provisioned", osacPrefix)
+	osacAutoProvisionedForLabel       string = fmt.Sprintf("%s/auto-provisioned-for", osacPrefix)
 )
 
 func generateNamespaceName(instance *v1alpha1.ClusterOrder) string {

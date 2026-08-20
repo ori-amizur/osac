@@ -73,6 +73,7 @@ type ClusterOrderReconciler struct {
 	Scheme                *runtime.Scheme
 	ClusterOrderNamespace string
 	AgentNamespace        string
+	NetworkingNamespace   string
 	ProvisioningProvider  provisioning.ProvisioningProvider
 	StatusPollInterval    time.Duration
 	MaxJobHistory         int
@@ -84,6 +85,7 @@ func NewClusterOrderReconciler(
 	scheme *runtime.Scheme,
 	clusterOrderNamespace string,
 	agentNamespace string,
+	networkingNamespace string,
 	provisioningProvider provisioning.ProvisioningProvider,
 	statusPollInterval time.Duration,
 	maxJobHistory int,
@@ -111,6 +113,7 @@ func NewClusterOrderReconciler(
 		Scheme:                scheme,
 		ClusterOrderNamespace: clusterOrderNamespace,
 		AgentNamespace:        agentNamespace,
+		NetworkingNamespace:   networkingNamespace,
 		ProvisioningProvider:  provisioningProvider,
 		StatusPollInterval:    statusPollInterval,
 		MaxJobHistory:         maxJobHistory,
@@ -126,6 +129,8 @@ func NewClusterOrderReconciler(
 // +kubebuilder:rbac:groups=hypershift.openshift.io,resources=hostedclusters;nodepools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=subnets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=networkclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=osac.openshift.io,resources=externalipattachments,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=osac.openshift.io,resources=externalips,verbs=get;list;watch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -537,6 +542,12 @@ func (r *ClusterOrderReconciler) handleDelete(ctx context.Context, _ reconcile.R
 
 	instance.Status.Phase = v1alpha1.ClusterOrderPhaseDeleting
 
+	// Delete auto-provisioned ExternalIPAttachments then ExternalIPs before deprovisioning.
+	done, cleanupResult, err := r.reconcileAutoExternalIPCleanup(ctx, instance)
+	if err != nil || !done {
+		return cleanupResult, err
+	}
+
 	// Release agents allocated to this cluster
 	if err := r.reconcileAgentCleanup(ctx, instance); err != nil {
 		return ctrl.Result{}, err
@@ -586,6 +597,76 @@ func (r *ClusterOrderReconciler) handleDelete(ctx context.Context, _ reconcile.R
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileAutoExternalIPCleanup deletes auto-provisioned ExternalIPAttachments and
+// ExternalIPs for this ClusterOrder in phase order: EIAs first, then EIPs. Returns
+// (done=true) when cleanup is complete or not applicable, (done=false) with a requeue
+// result when resources still exist.
+func (r *ClusterOrderReconciler) reconcileAutoExternalIPCleanup(ctx context.Context, instance *v1alpha1.ClusterOrder) (bool, ctrl.Result, error) {
+	if r.NetworkingNamespace == "" {
+		return true, ctrl.Result{}, nil
+	}
+	clusterUUID, exists := instance.GetLabels()[osacClusterOrderIDLabel]
+	if !exists || clusterUUID == "" {
+		return true, ctrl.Result{}, nil
+	}
+
+	log := ctrllog.FromContext(ctx)
+
+	// Phase 1: ExternalIPAttachments targeting this cluster, labeled auto-provisioned.
+	eiaList := &v1alpha1.ExternalIPAttachmentList{}
+	if err := r.List(ctx, eiaList,
+		client.InNamespace(r.NetworkingNamespace),
+		client.MatchingLabels{osacAutoProvisionedLabel: labelValueTrue},
+	); err != nil {
+		return false, ctrl.Result{}, err
+	}
+	var pendingEIAs int
+	for i := range eiaList.Items {
+		eia := &eiaList.Items[i]
+		if eia.Spec.Cluster == nil || *eia.Spec.Cluster != clusterUUID {
+			continue
+		}
+		pendingEIAs++
+		if eia.DeletionTimestamp.IsZero() {
+			log.Info("deleting auto-provisioned ExternalIPAttachment", "name", eia.Name)
+			if err := client.IgnoreNotFound(r.Delete(ctx, eia)); err != nil {
+				return false, ctrl.Result{}, err
+			}
+		}
+	}
+	if pendingEIAs > 0 {
+		return false, ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+	}
+
+	// Phase 2: ExternalIPs labeled auto-provisioned-for this cluster.
+	eipList := &v1alpha1.ExternalIPList{}
+	if err := r.List(ctx, eipList,
+		client.InNamespace(r.NetworkingNamespace),
+		client.MatchingLabels{
+			osacAutoProvisionedLabel:    labelValueTrue,
+			osacAutoProvisionedForLabel: clusterUUID,
+		},
+	); err != nil {
+		return false, ctrl.Result{}, err
+	}
+	var pendingEIPs int
+	for i := range eipList.Items {
+		eip := &eipList.Items[i]
+		pendingEIPs++
+		if eip.DeletionTimestamp.IsZero() {
+			log.Info("deleting auto-provisioned ExternalIP", "name", eip.Name)
+			if err := client.IgnoreNotFound(r.Delete(ctx, eip)); err != nil {
+				return false, ctrl.Result{}, err
+			}
+		}
+	}
+	if pendingEIPs > 0 {
+		return false, ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+	}
+
+	return true, ctrl.Result{}, nil
 }
 
 func (r *ClusterOrderReconciler) provisionState(instance *v1alpha1.ClusterOrder) *provisioning.State {

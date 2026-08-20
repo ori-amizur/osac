@@ -59,4 +59,6 @@ const (
 
 	conditionReasonConfigurationApplied  = "ConfigurationApplied"
 	conditionMessageConfigurationApplied = "Controller has processed the current spec"
+
+	labelValueTrue = "true"
 )

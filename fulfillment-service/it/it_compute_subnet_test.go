@@ -338,8 +338,8 @@ var _ = Describe("ComputeInstance with Subnet attachment", func() {
 						StorageTier: &storageTierId,
 					}.Build(),
 					DiskImage: &publicv1.DiskImageReference{Id: diskImageId},
-					NetworkAttachments: []*publicv1.NetworkAttachment{
-						publicv1.NetworkAttachment_builder{
+					NetworkAttachments: []*publicv1.ComputeNetworkAttachment{
+						publicv1.ComputeNetworkAttachment_builder{
 							Subnet: publicv1.SubnetLocalReference_builder{Id: subnetId}.Build(),
 						}.Build(),
 					},
@@ -376,8 +376,8 @@ var _ = Describe("ComputeInstance with Subnet attachment", func() {
 						StorageTier: &storageTierId,
 					}.Build(),
 					DiskImage: &publicv1.DiskImageReference{Id: diskImageId},
-					NetworkAttachments: []*publicv1.NetworkAttachment{
-						publicv1.NetworkAttachment_builder{
+					NetworkAttachments: []*publicv1.ComputeNetworkAttachment{
+						publicv1.ComputeNetworkAttachment_builder{
 							Subnet: publicv1.SubnetLocalReference_builder{Name: "non-existent-subnet"}.Build(),
 						}.Build(),
 					},

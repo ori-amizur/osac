@@ -1312,8 +1312,8 @@ var _ = Describe("Private subnets server", func() {
 							Tenant: testTenant,
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnetID}.Build(),
 								}.Build(),
 							},
@@ -1394,8 +1394,8 @@ var _ = Describe("Private subnets server", func() {
 							Tenant: testTenant,
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnetID}.Build(),
 								}.Build(),
 							},
@@ -1429,8 +1429,8 @@ var _ = Describe("Private subnets server", func() {
 							Tenant: testTenant,
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnetID}.Build(),
 								}.Build(),
 							},

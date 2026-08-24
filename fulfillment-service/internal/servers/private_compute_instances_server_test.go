@@ -396,8 +396,8 @@ var _ = Describe("Private compute instances server", func() {
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template:           privatev1.ComputeInstanceTemplateReference_builder{Id: "general.small"}.Build(),
 						TemplateParameters: templateParams,
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -427,8 +427,8 @@ var _ = Describe("Private compute instances server", func() {
 							SizeGib:     20,
 							StorageTier: new("nonexistent"),
 						}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -453,8 +453,8 @@ var _ = Describe("Private compute instances server", func() {
 								StorageTier: new("nonexistent"),
 							}.Build(),
 						},
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -482,8 +482,8 @@ var _ = Describe("Private compute instances server", func() {
 								StorageTier: new("standard"),
 							}.Build(),
 						},
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -513,8 +513,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: templateID}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -549,8 +549,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: templateID}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -587,8 +587,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: templateID}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -623,8 +623,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "general.small"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -666,8 +666,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "general.small"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -717,8 +717,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "general.small"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -816,8 +816,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "existing-template"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -867,8 +867,8 @@ var _ = Describe("Private compute instances server", func() {
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template:           privatev1.ComputeInstanceTemplateReference_builder{Id: "params-template"}.Build(),
 						TemplateParameters: map[string]*anypb.Any{"cpu_count": cpuParam},
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -914,8 +914,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "same-template"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -961,8 +961,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "di-immut-template"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -1023,8 +1023,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "defaults-template"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -1056,8 +1056,8 @@ var _ = Describe("Private compute instances server", func() {
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template:    privatev1.ComputeInstanceTemplateReference_builder{Id: "override-template"}.Build(),
 						RunStrategy: new("Halted"),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -1104,8 +1104,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "no-defaults-template"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -1159,8 +1159,8 @@ var _ = Describe("Private compute instances server", func() {
 							StorageTier: new("standard"),
 						}.Build(),
 						RunStrategy: new("Always"),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -1209,8 +1209,8 @@ var _ = Describe("Private compute instances server", func() {
 							SizeGib:     20,
 							StorageTier: new("standard"),
 						}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},
@@ -1274,8 +1274,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-happy"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1301,8 +1301,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-byname-name"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1324,8 +1324,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "nonexistent"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1351,8 +1351,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-unpub"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1389,8 +1389,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-no-template"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1415,8 +1415,8 @@ var _ = Describe("Private compute instances server", func() {
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "any-catalog-item"}.Build(),
 							Template:    privatev1.ComputeInstanceTemplateReference_builder{Id: "some-template"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1451,8 +1451,8 @@ var _ = Describe("Private compute instances server", func() {
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem:  privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-nonedit"}.Build(),
 							SshPublicKey: new("user-key"),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1488,8 +1488,8 @@ var _ = Describe("Private compute instances server", func() {
 							Spec: privatev1.ComputeInstanceSpec_builder{
 								CatalogItem:  privatev1.ComputeInstanceCatalogItemReference_builder{Id: catID}.Build(),
 								SshPublicKey: new(value),
-								NetworkAttachments: []*privatev1.NetworkAttachment{
-									privatev1.NetworkAttachment_builder{
+								NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+									privatev1.ComputeNetworkAttachment_builder{
 										Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 									}.Build(),
 								},
@@ -1531,8 +1531,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-dflt"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1554,8 +1554,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-immut"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1625,8 +1625,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-no-defaults"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1695,8 +1695,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-with-it"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1763,8 +1763,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							CatalogItem: privatev1.ComputeInstanceCatalogItemReference_builder{Id: "ci-cat-valid-it"}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -1914,9 +1914,9 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: s1.GetId()}.Build()}.Build(),
-							privatev1.NetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: s2.GetId()}.Build()}.Build(),
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: s1.GetId()}.Build()}.Build(),
+							privatev1.ComputeNetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: s2.GetId()}.Build()}.Build(),
 						},
 					}.Build(),
 				}.Build()
@@ -2185,8 +2185,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: "nonexistent-subnet"}.Build()}.Build(),
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: "nonexistent-subnet"}.Build()}.Build(),
 						},
 					}.Build(),
 				}.Build()
@@ -2213,8 +2213,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build()}.Build(),
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build()}.Build(),
 						},
 					}.Build(),
 				}.Build()
@@ -2241,8 +2241,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 								SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: "nonexistent-sg"}.Build()},
 							}.Build(),
@@ -2275,8 +2275,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 								SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: wrongSG.GetId()}.Build()},
 							}.Build(),
@@ -2306,8 +2306,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 								SecurityGroups: []*privatev1.SecurityGroupLocalReference{},
 							}.Build(),
@@ -2335,8 +2335,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 								SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: sg.GetId()}.Build()},
 							}.Build(),
@@ -2371,8 +2371,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 									SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: sg.GetId()}.Build()},
 								}.Build(),
@@ -2399,8 +2399,8 @@ var _ = Describe("Private compute instances server", func() {
 
 				// Try to update security groups while subnet is PENDING
 				// Should succeed because isBeingDeleted=true skips state validation
-				created.GetSpec().SetNetworkAttachments([]*privatev1.NetworkAttachment{
-					privatev1.NetworkAttachment_builder{
+				created.GetSpec().SetNetworkAttachments([]*privatev1.ComputeNetworkAttachment{
+					privatev1.ComputeNetworkAttachment_builder{
 						Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 						SecurityGroups: []*privatev1.SecurityGroupLocalReference{}, // Change security groups (allowed)
 					}.Build(),
@@ -2439,8 +2439,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet1.GetId()}.Build(),
 									SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: sg1.GetId()}.Build()},
 								}.Build(),
@@ -2459,8 +2459,8 @@ var _ = Describe("Private compute instances server", func() {
 						Id: id,
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet2.GetId()}.Build(),
 									SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: sg1.GetId()}.Build()},
 								}.Build(),
@@ -2488,8 +2488,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet1.GetId()}.Build(),
 									SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: sg1.GetId()}.Build()},
 								}.Build(),
@@ -2508,8 +2508,8 @@ var _ = Describe("Private compute instances server", func() {
 						Id: id,
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet1.GetId()}.Build(),                                                                                                                      // Same subnet
 									SecurityGroups: []*privatev1.SecurityGroupLocalReference{privatev1.SecurityGroupLocalReference_builder{Id: sg1.GetId()}.Build(), privatev1.SecurityGroupLocalReference_builder{Id: sg2.GetId()}.Build()}, // Different SGs
 								}.Build(),
@@ -2537,8 +2537,8 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet1.GetId()}.Build(),
 								}.Build(),
 							},
@@ -2556,11 +2556,11 @@ var _ = Describe("Private compute instances server", func() {
 						Id: id,
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet1.GetId()}.Build(),
 								}.Build(),
-								privatev1.NetworkAttachment_builder{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet2.GetId()}.Build(),
 								}.Build(),
 							},
@@ -2587,11 +2587,11 @@ var _ = Describe("Private compute instances server", func() {
 						}.Build(),
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet1.GetId()}.Build(),
 								}.Build(),
-								privatev1.NetworkAttachment_builder{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet2.GetId()}.Build(),
 								}.Build(),
 							},
@@ -2609,8 +2609,8 @@ var _ = Describe("Private compute instances server", func() {
 						Id: id,
 						Spec: privatev1.ComputeInstanceSpec_builder{
 							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet1.GetId()}.Build(),
 								}.Build(),
 							},
@@ -2696,8 +2696,8 @@ var _ = Describe("Private compute instances server", func() {
 								SizeGib:     100,
 								StorageTier: new("tier1"),
 							}.Build(),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 								}.Build(),
 							},
@@ -2751,8 +2751,8 @@ var _ = Describe("Private compute instances server", func() {
 									StorageTier: new("tier1"),
 								}.Build(),
 							},
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 								}.Build(),
 							},
@@ -2808,8 +2808,8 @@ var _ = Describe("Private compute instances server", func() {
 									StorageTier: new("tier1"),
 								}.Build(),
 							},
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
 								}.Build(),
 							},
@@ -2911,8 +2911,8 @@ var _ = Describe("Private compute instances server", func() {
 								StorageTier: new("standard"),
 							}.Build(),
 							RunStrategy: new("Always"),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -3005,8 +3005,8 @@ var _ = Describe("Private compute instances server", func() {
 								SizeGib: 20,
 							}.Build(),
 							RunStrategy: new("Always"),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -3104,8 +3104,8 @@ var _ = Describe("Private compute instances server", func() {
 								SizeGib: 20,
 							}.Build(),
 							RunStrategy: new("Always"),
-							NetworkAttachments: []*privatev1.NetworkAttachment{
-								privatev1.NetworkAttachment_builder{
+							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+								privatev1.ComputeNetworkAttachment_builder{
 									Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 								}.Build(),
 							},
@@ -3277,8 +3277,8 @@ var _ = Describe("Private compute instances server", func() {
 					}.Build(),
 					Spec: privatev1.ComputeInstanceSpec_builder{
 						Template: privatev1.ComputeInstanceTemplateReference_builder{Id: "auto-eip-template"}.Build(),
-						NetworkAttachments: []*privatev1.NetworkAttachment{
-							privatev1.NetworkAttachment_builder{
+						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
+							privatev1.ComputeNetworkAttachment_builder{
 								Subnet: privatev1.SubnetLocalReference_builder{Id: "test-subnet"}.Build(),
 							}.Build(),
 						},

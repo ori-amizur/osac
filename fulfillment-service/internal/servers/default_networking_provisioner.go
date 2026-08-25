@@ -391,10 +391,9 @@ func (p *DefaultNetworkingProvisioner) createDefaultSecurityGroup(
 			Creator: "system",
 		}.Build(),
 		Spec: privatev1.SecurityGroupSpec_builder{
-			VirtualNetwork:         privatev1.VirtualNetworkLocalReference_builder{Id: vnID}.Build(),
-			Ingress:                defaults.GetIngressRules(),
-			Egress:                 defaults.GetEgressRules(),
-			ImplementationStrategy: "network_policy",
+			VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: vnID}.Build(),
+			Ingress:        defaults.GetIngressRules(),
+			Egress:         defaults.GetEgressRules(),
 		}.Build(),
 		Status: privatev1.SecurityGroupStatus_builder{
 			State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_PENDING,

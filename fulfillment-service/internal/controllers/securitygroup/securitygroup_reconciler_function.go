@@ -410,12 +410,6 @@ func (t *task) buildSpec() osacv1alpha1.SecurityGroupSpec {
 		VirtualNetwork: controllers.RefKeyStr(t.securityGroup.GetSpec().GetVirtualNetwork()),
 	}
 
-	// Add implementation strategy if present:
-	implStrategy := t.securityGroup.GetSpec().GetImplementationStrategy()
-	if implStrategy != "" {
-		spec.ImplementationStrategy = implStrategy
-	}
-
 	// Add ingress rules if present:
 	ingressRules := t.securityGroup.GetSpec().GetIngress()
 	if len(ingressRules) > 0 {

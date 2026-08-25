@@ -175,13 +175,9 @@ func (r *SecurityGroupReconciler) handleUpdate(ctx context.Context, sg *v1alpha1
 		log.Info("parent VirtualNetwork not found, using legacy implementation strategy", "uuid", sg.Spec.VirtualNetwork)
 	}
 
-	// Read implementation strategy from spec (set by fulfillment-service), fall back to
-	// default. This is the legacy value; resolveImplementationStrategy below only uses
-	// it when the dispatcher path isn't available (see doc comment).
-	legacyStrategy := sg.Spec.ImplementationStrategy
-	if legacyStrategy == "" {
-		legacyStrategy = defaultSecurityGroupImplementationStrategy
-	}
+	// Legacy fallback value; resolveImplementationStrategy below only uses it when the
+	// dispatcher path isn't available (see doc comment).
+	legacyStrategy := defaultSecurityGroupImplementationStrategy
 
 	implementationStrategy, err := resolveImplementationStrategy(ctx, r.Resolver, "SecurityGroup", networkClassID, legacyStrategy)
 	if err != nil {

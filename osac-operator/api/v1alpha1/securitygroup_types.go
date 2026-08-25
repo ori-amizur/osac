@@ -77,13 +77,6 @@ type SecurityGroupSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="virtualNetwork is immutable"
 	VirtualNetwork string `json:"virtualNetwork"`
 
-	// ImplementationStrategy determines the backend used to enforce security rules.
-	// Set by the fulfillment-service; defaults to network_policy when empty.
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="implementationStrategy is immutable"
-	ImplementationStrategy string `json:"implementationStrategy,omitempty"`
-
 	// IngressRules defines the ingress security rules
 	// +kubebuilder:validation:Optional
 	IngressRules []SecurityRule `json:"ingressRules,omitempty"`

@@ -258,44 +258,6 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal(defaultSecurityGroupImplementationStrategy))
 		})
 
-		It("should use implementationStrategy from spec when set", func() {
-			sgWithStrategy := &osacv1alpha1.SecurityGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "sg-with-strategy",
-					Namespace: "test-namespace",
-				},
-				Spec: osacv1alpha1.SecurityGroupSpec{
-					VirtualNetwork:         "test-vnet-uuid",
-					ImplementationStrategy: "custom-backend",
-				},
-			}
-			Expect(fakeClient.Create(ctx, sgWithStrategy)).To(Succeed())
-
-			key := types.NamespacedName{Name: sgWithStrategy.Name, Namespace: sgWithStrategy.Namespace}
-
-			mockProvider.triggerProvisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
-				return &provisioning.ProvisionResult{
-					JobID:        "job-custom",
-					InitialState: osacv1alpha1.JobStatePending,
-					Message:      "Job triggered",
-				}, nil
-			}
-
-			// Reconcile twice (first adds finalizer, second sets annotation and provisions)
-			_, err := reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Fetch updated SecurityGroup
-			updated := &osacv1alpha1.SecurityGroup{}
-			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
-
-			// Verify annotation was set to the spec-provided strategy
-			Expect(updated.Annotations).NotTo(BeNil())
-			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("custom-backend"))
-		})
-
 		It("should not update when annotation already matches implementation strategy", func() {
 			// Create SecurityGroup with annotation already set to the default
 			sgWithAnnotation := &osacv1alpha1.SecurityGroup{
@@ -721,7 +683,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("netris"))
 		})
 
-		It("falls back to SecurityGroup's own legacy implementation strategy when fabricManager is not set", func() {
+		It("falls back to the default strategy when fabricManager is not set", func() {
 			disc, err := networkmanager.NewDiscovery(fakeClient, "test-namespace")
 			Expect(err).NotTo(HaveOccurred())
 			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
@@ -730,12 +692,6 @@ var _ = Describe("SecurityGroupReconciler", func() {
 
 			vnet.Spec.NetworkClass = "nc-legacy"
 			Expect(fakeClient.Update(ctx, vnet)).To(Succeed())
-
-			// SecurityGroup's own legacy strategy is independent of the parent VNet's
-			// ImplementationStrategy — set a distinct value here to prove the fallback
-			// reads from the SecurityGroup spec, not the VirtualNetwork's.
-			sg.Spec.ImplementationStrategy = "custom-legacy"
-			Expect(fakeClient.Update(ctx, sg)).To(Succeed())
 
 			key := types.NamespacedName{Name: sg.Name, Namespace: sg.Namespace}
 			mockProvider.triggerProvisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
@@ -747,7 +703,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 
 			updated := &osacv1alpha1.SecurityGroup{}
 			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
-			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("custom-legacy"))
+			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal(defaultSecurityGroupImplementationStrategy))
 		})
 
 		It("returns a reconcile error when the NetworkClass references an unregistered manager", func() {
@@ -778,8 +734,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			orphanSG := &osacv1alpha1.SecurityGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: "orphan-sg", Namespace: "test-namespace"},
 				Spec: osacv1alpha1.SecurityGroupSpec{
-					VirtualNetwork:         "no-such-vnet-uuid",
-					ImplementationStrategy: "custom-backend",
+					VirtualNetwork: "no-such-vnet-uuid",
 				},
 			}
 			Expect(fakeClient.Create(ctx, orphanSG)).To(Succeed())
@@ -796,7 +751,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 
 			updated := &osacv1alpha1.SecurityGroup{}
 			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
-			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("custom-backend"))
+			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal(defaultSecurityGroupImplementationStrategy))
 		})
 
 		It("returns an error when multiple VirtualNetworks share the parent uuid label", func() {

@@ -29,9 +29,10 @@ Ansible automation for OSAC infrastructure provisioning. See `AGENTS.md` for com
 
 **Adding a new networking implementation:**
 1. osac-aap: Create template role with `meta/osac.yaml`
-2. osac-aap: Run config-as-code to publish NetworkClass
-3. fulfillment-service: NetworkClass auto-discovered in API
-4. Users: Create VirtualNetwork with new `networkClass`
+2. osac-operator: Register the new fabric/k8s manager in `networkManagers` chart values
+3. osac-installer: If it should be the deployment's default, set `networkClass.fabricManager`/
+   `k8sManager` in chart values — created at install time via the Helm hook
+4. Users: Create VirtualNetwork — NetworkClass is deployment-wide and automatic, not user-selectable
 
 ## Links
 

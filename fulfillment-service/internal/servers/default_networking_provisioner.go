@@ -546,3 +546,192 @@ func (p *DefaultNetworkingProvisioner) updateExternalIPAttachedFlag(ctx context.
 	}
 	return nil
 }
+
+// Deprovision removes the default networking resources previously created by Provision for the
+// given tenant. It is idempotent: if no default VirtualNetwork exists for the tenant, it returns
+// nil immediately.
+//
+// This bypasses the "default resources are system-managed" protection enforced by
+// validateNotDefault() in the private servers' Delete() handlers, because it operates on the DAOs
+// directly rather than going through those handlers — it is the system removing what it itself
+// created, not a user request going through the normal API path.
+func (p *DefaultNetworkingProvisioner) Deprovision(ctx context.Context, tenantName string) error {
+	vn, err := p.findDefaultVirtualNetwork(ctx, tenantName)
+	if err != nil {
+		return fmt.Errorf("failed to find default VirtualNetwork: %w", err)
+	}
+	if vn == nil {
+		p.logger.InfoContext(ctx, "No default networking resources to deprovision")
+		return nil
+	}
+	vnID := vn.GetId()
+
+	if err := p.deprovisionDefaultNATGateway(ctx, vnID); err != nil {
+		return fmt.Errorf("failed to deprovision default NATGateway: %w", err)
+	}
+
+	if err := deleteByVirtualNetwork(ctx, p.securityGroupDao, vnID); err != nil {
+		return fmt.Errorf("failed to delete default SecurityGroup: %w", err)
+	}
+
+	if err := deleteByVirtualNetwork(ctx, p.subnetDao, vnID); err != nil {
+		return fmt.Errorf("failed to delete default Subnets: %w", err)
+	}
+
+	if _, err := p.virtualNetworkDao.Delete().SetId(vnID).Do(ctx); err != nil {
+		return fmt.Errorf("failed to delete default VirtualNetwork: %w", err)
+	}
+
+	p.logger.InfoContext(ctx, "Default networking resources deprovisioned successfully")
+	return nil
+}
+
+// findDefaultVirtualNetwork returns the default VirtualNetwork for the given tenant, or nil if
+// none exists. Provision always names it "default", so matching on tenant + name is sufficient
+// and avoids depending on CEL map-literal syntax for label lookups.
+func (p *DefaultNetworkingProvisioner) findDefaultVirtualNetwork(
+	ctx context.Context, tenantName string,
+) (*privatev1.VirtualNetwork, error) {
+	filter := fmt.Sprintf(`this.metadata.tenant == %q && this.metadata.name == "default"`, tenantName)
+	listResponse, err := p.virtualNetworkDao.List().SetFilter(filter).Do(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := listResponse.GetItems()
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return items[0], nil
+}
+
+// deprovisionDefaultNATGateway deletes every default-labeled NATGateway attached to the given
+// VirtualNetwork, along with each one's ExternalIP and the corresponding pool capacity release.
+// Only resources labeled osac.openshift.io/default are matched: a tenant is free to attach its
+// own NATGateways to its default VirtualNetwork, and those must not be swept up here — if any
+// remain, the subsequent VirtualNetwork delete correctly fails with a foreign key violation
+// instead of silently destroying tenant-owned resources. It pages through matches rather than
+// relying on a single List() call, since the list defaults to a 100-item page.
+//
+// Delete() only archives (fully removes) an object once its finalizers are empty; if the
+// NATGateway controller has already attached its finalizer, Delete() just sets
+// deletion_timestamp and the row keeps matching this filter. Real removal then depends on that
+// controller's own, asynchronous cleanup — which cannot complete within this single request's
+// transaction — so each matching id is attempted at most once per call, and if a pass makes no
+// further progress, this returns an in-use error instead of looping forever.
+func (p *DefaultNetworkingProvisioner) deprovisionDefaultNATGateway(ctx context.Context, vnID string) error {
+	filter := fmt.Sprintf(
+		`this.metadata.labels["%s"] == "true" && this.spec.virtual_network.id == %q`,
+		defaultLabel, vnID,
+	)
+	attempted := map[string]bool{}
+	for {
+		listResponse, err := p.natGatewayDao.List().SetFilter(filter).Do(ctx)
+		if err != nil {
+			return err
+		}
+		items := listResponse.GetItems()
+		if len(items) == 0 {
+			return nil
+		}
+		progress := false
+		for _, ng := range items {
+			id := ng.GetId()
+			if attempted[id] {
+				continue
+			}
+			attempted[id] = true
+			progress = true
+			// If the NATGateway already has a finalizer, Delete() below only soft-deletes it —
+			// its ExternalIP must be left alone until the NATGateway is actually archived, or the
+			// ExternalIP would be released while the NATGateway still references it.
+			archived := len(ng.GetMetadata().GetFinalizers()) == 0
+			externalIPID := ng.GetSpec().GetExternalIp().GetId()
+			if _, err := p.natGatewayDao.Delete().SetId(id).Do(ctx); err != nil {
+				return err
+			}
+			if !archived || externalIPID == "" {
+				continue
+			}
+			if err := p.deprovisionDefaultExternalIP(ctx, externalIPID); err != nil {
+				return err
+			}
+		}
+		if !progress {
+			return &dao.ErrInUse{
+				Reason: fmt.Sprintf(
+					"%d default NATGateway(s) still awaiting asynchronous controller cleanup, retry later",
+					len(items),
+				),
+			}
+		}
+	}
+}
+
+// deprovisionDefaultExternalIP deletes the given ExternalIP and releases its pool capacity.
+func (p *DefaultNetworkingProvisioner) deprovisionDefaultExternalIP(ctx context.Context, externalIPID string) error {
+	getResponse, err := p.externalIPDao.Get().SetId(externalIPID).Do(ctx)
+	if err != nil {
+		return err
+	}
+	poolID := getResponse.GetObject().GetSpec().GetPool().GetId()
+	if _, err := p.externalIPDao.Delete().SetId(externalIPID).Do(ctx); err != nil {
+		return err
+	}
+	if poolID == "" {
+		return nil
+	}
+	return p.updatePoolCapacity(ctx, poolID, int64(-1))
+}
+
+// deleteByVirtualNetwork deletes every default-labeled object of type O whose spec references the
+// given VirtualNetwork by id. Used to clean up the default Subnets and SecurityGroup attached to a
+// default VirtualNetwork before deleting the VirtualNetwork itself. Only resources labeled
+// osac.openshift.io/default are matched: a tenant is free to attach its own Subnets/SecurityGroups
+// to its default VirtualNetwork, and those must not be swept up here — if any remain, the
+// subsequent VirtualNetwork delete correctly fails with a foreign key violation instead of
+// silently destroying tenant-owned resources. It pages through matches rather than relying on a
+// single List() call, since the list defaults to a 100-item page.
+//
+// Delete() only archives (fully removes) an object once its finalizers are empty; if the owning
+// controller has already attached its finalizer, Delete() just sets deletion_timestamp and the row
+// keeps matching this filter. Real removal then depends on that controller's own, asynchronous
+// cleanup — which cannot complete within this single request's transaction — so each matching id
+// is attempted at most once per call, and if a pass makes no further progress, this returns an
+// in-use error instead of looping forever.
+func deleteByVirtualNetwork[O dao.Object](ctx context.Context, d *dao.GenericDAO[O], vnID string) error {
+	filter := fmt.Sprintf(
+		`this.metadata.labels["%s"] == "true" && this.spec.virtual_network.id == %q`,
+		defaultLabel, vnID,
+	)
+	attempted := map[string]bool{}
+	for {
+		listResponse, err := d.List().SetFilter(filter).Do(ctx)
+		if err != nil {
+			return err
+		}
+		items := listResponse.GetItems()
+		if len(items) == 0 {
+			return nil
+		}
+		progress := false
+		for _, item := range items {
+			id := item.GetId()
+			if attempted[id] {
+				continue
+			}
+			attempted[id] = true
+			progress = true
+			if _, err := d.Delete().SetId(id).Do(ctx); err != nil {
+				return err
+			}
+		}
+		if !progress {
+			return &dao.ErrInUse{
+				Reason: fmt.Sprintf(
+					"%d default networking object(s) still awaiting asynchronous controller cleanup, retry later",
+					len(items),
+				),
+			}
+		}
+	}
+}

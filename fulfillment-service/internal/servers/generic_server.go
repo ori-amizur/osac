@@ -828,6 +828,10 @@ func (s *GenericServer[O]) translateUpdateError(ctx context.Context, requestId s
 	if errors.As(err, &referenceErr) {
 		return grpcstatus.Errorf(grpccodes.FailedPrecondition, "%s", referenceErr.Error())
 	}
+	var inUseErr *dao.ErrInUse
+	if errors.As(err, &inUseErr) {
+		return grpcstatus.Errorf(grpccodes.FailedPrecondition, "%s", inUseErr.Error())
+	}
 	var notUniqueErr *dao.ErrNotUnique
 	if errors.As(err, &notUniqueErr) {
 		return grpcstatus.Errorf(grpccodes.AlreadyExists, "%s", notUniqueErr.Error())

@@ -199,7 +199,6 @@ func (r *DeleteRequest[O]) do(ctx context.Context) (response *DeleteResponse, er
 		data:            data,
 	})
 	if err != nil {
-		err = r.translateError(ctx, tenant, err)
 		return
 	}
 	err = r.fireEvent(ctx, Event{

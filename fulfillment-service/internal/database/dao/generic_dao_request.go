@@ -24,6 +24,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/prometheus/client_golang/prometheus"
@@ -121,11 +122,61 @@ func (r *request[O]) archive(ctx context.Context, args archiveArgs) error {
 		args.data,
 	)
 	if err != nil {
-		return err
+		return r.translateArchiveError(ctx, args.tenant, err)
 	}
 	sql = fmt.Sprintf(`delete from %s where id = $1`, r.dao.table)
 	_, err = r.exec(ctx, deleteOpType, sql, args.id)
-	return err
+	if err != nil {
+		return r.translateArchiveError(ctx, args.tenant, err)
+	}
+	return nil
+}
+
+// translateArchiveError translates a raw PostgreSQL error from either statement of archive() into
+// a domain-specific error type. Any foreign key violation means the object is still referenced by
+// other objects and cannot yet be removed — that is always an "in use" condition, regardless of
+// which specific constraint was violated, so unrecognized constraint names still produce a
+// FailedPrecondition instead of an opaque Internal error. The constraint name itself is logged but
+// not included in the returned error, since it exposes internal schema detail to API callers.
+func (r *request[O]) translateArchiveError(ctx context.Context, tenant string, err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return err
+	}
+	switch pgErr.Code {
+	case errInUseCode:
+		return &ErrInUse{
+			Reason: pgErr.Message,
+		}
+	case pgerrcode.ForeignKeyViolation:
+		switch pgErr.ConstraintName {
+		case "projects_tenant_fk":
+			return &ErrInUse{
+				Reason: fmt.Sprintf("tenant '%s' cannot be deleted because it still has projects", tenant),
+			}
+		default:
+			r.dao.logger.WarnContext(
+				ctx,
+				"Object cannot be deleted because it is still referenced by other objects",
+				slog.String("table", pgErr.TableName),
+				slog.String("constraint", pgErr.ConstraintName),
+			)
+			return &ErrInUse{
+				Reason: "object cannot be deleted because it is still referenced by other objects",
+			}
+		}
+	case pgerrcode.DeadlockDetected:
+		return &ErrDeadlock{}
+	default:
+		r.dao.logger.WarnContext(
+			ctx,
+			"Unknown error while archiving object",
+			slog.String("table", pgErr.TableName),
+			slog.String("constraint", pgErr.ConstraintName),
+			slog.Any("error", err),
+		)
+		return err
+	}
 }
 
 // addTenancyFilter adds a clause to restrict results to only those objects that belong to tenants the current user

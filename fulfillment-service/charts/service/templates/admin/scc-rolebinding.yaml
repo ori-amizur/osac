@@ -1,0 +1,38 @@
+{{/*
+Copyright (c) 2025 Red Hat Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+the License. You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+*/}}
+
+{{/*
+osac-installer's hook Jobs that run as this ServiceAccount (create-hub,
+create-network-class, register-local-storage, seed-cluster-versions) pin
+runAsUser/fsGroup to a fixed non-root UID, because their image
+(quay.io/openshift/origin-cli) has no non-root USER of its own. On OpenShift,
+restricted-v2 SCC only allows UIDs from the namespace-allocated range, so this
+grants exactly the `anyuid` SCC's `use` permission -- not cluster-admin -- so
+the fixed UID is permitted without granting broader cluster access. No-op on
+non-OpenShift clusters (Kind), which have no SCC admission at all.
+*/}}
+{{- if .Capabilities.APIVersions.Has "security.openshift.io/v1" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: admin-anyuid-scc
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:anyuid
+subjects:
+- kind: ServiceAccount
+  name: admin
+  namespace: {{ .Release.Namespace }}
+{{- end }}

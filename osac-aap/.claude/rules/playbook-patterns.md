@@ -89,7 +89,7 @@ title: CUDN Network Implementation
 description: Provisions networking resources using CUDN
 template_type: network
 fabric_manager: cudn_net
-capabilities:
+capabilities:  # informational only here -- see the `capabilities` field note below
   supports_ipv4: true
   supports_ipv6: true
   supports_dual_stack: true
@@ -98,7 +98,7 @@ capabilities:
 **Fields:**
 - `fabric_manager`/`k8s_manager` — at least one required for `template_type: network`; matches the annotation value osac-operator's dispatcher stamps and the role directory name
 - `template_type` — `network`, `compute`, or `cluster`
-- `capabilities` — feature flags published to NetworkClass
+- `capabilities` — informational only for `template_type: network` roles; not published anywhere (NetworkClass creation happens via osac-installer's Helm chart, independent of this file)
 
 **Note:** Use underscores (`_`), not hyphens (`-`), in role names and `fabric_manager`/`k8s_manager`. `implementation_strategy` is no longer read here — it was reserved on the NetworkClass/VirtualNetwork protos once the dispatcher became the sole routing mechanism (OSAC-1468).
 
@@ -111,7 +111,7 @@ capabilities:
 | `osac.service.lease` | Bare-metal lease management | Used by cluster/compute workflows |
 | `osac.service.wait_for` | Polling utilities | Wait for pods, deployments, CRs |
 | `osac.service.tenant_storage_class` | StorageClass discovery | Find tenant-specific storage |
-| `osac.service.publish_templates` | Template registration | Publishes NetworkClass from `meta/osac.yaml` |
+| `osac.service.publish_templates` | Template registration | Publishes ComputeClass-family resources from `meta/osac.yaml` |
 
 ## Common Ansible Patterns
 

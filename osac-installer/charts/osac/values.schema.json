@@ -1574,12 +1574,12 @@
         "enabled": {
           "type": "boolean",
           "description": "Run the create-network-class hook job",
-          "default": false
+          "default": true
         },
         "title": {
           "type": "string",
           "description": "Human-friendly short title for the NetworkClass. Required when enabled — the fulfillment service rejects NetworkClass creation without one.",
-          "default": ""
+          "default": "CUDN Network Implementation"
         },
         "description": {
           "type": "string",
@@ -1594,7 +1594,7 @@
         "fabricManager": {
           "type": "string",
           "description": "fabricManager name to set on the NetworkClass (must match a manager already registered via operator.networkManagers.fabricManagers)",
-          "default": ""
+          "default": "cudn_net"
         },
         "isDefault": {
           "type": "boolean",

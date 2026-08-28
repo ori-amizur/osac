@@ -1,7 +1,11 @@
 """Minimal mock HTTP server for publish_templates role tests.
 
 Simulates the fulfillment-service private API list/create/update endpoints
-for cluster_templates, compute_instance_templates, and network_classes.
+for cluster_templates, compute_instance_templates, and baremetal_instance_templates.
+Any path not explicitly listed here falls back to the scenario's default response, so
+new endpoints (e.g. a new template type) work against the "empty"/"no_items_key"
+scenarios automatically -- only "populated" needs an explicit entry to be treated as
+an existing item.
 
 Usage:
     python mock_api_server.py [port] [scenario]
@@ -31,10 +35,10 @@ POPULATED_RESPONSES = {
         "total": 1,
         "items": [{"id": "existing-ci-template", "title": "Test CI"}],
     },
-    "/api/private/v1/network_classes": {
+    "/api/private/v1/baremetal_instance_templates": {
         "size": 1,
         "total": 1,
-        "items": [{"id": "existing-network-class", "metadata": {"name": "cudn-net"}, "title": "Test NC"}],
+        "items": [{"id": "existing-bm-template", "title": "Test BM"}],
     },
 }
 

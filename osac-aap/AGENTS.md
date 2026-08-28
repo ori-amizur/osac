@@ -80,7 +80,9 @@ osac-aap/
 
 Each template role in `osac.templates` declares its metadata in `meta/osac.yaml`. The fields present depend on `template_type` (`network`, `compute_instance`, `bare_metal_instance`, `storage_provider`, or `cluster`) — see the exact structure for each type below.
 
-Running `playbook_osac_config_as_code.yml` publishes these as NetworkClass/ComputeClass resources in Kubernetes.
+Running `playbook_osac_config_as_code.yml` publishes cluster/compute-instance/bare-metal-instance
+templates as ComputeClass-family resources in Kubernetes. Network templates are not published this
+way — NetworkClass creation happens at install time via the osac-installer Helm chart instead.
 
 ### Template Type-Specific `meta/osac.yaml` Structures
 
@@ -95,8 +97,10 @@ capabilities:
   supports_ipv6: true
   supports_dual_stack: true
 ```
-NetworkClass identity (`metadata.name`) is derived from `fabric_manager`, falling back to
-`k8s_manager`, unless the role sets an explicit `name:` at the top of `osac.yaml`.
+These fields are informational for the role's own provisioning logic, not published anywhere —
+registering `fabric_manager`/`k8s_manager` as a selectable NetworkClass manager happens in
+osac-operator's `networkManagers` chart values, and the deployment's actual NetworkClass is
+created at install time by osac-installer, keyed off the same manager name.
 `implementation_strategy` is no longer read here — it was reserved on the NetworkClass/
 VirtualNetwork protos once the fabric_manager/k8s_manager dispatcher became the sole
 routing mechanism (see `playbook_osac_create_virtual_network.yml`, which now reads the
@@ -198,7 +202,7 @@ Shared utilities imported by template roles:
 - `metallb_ingress` — MetalLB ingress setup
 - `nmstate_config` — Network configuration with nmstate
 - `openstack_bm_node` — OpenStack bare metal node preflight and preparation
-- `publish_templates` — Registers template metadata as NetworkClass/ComputeClass
+- `publish_templates` — Registers template metadata as ComputeClass-family resources
 - `retrieve_kubeconfig` — Kubeconfig retrieval
 - `storage_provider` — Storage provider utilities
 - `tenant_storage_class` — StorageClass discovery for tenants
@@ -399,7 +403,7 @@ Use this table to go directly to the right file for common patterns:
 | Add shared utility | `collections/ansible_collections/osac/service/roles/<utility>/` |
 | Add integration test | `tests/integration/targets/<test_name>/` |
 | Fix CR status updates | Template role's main task file (look for `kubernetes.core.k8s` with `status:` key) |
-| Add new capability | `meta/osac.yaml` in template role, then run `playbook_osac_config_as_code.yml` |
+| Add new capability | `meta/osac.yaml` in template role, then run `playbook_osac_config_as_code.yml` (does not apply to `template_type: network` -- its `capabilities` are informational only, never published) |
 
 ## Security Guidelines
 
@@ -493,7 +497,7 @@ Note: The test scripts manage cluster lifecycle automatically. To preserve clust
 When making changes that affect other OSAC components:
 
 1. **New CR fields in osac-operator** → Update playbooks to consume new fields
-2. **New template capabilities** → Run `playbook_osac_config_as_code.yml` to publish NetworkClass/ComputeClass
+2. **New cluster, compute-instance, or bare-metal-instance template capabilities** → Run `playbook_osac_config_as_code.yml` to publish ComputeClass-family resources
 3. **New AAP job templates** → Update osac-operator to trigger new jobs
 4. **Collection updates** → Update `collections/requirements.yml` and re-vendor
 

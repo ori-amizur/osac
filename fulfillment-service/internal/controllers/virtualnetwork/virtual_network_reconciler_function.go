@@ -471,5 +471,27 @@ func (t *task) buildSpec() osacv1alpha1.VirtualNetworkSpec {
 		spec.IPv6CIDR = t.virtualNetwork.GetSpec().GetIpv6Cidr()
 	}
 
+	spec.NetworkingType = networkingTypeToCRD(t.virtualNetwork.GetSpec().GetNetworkingType())
+
 	return spec
+}
+
+func networkingTypeToCRD(
+	networkingType privatev1.VirtualNetworkNetworkingType,
+) osacv1alpha1.VirtualNetworkNetworkingType {
+	switch effectiveNetworkingType(networkingType) {
+	case privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY:
+		return osacv1alpha1.VirtualNetworkNetworkingTypeSecondary
+	default:
+		return osacv1alpha1.VirtualNetworkNetworkingTypePrimary
+	}
+}
+
+func effectiveNetworkingType(
+	networkingType privatev1.VirtualNetworkNetworkingType,
+) privatev1.VirtualNetworkNetworkingType {
+	if networkingType == privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_UNSPECIFIED {
+		return privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_PRIMARY
+	}
+	return networkingType
 }

@@ -1124,6 +1124,99 @@ var _ = Describe("Private virtual networks server", func() {
 			})
 		})
 
+		Context("VN-VAL-13: networking_type defaulting on Create", func() {
+			It("defaults UNSPECIFIED to PRIMARY", func() {
+				nc := createNetworkClass(ctx, privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY)
+
+				vn := privatev1.VirtualNetwork_builder{
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						Ipv4Cidr:     new("10.0.0.0/16"),
+						NetworkClass: privatev1.NetworkClassReference_builder{Id: nc.GetId()}.Build(),
+						Region:       "us-west-1",
+					}.Build(),
+				}.Build()
+
+				err := server.validateVirtualNetwork(ctx, vn, nil)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(vn.GetSpec().GetNetworkingType()).To(Equal(
+					privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_PRIMARY))
+			})
+
+			It("preserves explicit SECONDARY", func() {
+				nc := createNetworkClass(ctx, privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY)
+
+				vn := privatev1.VirtualNetwork_builder{
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						Ipv4Cidr:       new("10.0.0.0/16"),
+						NetworkClass:   privatev1.NetworkClassReference_builder{Id: nc.GetId()}.Build(),
+						Region:         "us-west-1",
+						NetworkingType: privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY,
+					}.Build(),
+				}.Build()
+
+				err := server.validateVirtualNetwork(ctx, vn, nil)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(vn.GetSpec().GetNetworkingType()).To(Equal(
+					privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY))
+			})
+		})
+
+		Context("VN-VAL-14: networking_type immutability on Update", func() {
+			It("prevents networking_type modification", func() {
+				existing := privatev1.VirtualNetwork_builder{
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						Region:         "us-west-1",
+						Ipv4Cidr:       new("10.0.0.0/16"),
+						NetworkClass:   privatev1.NetworkClassReference_builder{Id: "test-class"}.Build(),
+						NetworkingType: privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_PRIMARY,
+					}.Build(),
+				}.Build()
+
+				updated := privatev1.VirtualNetwork_builder{
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						Region:         "us-west-1",
+						Ipv4Cidr:       new("10.0.0.0/16"),
+						NetworkClass:   privatev1.NetworkClassReference_builder{Id: "test-class"}.Build(),
+						NetworkingType: privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY,
+					}.Build(),
+				}.Build()
+
+				err := server.validateVirtualNetwork(ctx, updated, existing)
+				Expect(err).To(HaveOccurred())
+				status, ok := grpcstatus.FromError(err)
+				Expect(ok).To(BeTrue())
+				Expect(status.Code()).To(Equal(grpccodes.InvalidArgument))
+				Expect(err.Error()).To(ContainSubstring("networking_type"))
+				Expect(err.Error()).To(ContainSubstring("immutable"))
+			})
+
+			It("preserves networking_type when omitted on Update", func() {
+				nc := createNetworkClass(ctx, privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY)
+
+				existing := privatev1.VirtualNetwork_builder{
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						Region:         "us-west-1",
+						Ipv4Cidr:       new("10.0.0.0/16"),
+						NetworkClass:   privatev1.NetworkClassReference_builder{Id: nc.GetId()}.Build(),
+						NetworkingType: privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY,
+					}.Build(),
+				}.Build()
+
+				updated := privatev1.VirtualNetwork_builder{
+					Spec: privatev1.VirtualNetworkSpec_builder{
+						Region:       "us-west-1",
+						Ipv4Cidr:     new("10.0.0.0/16"),
+						NetworkClass: privatev1.NetworkClassReference_builder{Id: nc.GetId()}.Build(),
+					}.Build(),
+				}.Build()
+
+				err := server.validateVirtualNetwork(ctx, updated, existing)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(updated.GetSpec().GetNetworkingType()).To(Equal(
+					privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY))
+			})
+		})
+
 		Context("Round-trip: server.Update preserves CIDRs", func() {
 			It("preserves CIDRs when Update omits CIDR fields (sec-1 regression)", func() {
 				nc := createNetworkClass(ctx, privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY)

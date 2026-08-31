@@ -46,7 +46,25 @@ type VirtualNetworkSpec struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="networkClass is immutable"
 	NetworkClass string `json:"networkClass,omitempty"`
+
+	// NetworkingType selects the VirtualNetwork connectivity model. When omitted, defaults to Primary.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=Primary;Secondary
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="networkingType is immutable"
+	NetworkingType VirtualNetworkNetworkingType `json:"networkingType,omitempty"`
 }
+
+// VirtualNetworkNetworkingType is a valid value for .spec.networkingType
+// +kubebuilder:validation:Enum=Primary;Secondary
+type VirtualNetworkNetworkingType string
+
+const (
+	// VirtualNetworkNetworkingTypePrimary is OSAC's existing VirtualNetwork networking model.
+	VirtualNetworkNetworkingTypePrimary VirtualNetworkNetworkingType = "Primary"
+
+	// VirtualNetworkNetworkingTypeSecondary is the router-pod / Secondary UDN networking model.
+	VirtualNetworkNetworkingTypeSecondary VirtualNetworkNetworkingType = "Secondary"
+)
 
 // VirtualNetworkPhaseType is a valid value for .status.phase
 // +kubebuilder:validation:Enum=Progressing;Ready;Failed;Deleting

@@ -15,6 +15,7 @@ syntax = "proto3";
 
 package osac.private.v1;
 
+import "buf/validate/validate.proto";
 import "google/api/field_behavior.proto";
 import "osac/private/v1/metadata_type.proto";
 import "osac/private/v1/network_class_type.proto";
@@ -98,6 +99,26 @@ message VirtualNetworkSpec {
   // Reserved field numbers for removed fields (do not reuse).
   reserved 5, 6;
   reserved "capabilities", "implementation_strategy";
+
+  // Networking model for this VirtualNetwork. When omitted or UNSPECIFIED, defaults to PRIMARY
+  // (OSAC's existing per-subnet connectivity model). SECONDARY opts into the router-pod model.
+  // Immutable after creation.
+  VirtualNetworkNetworkingType networking_type = 7 [
+    (google.api.field_behavior) = IMMUTABLE,
+    (buf.validate.field).enum.defined_only = true
+  ];
+}
+
+// Connectivity model for a VirtualNetwork.
+enum VirtualNetworkNetworkingType {
+  // Defaults to PRIMARY when omitted on create.
+  VIRTUAL_NETWORK_NETWORKING_TYPE_UNSPECIFIED = 0;
+
+  // OSAC's existing VirtualNetwork networking model (per-subnet Primary UDN attachment).
+  VIRTUAL_NETWORK_NETWORKING_TYPE_PRIMARY = 1;
+
+  // Router-pod model: one router pod per VirtualNetwork, multi-homed across subnets via Secondary UDNs.
+  VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY = 2;
 }
 
 // Represents the current operational state of a VirtualNetwork.

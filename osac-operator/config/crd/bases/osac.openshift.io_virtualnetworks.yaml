@@ -71,6 +71,20 @@ spec:
                 x-kubernetes-validations:
                 - message: networkClass is immutable
                   rule: self == oldSelf
+              networkingType:
+                allOf:
+                - enum:
+                  - Primary
+                  - Secondary
+                - enum:
+                  - Primary
+                  - Secondary
+                description: NetworkingType selects the VirtualNetwork connectivity
+                  model. When omitted, defaults to Primary.
+                type: string
+                x-kubernetes-validations:
+                - message: networkingType is immutable
+                  rule: self == oldSelf
               region:
                 description: Region is the cloud region where this VirtualNetwork
                   will be provisioned

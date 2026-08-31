@@ -259,7 +259,23 @@ func (s *PrivateVirtualNetworksServer) validateVirtualNetwork(ctx context.Contex
 		}
 	}
 
+	// VN-VAL-13: Default networking_type to PRIMARY when omitted on Create.
+	if existingVN == nil &&
+		spec.GetNetworkingType() == privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_UNSPECIFIED {
+		spec.SetNetworkingType(privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_PRIMARY)
+	}
+
 	return
+}
+
+// effectiveNetworkingType treats UNSPECIFIED as PRIMARY.
+func effectiveNetworkingType(
+	networkingType privatev1.VirtualNetworkNetworkingType,
+) privatev1.VirtualNetworkNetworkingType {
+	if networkingType == privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_UNSPECIFIED {
+		return privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_PRIMARY
+	}
+	return networkingType
 }
 
 // validateImmutableFields validates that immutable fields have not been changed.
@@ -311,6 +327,17 @@ func validateImmutableFields(newVN *privatev1.VirtualNetwork, existingVN *privat
 		if err := field.preserveAndValidate(); err != nil {
 			return err
 		}
+	}
+
+	// VN-VAL-14: Preserve and check immutable networking_type field.
+	if newSpec.GetNetworkingType() == privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_UNSPECIFIED {
+		newSpec.SetNetworkingType(existingSpec.GetNetworkingType())
+	}
+	if effectiveNetworkingType(newSpec.GetNetworkingType()) != effectiveNetworkingType(existingSpec.GetNetworkingType()) {
+		return grpcstatus.Errorf(grpccodes.InvalidArgument,
+			"field 'spec.networking_type' is immutable and cannot be changed from '%s' to '%s'",
+			effectiveNetworkingType(existingSpec.GetNetworkingType()).String(),
+			effectiveNetworkingType(newSpec.GetNetworkingType()).String())
 	}
 
 	return nil

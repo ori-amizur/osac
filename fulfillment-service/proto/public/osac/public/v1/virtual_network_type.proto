@@ -77,6 +77,22 @@ message VirtualNetworkSpec {
   // Reserved field numbers for removed fields (do not reuse).
   reserved 5;
   reserved "capabilities";
+
+  // Networking model for this VirtualNetwork. When omitted, defaults to PRIMARY (OSAC's existing model).
+  // SECONDARY opts into the router-pod model. Immutable after creation.
+  VirtualNetworkNetworkingType networking_type = 6 [(google.api.field_behavior) = IMMUTABLE];
+}
+
+// Connectivity model for a VirtualNetwork.
+enum VirtualNetworkNetworkingType {
+  // Defaults to PRIMARY when omitted on create.
+  VIRTUAL_NETWORK_NETWORKING_TYPE_UNSPECIFIED = 0;
+
+  // OSAC's existing VirtualNetwork networking model (per-subnet Primary UDN attachment).
+  VIRTUAL_NETWORK_NETWORKING_TYPE_PRIMARY = 1;
+
+  // Router-pod model: one router pod per VirtualNetwork, multi-homed across subnets via Secondary UDNs.
+  VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY = 2;
 }
 
 // Represents the current operational state of a VirtualNetwork.

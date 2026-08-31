@@ -66,6 +66,32 @@ var _ = Describe("buildSpec", func() {
 		Expect(spec.IPv6CIDR).To(Equal(ipv6))
 	})
 
+	It("Maps networking_type to CRD values", func() {
+		ipv4 := "10.0.0.0/16"
+		region := "us-east-1"
+		networkClass := "cudn-net"
+
+		task := &task{
+			virtualNetwork: privatev1.VirtualNetwork_builder{
+				Id: "vnet-test-secondary",
+				Spec: privatev1.VirtualNetworkSpec_builder{
+					Region:         region,
+					NetworkClass:   privatev1.NetworkClassReference_builder{Name: networkClass}.Build(),
+					Ipv4Cidr:       &ipv4,
+					NetworkingType: privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY,
+				}.Build(),
+			}.Build(),
+		}
+
+		spec := task.buildSpec()
+		Expect(spec.NetworkingType).To(Equal(osacv1alpha1.VirtualNetworkNetworkingTypeSecondary))
+
+		task.virtualNetwork.GetSpec().SetNetworkingType(
+			privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_UNSPECIFIED)
+		spec = task.buildSpec()
+		Expect(spec.NetworkingType).To(Equal(osacv1alpha1.VirtualNetworkNetworkingTypePrimary))
+	})
+
 	It("Includes only IPv4 when IPv6 is not present", func() {
 		ipv4 := "192.168.0.0/16"
 		region := "eu-west-1"

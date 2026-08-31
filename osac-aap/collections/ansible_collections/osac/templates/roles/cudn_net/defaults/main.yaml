@@ -6,3 +6,13 @@ default_subnet_labels:
 # Layer2 defaults
 default_layer2_role: Primary
 default_ipam_lifecycle: Persistent
+
+# Router pod defaults for Secondary VirtualNetworks. router_pod_image is a
+# placeholder pending the real agent image (see Story 1.04 of the
+# secondary-virtualnetwork-router-pod enhancement) -- swapping it in only
+# requires overriding these two defaults, no task-file changes.
+router_pod_name: router
+router_pod_image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+router_pod_command:
+  - sleep
+  - infinity

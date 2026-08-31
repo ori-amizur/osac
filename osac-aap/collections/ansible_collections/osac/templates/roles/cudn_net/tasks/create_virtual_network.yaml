@@ -1,6 +1,14 @@
 ---
-# VirtualNetwork is a logical grouping - actual network provisioning happens in Subnet
-# This stub logs information and returns success
+# For networkingType: Primary (the default), VirtualNetwork is a logical grouping -
+# actual network provisioning happens in Subnet, and this task file only logs
+# information and returns success.
+#
+# For networkingType: Secondary, this provisions the router-pod foundation: one
+# namespace and one router pod Deployment per VirtualNetwork (see design.md's
+# "Router pod and namespace provisioning for Secondary VirtualNetworks"). The
+# Deployment's container is a placeholder for now — the ConfigMap-watching agent
+# and subnet interfaces are added by later stories; this story only establishes
+# the namespace + pod skeleton with the default cluster-network interface.
 
 - name: Include get remote cluster kubeconfig
   ansible.builtin.include_role:
@@ -16,6 +24,7 @@
     vn_network_class: "{{ virtual_network.spec.networkClass }}"
     vn_region: "{{ virtual_network.spec.region }}"
     vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
+    vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
 
 - name: Display VirtualNetwork information
   ansible.builtin.debug:
@@ -23,10 +32,72 @@
       - "VirtualNetwork '{{ vn_name }}' processed successfully"
       - "Namespace: {{ vn_namespace }}"
       - "NetworkClass: {{ vn_network_class }}"
+      - "Networking type: {{ vn_networking_type }}"
       - "Region: {{ vn_region }}"
       - "Tenant ID: {{ vn_tenant_id }}"
       - "IPv4 CIDR: {{ vn_ipv4_cidr | default('not configured') }}"
       - "IPv6 CIDR: {{ vn_ipv6_cidr | default('not configured') }}"
       - ""
-      - "NOTE: VirtualNetwork is a logical grouping"
+      - "NOTE: for networkingType Primary, VirtualNetwork is a logical grouping"
       - "Actual network provisioning happens when Subnet resources are created"
+
+- name: Provision router pod namespace and Deployment for Secondary VirtualNetworks
+  when: vn_networking_type == 'Secondary'
+  block:
+    - name: Build router pod namespace labels
+      ansible.builtin.set_fact:
+        router_pod_namespace_labels: >-
+          {{
+            default_subnet_labels | combine(
+              {'osac.openshift.io/tenant': vn_tenant_id} if vn_tenant_id else {}
+            ) | combine(
+              {'osac.openshift.io/virtual-network': vn_name}
+            )
+          }}
+
+    - name: Create Namespace for the router pod
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ vn_name }}"
+            labels: "{{ router_pod_namespace_labels }}"
+      register: router_pod_namespace_result
+
+    - name: Create router pod Deployment
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ router_pod_name }}"
+            namespace: "{{ vn_name }}"
+            labels: "{{ default_subnet_labels | combine({'osac.openshift.io/router-pod': 'true'}) }}"
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                osac.openshift.io/router-pod: "true"
+                osac.openshift.io/virtual-network: "{{ vn_name }}"
+            template:
+              metadata:
+                labels:
+                  osac.openshift.io/router-pod: "true"
+                  osac.openshift.io/virtual-network: "{{ vn_name }}"
+              spec:
+                containers:
+                  - name: router
+                    image: "{{ router_pod_image }}"
+                    command: "{{ router_pod_command }}"
+      register: router_pod_deployment_result
+
+    - name: Display router pod provisioning result
+      ansible.builtin.debug:
+        msg:
+          - "Namespace '{{ vn_name }}' created/updated: {{ router_pod_namespace_result.changed | default(false) }}"
+          - "Router pod Deployment '{{ router_pod_name }}' created/updated: {{ router_pod_deployment_result.changed | default(false) }}"

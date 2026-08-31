@@ -41,6 +41,7 @@ ROLE_TESTS=(
   "config_as_code_pod_specs"
   "finalizer"
   "lease"
+  "virtual_network_secondary_router_pod"
 )
 
 ROLE_SCENARIO_TESTS=(

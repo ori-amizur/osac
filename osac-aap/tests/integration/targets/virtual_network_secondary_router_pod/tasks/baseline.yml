@@ -1,0 +1,175 @@
+---
+# Integration test for cudn_net's VirtualNetwork router-pod provisioning
+# (networkingType: Secondary). Exercises the role's create/delete task files
+# directly, the same way playbook_osac_create_virtual_network.yml /
+# playbook_osac_delete_virtual_network.yml would after resolving
+# implementation_strategy to cudn_net.
+
+# ── Test 1: Secondary VirtualNetwork provisions namespace + router pod ──
+- name: "VirtualNetwork Secondary router pod - Test create"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_vn_name: vn-secondary-router-pod-test
+    virtual_network_name: "{{ test_vn_name }}"
+    # Matches cudn_net's router_pod_name default (defaults/main.yaml) -- asserted
+    # directly rather than relying on the role-default var leaking into this scope.
+    expected_router_pod_name: router
+
+  tasks:
+    - name: Test Secondary VirtualNetwork provisioning
+      block:
+        - name: Set Secondary VirtualNetwork fact
+          ansible.builtin.set_fact:
+            virtual_network:
+              metadata:
+                name: "{{ test_vn_name }}"
+                namespace: osac-networking
+                annotations:
+                  osac.openshift.io/tenant: test-tenant
+              spec:
+                region: test-region
+                networkClass: cudn-net
+                networkingType: Secondary
+
+        - name: Run cudn_net create_virtual_network
+          ansible.builtin.include_role:
+            name: osac.templates.cudn_net
+            tasks_from: create_virtual_network
+
+        - name: Get the router pod namespace
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_vn_name }}"
+          register: router_namespace_result
+
+        - name: Assert the router pod namespace was created
+          ansible.builtin.assert:
+            that:
+              - router_namespace_result.resources | length == 1
+              - router_namespace_result.resources[0].metadata.labels['osac.openshift.io/tenant'] == 'test-tenant'
+              - router_namespace_result.resources[0].metadata.labels['osac.openshift.io/virtual-network'] == test_vn_name
+            fail_msg: "Router pod namespace not created correctly"
+            success_msg: "Router pod namespace: passed"
+
+        - name: Get the router pod Deployment
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            namespace: "{{ test_vn_name }}"
+            name: "{{ expected_router_pod_name }}"
+          register: router_deployment_result
+
+        - name: Assert the router pod Deployment was created with no subnet attachments
+          ansible.builtin.assert:
+            that:
+              - router_deployment_result.resources | length == 1
+              - router_deployment_result.resources[0].spec.replicas == 1
+              - "'k8s.v1.cni.cncf.io/networks' not in (router_deployment_result.resources[0].spec.template.metadata.annotations | default({}))"
+            fail_msg: "Router pod Deployment not created correctly, or unexpectedly has subnet attachments"
+            success_msg: "Router pod Deployment: passed"
+
+      always:
+        - name: Cleanup -- delete router pod namespace
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_vn_name }}"
+          failed_when: false
+
+# ── Test 2: Deleting a Secondary VirtualNetwork removes its namespace ──
+- name: "VirtualNetwork Secondary router pod - Test delete"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_vn_name: vn-secondary-router-pod-delete-test
+    virtual_network_name: "{{ test_vn_name }}"
+
+  tasks:
+    - name: Set Secondary VirtualNetwork fact
+      ansible.builtin.set_fact:
+        virtual_network:
+          metadata:
+            name: "{{ test_vn_name }}"
+            namespace: osac-networking
+            annotations:
+              osac.openshift.io/tenant: test-tenant
+          spec:
+            region: test-region
+            networkClass: cudn-net
+            networkingType: Secondary
+
+    - name: Run cudn_net create_virtual_network
+      ansible.builtin.include_role:
+        name: osac.templates.cudn_net
+        tasks_from: create_virtual_network
+
+    - name: Run cudn_net delete_virtual_network
+      ansible.builtin.include_role:
+        name: osac.templates.cudn_net
+        tasks_from: delete_virtual_network
+
+    - name: Get the router pod namespace after deletion
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ test_vn_name }}"
+      register: deleted_namespace_result
+
+    - name: Assert the router pod namespace was deleted (or is terminating)
+      ansible.builtin.assert:
+        that:
+          - >-
+            deleted_namespace_result.resources | length == 0
+            or deleted_namespace_result.resources[0].status.phase == 'Terminating'
+        fail_msg: "Router pod namespace still present after VirtualNetwork deletion"
+        success_msg: "Router pod namespace deletion: passed"
+
+# ── Test 3: Primary VirtualNetwork provisions nothing (regression check) ──
+- name: "VirtualNetwork Secondary router pod - Test Primary is unaffected"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_vn_name: vn-primary-no-router-pod-test
+    virtual_network_name: "{{ test_vn_name }}"
+
+  tasks:
+    - name: Set Primary VirtualNetwork fact
+      ansible.builtin.set_fact:
+        virtual_network:
+          metadata:
+            name: "{{ test_vn_name }}"
+            namespace: osac-networking
+            annotations:
+              osac.openshift.io/tenant: test-tenant
+          spec:
+            region: test-region
+            networkClass: cudn-net
+            networkingType: Primary
+
+    - name: Run cudn_net create_virtual_network
+      ansible.builtin.include_role:
+        name: osac.templates.cudn_net
+        tasks_from: create_virtual_network
+
+    - name: Get any namespace matching the Primary VirtualNetwork's name
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ test_vn_name }}"
+      register: primary_namespace_result
+
+    - name: Assert no namespace was created for a Primary VirtualNetwork
+      ansible.builtin.assert:
+        that:
+          - primary_namespace_result.resources | length == 0
+        fail_msg: "A namespace was unexpectedly created for a Primary VirtualNetwork"
+        success_msg: "Primary VirtualNetwork unaffected: passed"

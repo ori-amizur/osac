@@ -51,6 +51,15 @@ const (
 	// onto a Subnet CR, so AAP playbooks can branch on it without an extra lookup.
 	osacNetworkingTypeAnnotation = osacPrefix + "/networking-type"
 
+	// osacFabricManagerConfiguredAnnotation records ("true"/"false") whether a
+	// VirtualNetwork's NetworkClass has a fabric manager configured, resolved once the
+	// dispatch plan is known. Story 1.05 of the secondary-virtualnetwork-router-pod
+	// enhancement: this is what future fabric-side provisioning (bare-metal transit
+	// interface) gates on, so it doesn't need to happen every time — see design.md's
+	// Open Question 7 (an existing NetworkClass with only k8sManager set already
+	// represents "no fabric manager"; no new NetworkClass field was needed).
+	osacFabricManagerConfiguredAnnotation = osacPrefix + "/fabric-manager-configured"
+
 	// defaultExternalIPPoolImplementationStrategy is the fallback strategy when none is specified.
 	// Used by ExternalIPPool (from its own spec) and ExternalIP (inherited from parent pool).
 	defaultExternalIPPoolImplementationStrategy = "metallb-l2"

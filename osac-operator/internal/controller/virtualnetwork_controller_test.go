@@ -824,6 +824,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			fakeDiscoveryClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				newFabricManagerConfigMap("fm-netris", "osac", "netris"),
 				newFabricManagerConfigMap("fm-netris-initial", "osac", "netris-initial"),
+				newK8sManagerConfigMap("km-cudn-net", "osac", "cudn_net", "ipv4"),
 			).Build()
 		})
 
@@ -845,6 +846,50 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			updated := &osacv1alpha1.VirtualNetwork{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updated)).To(Succeed())
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("netris"))
+		})
+
+		It("records fabric-manager-configured=true when the NetworkClass has a fabricManager (Story 1.05 AC3)", func() {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-fabric", FabricManager: ptr.To("netris")}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			vnet.Spec.NetworkClass = "nc-fabric"
+			Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace},
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.VirtualNetwork{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updated)).To(Succeed())
+			Expect(updated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("true"))
+		})
+
+		It("records fabric-manager-configured=false when the NetworkClass has only a k8sManager (Story 1.05 AC3)", func() {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			k8sManagerName := "cudn_net"
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-k8s-only", K8SManager: &k8sManagerName}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			vnet.Spec.NetworkClass = "nc-k8s-only"
+			Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace},
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.VirtualNetwork{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updated)).To(Succeed())
+			// K8sFallback: a K8SManager-only NetworkClass still resolves an implementation
+			// strategy (via K8sTarget), it's just not a fabric one.
+			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("cudn_net"))
+			Expect(updated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("false"))
 		})
 
 		It("requeues and sets a blocked condition when the NetworkClass has no manager configured (no legacy fallback)", func() {

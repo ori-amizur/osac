@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -183,14 +184,35 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
 	}
 
-	// Add implementation-strategy annotation if not present or different
-	// This allows AAP playbooks to select the appropriate role without doing lookups
+	// AC3 (Story 1.05): record whether this VirtualNetwork's NetworkClass has a fabric
+	// manager configured, so future fabric-side provisioning (Epic 4/5's bare-metal
+	// transit interface) can gate on it without re-resolving the dispatch plan.
+	// FabricTarget has a nil-receiver-safe implementation (returns nil), so this is
+	// safe even in the legacy/no-dispatcher path where plan is nil.
+	plan, err := resolveDispatchPlan(ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	fabricManagerConfigured := strconv.FormatBool(plan.FabricTarget() != nil)
+
+	// Add implementation-strategy/fabric-manager-configured annotations if not present
+	// or different. This allows AAP playbooks to select the appropriate role without
+	// doing lookups.
 	if vnet.Annotations == nil {
 		vnet.Annotations = make(map[string]string)
 	}
+	annotationsChanged := false
 	if vnet.Annotations[osacImplementationStrategyAnnotation] != implementationStrategy {
 		vnet.Annotations[osacImplementationStrategyAnnotation] = implementationStrategy
-		log.Info("setting implementation-strategy annotation", "strategy", implementationStrategy)
+		annotationsChanged = true
+	}
+	if vnet.Annotations[osacFabricManagerConfiguredAnnotation] != fabricManagerConfigured {
+		vnet.Annotations[osacFabricManagerConfiguredAnnotation] = fabricManagerConfigured
+		annotationsChanged = true
+	}
+	if annotationsChanged {
+		log.Info("setting implementation-strategy/fabric-manager-configured annotations",
+			"strategy", implementationStrategy, "fabricManagerConfigured", fabricManagerConfigured)
 		if err := r.Update(ctx, vnet); err != nil {
 			return ctrl.Result{}, err
 		}

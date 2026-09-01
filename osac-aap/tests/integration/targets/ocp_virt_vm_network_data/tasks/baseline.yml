@@ -205,3 +205,152 @@
             kind: Namespace
             name: "{{ test_namespace }}"
           failed_when: false
+
+# ── Test 3: dual-attached VM (Primary placement + one additional Secondary VN) ──
+- name: "Ocp_virt_vm network_data - Test dual-attached VM"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_namespace: ocp-virt-vm-network-data-dual-test
+    primary_subnet_name: subnet-network-data-dual-primary
+    additional_subnet_name: subnet-network-data-dual-additional
+    additional_vn_name: vn-network-data-dual-additional
+
+  tasks:
+    - name: Test dual-attached VM network-config and NIC injection
+      block:
+        - name: Create the test namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ test_namespace }}"
+
+        - name: Create the Primary-type placement Subnet fixture (networkAttachments[0])
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: osac.openshift.io/v1alpha1
+              kind: Subnet
+              metadata:
+                name: "{{ primary_subnet_name }}"
+                namespace: "{{ test_namespace }}"
+                # networking-type omitted -- defaults to Primary
+              spec:
+                virtualNetwork: test-vn-dual-primary-uuid
+                ipv4Cidr: 10.6.1.0/24
+
+        - name: Create the additional attachment's parent VirtualNetwork fixture
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: osac.openshift.io/v1alpha1
+              kind: VirtualNetwork
+              metadata:
+                name: "{{ additional_vn_name }}"
+                namespace: "{{ test_namespace }}"
+              spec:
+                region: test-region
+                ipv4Cidr: 10.6.128.0/17
+
+        - name: Create the additional (Secondary-type) Subnet fixture (networkAttachments[1])
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: osac.openshift.io/v1alpha1
+              kind: Subnet
+              metadata:
+                name: "{{ additional_subnet_name }}"
+                namespace: "{{ test_namespace }}"
+                annotations:
+                  osac.openshift.io/networking-type: Secondary
+                  osac.openshift.io/virtual-network-name: "{{ additional_vn_name }}"
+              spec:
+                virtualNetwork: test-vn-dual-additional-uuid
+                ipv4Cidr: 10.6.130.0/24
+
+        - name: Set ComputeInstance facts for a dual-attached VM
+          ansible.builtin.set_fact:
+            compute_instance:
+              metadata:
+                namespace: "{{ test_namespace }}"
+              spec:
+                networkAttachments:
+                  - subnetRef: "{{ primary_subnet_name }}"
+                  - subnetRef: "{{ additional_subnet_name }}"
+            vm_subnet_ref: "{{ primary_subnet_name }}"
+            compute_instance_target_namespace: "{{ primary_subnet_name }}"
+            # Mimics create_build_spec.yaml's default output for a Primary-type placement
+            # attachment -- expected to be left untouched by this dual-attachment scenario.
+            vm_template_spec:
+              domain:
+                devices:
+                  disks:
+                    - name: root-disk
+                      disk:
+                        bus: virtio
+                  interfaces:
+                    - name: default
+                      binding:
+                        name: l2bridge
+              networks:
+                - name: default
+                  pod: {}
+
+        - name: Run ocp_virt_vm create_network_data
+          ansible.builtin.include_role:
+            name: osac.templates.ocp_virt_vm
+            tasks_from: create_network_data.yaml
+
+        - name: Parse the generated network-config
+          ansible.builtin.set_fact:
+            parsed_network_data: "{{ vm_network_data | from_yaml }}"
+
+        - name: Assert networkAttachments[0]'s placement interface/network was left untouched
+          ansible.builtin.assert:
+            that:
+              - vm_template_spec.networks | length == 2
+              - vm_template_spec.networks[0].name == 'default'
+              - "'pod' in vm_template_spec.networks[0]"
+              - vm_template_spec.domain.devices.interfaces | length == 2
+              - vm_template_spec.domain.devices.interfaces[0].name == 'default'
+              - vm_template_spec.domain.devices.interfaces[0].binding.name == 'l2bridge'
+            fail_msg: "networkAttachments[0]'s Primary-type placement interface/network was unexpectedly modified"
+            success_msg: "networkAttachments[0] left untouched: passed"
+
+        - name: Assert an additional Multus NIC was appended for networkAttachments[1]
+          ansible.builtin.assert:
+            that:
+              - vm_template_spec.networks[1].name == 'net1'
+              - vm_template_spec.networks[1].multus.networkName == additional_subnet_name
+              - vm_template_spec.domain.devices.interfaces[1].name == 'net1'
+              - vm_template_spec.domain.devices.interfaces[1].bridge is defined
+              - "'binding' not in vm_template_spec.domain.devices.interfaces[1]"
+            fail_msg: "Additional Multus NIC was not correctly appended for networkAttachments[1]"
+            success_msg: "Additional Multus NIC appended: passed"
+
+        - name: Assert the additional attachment's cloud-init route is VN-CIDR-scoped and carries no DNS
+          ansible.builtin.assert:
+            that:
+              - parsed_network_data.network.config | length == 1
+              - parsed_network_data.network.config[0].name == 'eth1'
+              - parsed_network_data.network.config[0].subnets[0].routes[0].network == '10.6.128.0'
+              - parsed_network_data.network.config[0].subnets[0].routes[0].netmask == '255.255.128.0'
+              - parsed_network_data.network.config[0].subnets[0].routes[0].gateway == '10.6.130.1'
+              - "'dns_nameservers' not in parsed_network_data.network.config[0].subnets[0]"
+              - "'dns_search' not in parsed_network_data.network.config[0].subnets[0]"
+            fail_msg: "Additional attachment's cloud-init route was not correctly VN-CIDR-scoped, or unexpectedly carried DNS settings"
+            success_msg: "Additional attachment cloud-init route: passed"
+
+      always:
+        - name: Cleanup -- delete the test namespace
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_namespace }}"
+          failed_when: false

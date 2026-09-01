@@ -1,0 +1,75 @@
+---
+# Processes one additional (index > 0) networkAttachments entry, included in a loop from
+# create_network_data.yaml with `additional_attachment` set to the current
+# networkAttachments[N] item and `additional_attachment_index0` to its 0-based position
+# within networkAttachments[1:] (so 0 for networkAttachments[1], 1 for
+# networkAttachments[2], etc.).
+#
+# osac-operator's syncSecondaryVNLabels (computeinstance_controller.go) already rejects a
+# Primary-type subnet at this position before the AAP job is even triggered, so this
+# assumes every attachment reaching this file is Secondary-type.
+#
+# Appends (never replaces) a Multus NIC to vm_template_spec, named "net<N>" (N starting at
+# 1) to avoid colliding with networkAttachments[0]'s "default" interface, and appends a
+# VN-CIDR-scoped cloud-init route (no DNS -- networkAttachments[0]'s own DNS applies) to
+# vm_additional_network_configs. Guest interface naming ("eth<N>") is the same unconfirmed
+# assumption flagged for "eth0" in create_network_data.yaml.
+
+- name: Look up the additional attachment's Subnet
+  kubernetes.core.k8s_info:
+    api_version: osac.openshift.io/v1alpha1
+    kind: Subnet
+    name: "{{ additional_attachment.subnetRef }}"
+    namespace: "{{ compute_instance.metadata.namespace }}"
+  register: vm_additional_subnet_info
+
+- name: Build the additional NIC and cloud-init route
+  when: vm_additional_subnet_info.resources | length > 0
+  vars:
+    additional_subnet: "{{ vm_additional_subnet_info.resources[0] }}"
+    additional_nic_name: "net{{ additional_attachment_index0 + 1 }}"
+  block:
+    - name: Look up the additional attachment's parent VirtualNetwork (for its own CIDR)
+      kubernetes.core.k8s_info:
+        api_version: osac.openshift.io/v1alpha1
+        kind: VirtualNetwork
+        name: "{{ additional_subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] }}"
+        namespace: "{{ compute_instance.metadata.namespace }}"
+      register: vm_additional_vn_info
+
+    - name: Append the additional Multus interface to vm_template_spec
+      ansible.builtin.set_fact:
+        vm_template_spec: "{{ vm_template_spec | combine(additional_nic_patch, recursive=True, list_merge='append') }}"
+      vars:
+        # Bare name, not namespace-qualified -- same rationale as networkAttachments[0]'s
+        # own NAD reference above: the CUDN's namespaceSelector puts a real NAD in every
+        # namespace it matches, including this VM's own (possibly foreign) namespace.
+        additional_nic_patch:
+          networks:
+            - name: "{{ additional_nic_name }}"
+              multus:
+                networkName: "{{ additional_attachment.subnetRef }}"
+          domain:
+            devices:
+              interfaces:
+                - name: "{{ additional_nic_name }}"
+                  bridge: {}
+
+    - name: Append the additional attachment's cloud-init route (no DNS -- networkAttachments[0]'s own DNS applies)
+      when: vm_additional_vn_info.resources | length > 0
+      ansible.builtin.set_fact:
+        vm_additional_network_configs: >-
+          {{
+            vm_additional_network_configs + [{
+              'type': 'physical',
+              'name': 'eth' ~ (additional_attachment_index0 + 1),
+              'subnets': [{
+                'type': 'dhcp4',
+                'routes': [{
+                  'network': (vm_additional_vn_info.resources[0].spec.ipv4Cidr | ansible.netcommon.ipaddr('network')),
+                  'netmask': (vm_additional_vn_info.resources[0].spec.ipv4Cidr | ansible.netcommon.ipaddr('netmask')),
+                  'gateway': (additional_subnet.spec.ipv4Cidr | ansible.netcommon.ipaddr('1')).split('/')[0]
+                }]
+              }]
+            }]
+          }}

@@ -3277,4 +3277,283 @@ var _ = Describe("ComputeInstance Controller", func() {
 		})
 	})
 
+	Context("syncSecondaryVNLabels and releaseSecondaryVNLabels (dual-attached VMs)", func() {
+		const namespaceName = "default"
+		var (
+			reconciler *ComputeInstanceReconciler
+			ctx        context.Context
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			reconciler = NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{}, 0, 0, mcmanager.LocalCluster)
+		})
+
+		It("should reject a Primary-type subnet at networkAttachments[1]", func() {
+			const primarySubnetRef = "primary-subnet-reject"
+			const secondSubnetRef = "second-primary-subnet-reject"
+
+			primarySubnet := &osacv1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: primarySubnetRef, Namespace: namespaceName},
+				Spec:       osacv1alpha1.SubnetSpec{VirtualNetwork: "vnet-primary-reject", IPv4CIDR: "10.10.0.0/24"},
+			}
+			Expect(k8sClient.Create(ctx, primarySubnet)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, primarySubnet) }()
+
+			// networking-type annotation omitted -- defaults to Primary, exactly the
+			// invalid case: a second Primary UDN attachment is never valid.
+			secondSubnet := &osacv1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: secondSubnetRef, Namespace: namespaceName},
+				Spec:       osacv1alpha1.SubnetSpec{VirtualNetwork: "vnet-second-reject", IPv4CIDR: "10.11.0.0/24"},
+			}
+			Expect(k8sClient.Create(ctx, secondSubnet)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, secondSubnet) }()
+
+			Eventually(func() error {
+				return reconciler.Client.Get(ctx, types.NamespacedName{Name: secondSubnetRef, Namespace: namespaceName}, &osacv1alpha1.Subnet{})
+			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
+
+			instance := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-ci-reject-second-primary", Namespace: namespaceName},
+				Spec:       newTestComputeInstanceSpec("test_template"),
+			}
+			instance.Spec.NetworkAttachments = []osacv1alpha1.ComputeNetworkAttachment{
+				{SubnetRef: primarySubnetRef},
+				{SubnetRef: secondSubnetRef},
+			}
+
+			changed, err := reconciler.syncSecondaryVNLabels(ctx, instance, primarySubnetRef)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must reference a Secondary-type subnet"))
+			Expect(changed).To(BeFalse())
+		})
+
+		It("should stamp the secondary-vn label on the ComputeInstance and the target namespace, and be a no-op afterwards", func() {
+			const primarySubnetRef = "primary-subnet-stamp"
+			const secondarySubnetRef = "secondary-subnet-stamp"
+			const vnUUID = "vn-uuid-stamp"
+
+			targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: primarySubnetRef}}
+			Expect(k8sClient.Create(ctx, targetNS)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, targetNS) }()
+
+			secondarySubnet := &osacv1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secondarySubnetRef,
+					Namespace: namespaceName,
+					Annotations: map[string]string{
+						osacNetworkingTypeAnnotation: "Secondary",
+					},
+				},
+				Spec: osacv1alpha1.SubnetSpec{VirtualNetwork: vnUUID, IPv4CIDR: "10.40.0.0/24"},
+			}
+			Expect(k8sClient.Create(ctx, secondarySubnet)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, secondarySubnet) }()
+
+			Eventually(func() error {
+				return reconciler.Client.Get(ctx, types.NamespacedName{Name: secondarySubnetRef, Namespace: namespaceName}, &osacv1alpha1.Subnet{})
+			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
+
+			instance := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-ci-stamp-label", Namespace: namespaceName},
+				Spec:       newTestComputeInstanceSpec("test_template"),
+			}
+			instance.Spec.NetworkAttachments = []osacv1alpha1.ComputeNetworkAttachment{
+				{SubnetRef: primarySubnetRef},
+				{SubnetRef: secondarySubnetRef},
+			}
+
+			expectedLabel := secondaryVNLabelKey(vnUUID)
+
+			changed, err := reconciler.syncSecondaryVNLabels(ctx, instance, primarySubnetRef)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			Expect(instance.Labels).To(HaveKeyWithValue(expectedLabel, labelValueTrue))
+			Expect(instance.Annotations).To(HaveKeyWithValue(osacSecondaryVNLabelsSyncedAnnotation, labelValueTrue))
+
+			ns := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: primarySubnetRef}, ns)).To(Succeed())
+			Expect(ns.Labels).To(HaveKeyWithValue(expectedLabel, labelValueTrue))
+
+			// networkAttachments are immutable, so a repeat call (e.g. on a later
+			// reconcile) must be a no-op once the synced marker is set.
+			changed, err = reconciler.syncSecondaryVNLabels(ctx, instance, primarySubnetRef)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeFalse())
+		})
+
+		It("should keep the namespace label while a sibling still needs it, and remove it once the last dependent is released", func() {
+			const primarySubnetRef = "primary-subnet-release"
+			const vnUUID = "vn-uuid-release"
+			expectedLabel := secondaryVNLabelKey(vnUUID)
+
+			targetNS := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   primarySubnetRef,
+					Labels: map[string]string{expectedLabel: labelValueTrue},
+				},
+			}
+			Expect(k8sClient.Create(ctx, targetNS)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, targetNS) }()
+
+			newSibling := func(name string) *osacv1alpha1.ComputeInstance {
+				ci := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       name,
+						Namespace:  namespaceName,
+						Labels:     map[string]string{expectedLabel: labelValueTrue},
+						Finalizers: []string{osacComputeInstanceFinalizer},
+						Annotations: map[string]string{
+							osacSubnetTargetNamespaceAnnotation: primarySubnetRef,
+						},
+					},
+					Spec: newTestComputeInstanceSpec("test_template"),
+				}
+				Expect(k8sClient.Create(ctx, ci)).To(Succeed())
+				return ci
+			}
+
+			instanceA := newSibling("test-ci-release-a")
+			instanceB := newSibling("test-ci-release-b")
+			defer func() {
+				for _, ci := range []*osacv1alpha1.ComputeInstance{instanceA, instanceB} {
+					latest := &osacv1alpha1.ComputeInstance{}
+					if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ci), latest); err == nil {
+						latest.Finalizers = nil
+						_ = k8sClient.Update(ctx, latest)
+						_ = k8sClient.Delete(ctx, latest)
+					}
+				}
+			}()
+
+			Eventually(func() error {
+				return reconciler.Client.Get(ctx, client.ObjectKeyFromObject(instanceB), &osacv1alpha1.ComputeInstance{})
+			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
+
+			// Releasing A while B still carries the label and its own matching
+			// subnet-target-namespace annotation: the namespace label must survive.
+			Expect(reconciler.releaseSecondaryVNLabels(ctx, instanceA, primarySubnetRef)).To(Succeed())
+			Consistently(func(g Gomega) {
+				ns := &corev1.Namespace{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: primarySubnetRef}, ns)).To(Succeed())
+				g.Expect(ns.Labels).To(HaveKeyWithValue(expectedLabel, labelValueTrue))
+			}, "1s", "100ms").Should(Succeed())
+
+			// Finish deleting A (mirrors finalizer removal completing its deletion).
+			Expect(k8sClient.Delete(ctx, instanceA)).To(Succeed())
+			latestA := &osacv1alpha1.ComputeInstance{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(instanceA), latestA)).To(Succeed())
+			latestA.Finalizers = nil
+			Expect(k8sClient.Update(ctx, latestA)).To(Succeed())
+			Eventually(func() bool {
+				return errors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(instanceA), &osacv1alpha1.ComputeInstance{}))
+			}, 2*time.Second, 10*time.Millisecond).Should(BeTrue())
+			Eventually(func() bool {
+				return errors.IsNotFound(reconciler.Client.Get(ctx, client.ObjectKeyFromObject(instanceA), &osacv1alpha1.ComputeInstance{}))
+			}, 2*time.Second, 10*time.Millisecond).Should(BeTrue())
+
+			// Releasing B now: no other ComputeInstance needs the label, so it must be dropped.
+			Expect(reconciler.releaseSecondaryVNLabels(ctx, instanceB, primarySubnetRef)).To(Succeed())
+			Eventually(func(g Gomega) {
+				ns := &corev1.Namespace{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: primarySubnetRef}, ns)).To(Succeed())
+				g.Expect(ns.Labels).NotTo(HaveKey(expectedLabel))
+			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+		})
+
+		It("should ref-count per target (VM) namespace, not per ComputeInstance CR namespace", func() {
+			// Two ComputeInstance CRs living in the SAME shared CR namespace
+			// (namespaceName, "default") but placing their VMs in two DIFFERENT target
+			// namespaces, both happening to attach to the same Secondary VN. Releasing
+			// the only instance targeting namespace X must not be blocked by, and must
+			// not affect, the unrelated instance targeting namespace Y (and vice versa) --
+			// this is exactly what the osacSubnetTargetNamespaceAnnotation filter inside
+			// releaseSecondaryVNLabels (beyond the shared label + shared CR namespace) is
+			// for.
+			const targetNamespaceX = "vm-namespace-x"
+			const targetNamespaceY = "vm-namespace-y"
+			const vnUUID = "vn-uuid-cross-namespace"
+			expectedLabel := secondaryVNLabelKey(vnUUID)
+
+			nsX := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   targetNamespaceX,
+					Labels: map[string]string{expectedLabel: labelValueTrue},
+				},
+			}
+			Expect(k8sClient.Create(ctx, nsX)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, nsX) }()
+
+			nsY := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   targetNamespaceY,
+					Labels: map[string]string{expectedLabel: labelValueTrue},
+				},
+			}
+			Expect(k8sClient.Create(ctx, nsY)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, nsY) }()
+
+			newInstance := func(name, targetNamespace string) *osacv1alpha1.ComputeInstance {
+				ci := &osacv1alpha1.ComputeInstance{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       name,
+						Namespace:  namespaceName,
+						Labels:     map[string]string{expectedLabel: labelValueTrue},
+						Finalizers: []string{osacComputeInstanceFinalizer},
+						Annotations: map[string]string{
+							osacSubnetTargetNamespaceAnnotation: targetNamespace,
+						},
+					},
+					Spec: newTestComputeInstanceSpec("test_template"),
+				}
+				Expect(k8sClient.Create(ctx, ci)).To(Succeed())
+				return ci
+			}
+
+			instanceX := newInstance("test-ci-cross-ns-x", targetNamespaceX)
+			instanceY := newInstance("test-ci-cross-ns-y", targetNamespaceY)
+			defer func() {
+				for _, ci := range []*osacv1alpha1.ComputeInstance{instanceX, instanceY} {
+					latest := &osacv1alpha1.ComputeInstance{}
+					if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ci), latest); err == nil {
+						latest.Finalizers = nil
+						_ = k8sClient.Update(ctx, latest)
+						_ = k8sClient.Delete(ctx, latest)
+					}
+				}
+			}()
+
+			Eventually(func() error {
+				return reconciler.Client.Get(ctx, client.ObjectKeyFromObject(instanceY), &osacv1alpha1.ComputeInstance{})
+			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
+
+			// instanceX is the ONLY ComputeInstance targeting namespace X -- releasing it
+			// must drop namespace X's label even though instanceY (an unrelated sibling in
+			// the same shared CR namespace, targeting a DIFFERENT VM namespace) still
+			// carries the same secondary-vn label.
+			Expect(reconciler.releaseSecondaryVNLabels(ctx, instanceX, targetNamespaceX)).To(Succeed())
+			Eventually(func(g Gomega) {
+				ns := &corev1.Namespace{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetNamespaceX}, ns)).To(Succeed())
+				g.Expect(ns.Labels).NotTo(HaveKey(expectedLabel))
+			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+
+			// Namespace Y's label must be completely unaffected by releasing X.
+			Consistently(func(g Gomega) {
+				ns := &corev1.Namespace{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetNamespaceY}, ns)).To(Succeed())
+				g.Expect(ns.Labels).To(HaveKeyWithValue(expectedLabel, labelValueTrue))
+			}, "1s", "100ms").Should(Succeed())
+
+			// Releasing instanceY (still the only instance targeting namespace Y, since
+			// instanceX never targeted it) must now drop namespace Y's label too.
+			Expect(reconciler.releaseSecondaryVNLabels(ctx, instanceY, targetNamespaceY)).To(Succeed())
+			Eventually(func(g Gomega) {
+				ns := &corev1.Namespace{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetNamespaceY}, ns)).To(Succeed())
+				g.Expect(ns.Labels).NotTo(HaveKey(expectedLabel))
+			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+		})
+	})
+
 })

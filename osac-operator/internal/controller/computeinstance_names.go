@@ -41,4 +41,22 @@ var (
 	osacComputeInstanceFeedbackFinalizer         string = fmt.Sprintf("%s/computeinstance-feedback", osacPrefix)
 	osacComputeInstanceManagementStateAnnotation string = fmt.Sprintf("%s/management-state", osacPrefix)
 	osacSubnetTargetNamespaceAnnotation          string = fmt.Sprintf("%s/subnet-target-namespace", osacPrefix)
+	// osacSecondaryVNLabelsSyncedAnnotation marks that syncSecondaryVNLabels has already
+	// run for this ComputeInstance. NetworkAttachments are immutable, so the derived
+	// secondary-vn.osac.openshift.io/<uuid> label set never changes after creation --
+	// this lets subsequent reconciles skip re-resolving every additional attachment's
+	// Subnet CR.
+	osacSecondaryVNLabelsSyncedAnnotation string = fmt.Sprintf("%s/secondary-vn-labels-synced", osacPrefix)
 )
+
+// secondaryVNLabelPrefix labels a ComputeInstance (and, mirrored, its target namespace)
+// with each Secondary VirtualNetwork it additionally attaches to (networkAttachments[1:]),
+// so that VN's Subnet CUDNs' namespaceSelector reaches the ComputeInstance's own (foreign)
+// target namespace. One label per additional VN: secondaryVNLabelPrefix + "<vn-uuid>".
+const secondaryVNLabelPrefix = "secondary-vn.osac.openshift.io/"
+
+// secondaryVNLabelKey returns the label key used to mark a dependency on the Secondary
+// VirtualNetwork identified by vnUUID.
+func secondaryVNLabelKey(vnUUID string) string {
+	return secondaryVNLabelPrefix + vnUUID
+}

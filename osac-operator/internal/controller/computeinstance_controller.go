@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -466,6 +467,146 @@ func (r *ComputeInstanceReconciler) syncSubnetTargetNamespaceAnnotation(ctx cont
 	return subnetTargetNamespace, true, nil
 }
 
+// syncSecondaryVNLabels validates networkAttachments[1:] and stamps a
+// secondary-vn.osac.openshift.io/<uuid> label on the ComputeInstance for each one that
+// references a Secondary-type subnet, ensuring the same label exists on targetNamespace
+// so that subnet's CUDN namespaceSelector reaches this (possibly foreign) namespace.
+//
+// networkAttachments[0] keeps its existing, unchanged meaning (VM placement, full
+// default route) regardless of type -- only attachments at index > 0 are validated here:
+// a Primary-type subnet may only ever appear at index 0 (a second Primary UDN in one
+// namespace is not valid), so one at index > 0 is rejected.
+//
+// NetworkAttachments are immutable, so this only needs to run once -- the
+// osacSecondaryVNLabelsSyncedAnnotation marker on the ComputeInstance caches that,
+// matching the "resolve once, cache" pattern already used by
+// syncSubnetTargetNamespaceAnnotation. Returns whether instance's labels/annotations
+// changed.
+func (r *ComputeInstanceReconciler) syncSecondaryVNLabels(ctx context.Context, instance *v1alpha1.ComputeInstance, targetNamespace string) (bool, error) {
+	if _, ok := instance.Annotations[osacSecondaryVNLabelsSyncedAnnotation]; ok {
+		return false, nil
+	}
+
+	attachments := instance.Spec.NetworkAttachments
+	vnUUIDs := make([]string, 0, len(attachments))
+	for i, attachment := range attachments[1:] {
+		subnet := &v1alpha1.Subnet{}
+		subnetKey := types.NamespacedName{Name: attachment.SubnetRef, Namespace: instance.Namespace}
+		if err := r.Get(ctx, subnetKey, subnet); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, fmt.Errorf("%w: %w", errSubnetNotFound, err)
+			}
+			return false, fmt.Errorf("failed to get Subnet CR %s: %w", attachment.SubnetRef, err)
+		}
+		if subnet.Annotations[osacNetworkingTypeAnnotation] != string(v1alpha1.VirtualNetworkNetworkingTypeSecondary) {
+			return false, fmt.Errorf("networkAttachments[%d] (subnet %s) must reference a Secondary-type subnet: only networkAttachments[0] may reference a Primary-type subnet", i+1, attachment.SubnetRef)
+		}
+		vnUUIDs = append(vnUUIDs, subnet.Spec.VirtualNetwork)
+	}
+
+	if len(vnUUIDs) > 0 {
+		if instance.Labels == nil {
+			instance.Labels = make(map[string]string)
+		}
+		for _, vnUUID := range vnUUIDs {
+			instance.Labels[secondaryVNLabelKey(vnUUID)] = labelValueTrue
+		}
+		for _, vnUUID := range vnUUIDs {
+			if err := r.ensureNamespaceLabel(ctx, targetNamespace, secondaryVNLabelKey(vnUUID)); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+	instance.Annotations[osacSecondaryVNLabelsSyncedAnnotation] = labelValueTrue
+	return true, nil
+}
+
+// ensureNamespaceLabel adds label=labelValueTrue to namespace via a scoped JSON merge
+// patch that touches only that one label key -- safe against concurrent modifications to
+// other labels on the same namespace (e.g. a different ComputeInstance's own concurrent
+// reconcile adding a different Secondary VN's label).
+func (r *ComputeInstanceReconciler) ensureNamespaceLabel(ctx context.Context, namespace, key string) error {
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
+		return fmt.Errorf("failed to get Namespace %s: %w", namespace, err)
+	}
+	if ns.Labels[key] == labelValueTrue {
+		return nil
+	}
+	patch := client.RawPatch(types.MergePatchType, []byte(fmt.Sprintf(`{"metadata":{"labels":{%q:%q}}}`, key, labelValueTrue)))
+	if err := r.Patch(ctx, ns, patch); err != nil {
+		return fmt.Errorf("failed to patch Namespace %s to add label %s: %w", namespace, key, err)
+	}
+	return nil
+}
+
+// releaseSecondaryVNLabels removes this ComputeInstance's secondary-vn.osac.openshift.io/*
+// labels from targetNamespace, but only for each one where no other, non-deleting
+// ComputeInstance sharing the same target namespace still carries the same label -- a
+// fast, indexed list on the label itself (stamped once at create time by
+// syncSecondaryVNLabels), not a re-resolution of every sibling's Subnet refs. Must run
+// before finalizer removal (handleDelete) so a crash mid-cleanup leaves the finalizer in
+// place to retry against, rather than orphaning the namespace label.
+func (r *ComputeInstanceReconciler) releaseSecondaryVNLabels(ctx context.Context, instance *v1alpha1.ComputeInstance, targetNamespace string) error {
+	for key, value := range instance.Labels {
+		if value != labelValueTrue || !strings.HasPrefix(key, secondaryVNLabelPrefix) {
+			continue
+		}
+
+		siblings := &v1alpha1.ComputeInstanceList{}
+		if err := r.List(ctx, siblings, client.InNamespace(instance.Namespace), client.MatchingLabels{key: labelValueTrue}); err != nil {
+			return fmt.Errorf("listing sibling ComputeInstances for label %s: %w", key, err)
+		}
+
+		stillNeeded := false
+		for i := range siblings.Items {
+			sibling := &siblings.Items[i]
+			if sibling.Name == instance.Name {
+				continue
+			}
+			if !sibling.DeletionTimestamp.IsZero() {
+				continue
+			}
+			if sibling.Annotations[osacSubnetTargetNamespaceAnnotation] != targetNamespace {
+				continue
+			}
+			stillNeeded = true
+			break
+		}
+
+		if !stillNeeded {
+			if err := r.removeNamespaceLabel(ctx, targetNamespace, key); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// removeNamespaceLabel removes label from namespace via a scoped JSON merge patch,
+// touching only that one label key. A no-op if the namespace or the label is already gone.
+func (r *ComputeInstanceReconciler) removeNamespaceLabel(ctx context.Context, namespace, key string) error {
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to get Namespace %s: %w", namespace, err)
+	}
+	if _, ok := ns.Labels[key]; !ok {
+		return nil
+	}
+	patch := client.RawPatch(types.MergePatchType, []byte(fmt.Sprintf(`{"metadata":{"labels":{%q:null}}}`, key)))
+	if err := r.Patch(ctx, ns, patch); err != nil {
+		return fmt.Errorf("failed to patch Namespace %s to remove label %s: %w", namespace, key, err)
+	}
+	return nil
+}
+
 // syncMetadataPreflight ensures the finalizer is set and the subnet-target-namespace
 // annotation is in sync with the current networkAttachments subnet.  It batches all metadata
 // changes into a single r.Update() call to avoid multiple round-trips and the
@@ -483,6 +624,17 @@ func (r *ComputeInstanceReconciler) syncMetadataPreflight(ctx context.Context, i
 	}
 	if changed {
 		metadataChanged = true
+	}
+
+	if subnetTargetNamespace != "" {
+		labelsChanged, err := r.syncSecondaryVNLabels(ctx, instance, subnetTargetNamespace)
+		if err != nil {
+			log.Error(err, "Failed to sync secondary VN labels")
+			return "", err
+		}
+		if labelsChanged {
+			metadataChanged = true
+		}
 	}
 
 	if metadataChanged {
@@ -664,6 +816,15 @@ func (r *ComputeInstanceReconciler) handleDelete(ctx context.Context, _ reconcil
 	// If we need to requeue (jobs still running or provider needs time), do so
 	if result.RequeueAfter > 0 {
 		return result, nil
+	}
+
+	// Release any secondary-vn.osac.openshift.io/* namespace labels this instance still
+	// holds exclusively, before removing the finalizer -- a failure here requeues with
+	// the finalizer intact so cleanup can be retried, instead of stranding the label.
+	if targetNamespace, ok := instance.Annotations[osacSubnetTargetNamespaceAnnotation]; ok {
+		if err := r.releaseSecondaryVNLabels(ctx, instance, targetNamespace); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Deprovisioning complete or skipped, remove base finalizer

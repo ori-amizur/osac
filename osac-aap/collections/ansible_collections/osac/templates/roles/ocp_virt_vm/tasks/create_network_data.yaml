@@ -14,11 +14,14 @@
 # Both are no-ops (empty vm_network_data, networks/interfaces untouched) for a
 # Primary-type subnet, or when the referenced Subnet can't be found.
 #
-# Single-attachment (Secondary-VN-only) scope only: this looks at networkAttachments[0]
-# alone (vm_subnet_ref, already resolved by create_validate.yaml) -- dual-attached VMs (a
-# Primary UDN elsewhere plus a Secondary VN subnet) need a second, additional interface
-# and VN-CIDR-scoped routing instead of replacing the VM's sole interface, and are out of
-# scope here (blocked on the same deferred multi-NIC-VM support as Story 1.03's AC2).
+# networkAttachments[0] (vm_subnet_ref, already resolved by create_validate.yaml) keeps
+# its existing, unchanged meaning below: VM placement plus (if Secondary-type) the VM's
+# full default route + DNS. networkAttachments[1:] ("additional" attachments) are handled
+# afterwards, in the loop over create_network_data_additional_attachment.yaml: each gets
+# its own additional Multus NIC and a VN-CIDR-scoped route (no DNS -- attachment[0]'s own
+# DNS applies), never a replacement of the VM's placement interface. osac-operator's
+# syncSecondaryVNLabels (computeinstance_controller.go) already rejects a Primary-type
+# subnet at any index > 0 before the AAP job is even triggered.
 #
 # Interface device is `bridge: {}`, not create_build_spec.yaml's `binding: {name:
 # l2bridge}` -- verified (OpenShift Virtualization docs/Red Hat Developer articles):
@@ -117,4 +120,38 @@
                 }]
               }
             } | to_nice_yaml
+          }}
+
+- name: Initialize accumulator for additional (networkAttachments[1:]) cloud-init routes
+  ansible.builtin.set_fact:
+    vm_additional_network_configs: []
+
+- name: Process additional network attachments (networkAttachments[1:])
+  ansible.builtin.include_tasks: create_network_data_additional_attachment.yaml
+  loop: "{{ compute_instance.spec.networkAttachments[1:] | default([]) }}"
+  loop_control:
+    loop_var: additional_attachment
+    index_var: additional_attachment_index0
+    label: "{{ additional_attachment.subnetRef }}"
+
+- name: Merge additional cloud-init network-config entries into vm_network_data
+  when: vm_additional_network_configs | length > 0
+  block:
+    - name: Parse the existing network-config produced above (Secondary-type networkAttachments[0])
+      ansible.builtin.set_fact:
+        vm_network_data_parsed: "{{ vm_network_data | from_yaml }}"
+      when: vm_network_data | length > 0
+
+    - name: Default the network-config skeleton (Primary-type networkAttachments[0] produces none)
+      ansible.builtin.set_fact:
+        vm_network_data_parsed: "{{ {'network': {'version': 1, 'config': []}} }}"
+      when: vm_network_data | length == 0
+
+    - name: Append additional network-config entries and re-render vm_network_data
+      ansible.builtin.set_fact:
+        vm_network_data: >-
+          {{
+            vm_network_data_parsed
+            | combine({'network': vm_network_data_parsed.network | combine({'config': vm_network_data_parsed.network.config + vm_additional_network_configs})})
+            | to_nice_yaml
           }}

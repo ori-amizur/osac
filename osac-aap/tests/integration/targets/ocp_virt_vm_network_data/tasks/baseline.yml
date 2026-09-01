@@ -122,7 +122,8 @@
               - vm_template_spec.networks[0].multus.networkName == test_subnet_name
               - "'pod' not in vm_template_spec.networks[0]"
               - vm_template_spec.domain.devices.interfaces | length == 1
-              - vm_template_spec.domain.devices.interfaces[0].binding.name == 'l2bridge'
+              - vm_template_spec.domain.devices.interfaces[0].bridge is defined
+              - "'binding' not in vm_template_spec.domain.devices.interfaces[0]"
               - vm_template_spec.domain.devices.disks | length == 1
               - vm_template_spec.domain.devices.disks[0].name == 'root-disk'
             fail_msg: "VM interface/network was not correctly replaced with the subnet's Multus attachment"

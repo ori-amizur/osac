@@ -20,14 +20,16 @@
 # and VN-CIDR-scoped routing instead of replacing the VM's sole interface, and are out of
 # scope here (blocked on the same deferred multi-NIC-VM support as Story 1.03's AC2).
 #
-# `binding: {name: l2bridge}` below is carried over from create_build_spec.yaml's
-# existing (pod:{}/Primary-UDN) interface, on the assumption that it's a KubeVirt network
-# binding plugin generically supporting OVN-Kubernetes UDN networks (Primary and
-# Secondary alike), not something specific to the pod:{} default-network case -- this
-# repo defines no NetworkBindingPlugin registration to confirm that against, and it
-# hasn't been validated on a live cluster with a Multus-attached Secondary UDN NAD.
-# Verify before relying on this in production; plain `bridge` is very plausibly wrong
-# here instead (it assumes a traditional Linux-bridge NAD, not an OVN-K UDN one).
+# Interface device is `bridge: {}`, not create_build_spec.yaml's `binding: {name:
+# l2bridge}` -- verified (OpenShift Virtualization docs/Red Hat Developer articles):
+# l2bridge is specific to the pod:{}/Primary-UDN case (it's what lets OVN-K
+# transparently intercept the pod's default network); a Secondary UDN/CUDN attached via
+# an explicit `multus: {networkName: ...}` network uses the `bridge: {}` interface
+# device instead, whether backed by a plain NAD or a CUDN. Caveat: the concrete
+# documented example found was for Localnet-topology secondary CUDNs specifically, not
+# Layer2 (what this design uses) -- no Layer2-specific secondary-attachment example was
+# found, so `bridge: {}` here is the correctly-generalized pattern, not a directly
+# confirmed one for this exact topology/role combination.
 
 - name: Initialize vm_network_data (no injection by default)
   ansible.builtin.set_fact:
@@ -72,8 +74,7 @@
             devices:
               interfaces:
                 - name: default
-                  binding:
-                    name: l2bridge  # see design note below -- not independently verified
+                  bridge: {}
 
     - name: Look up the cluster DNS Service ClusterIP
       kubernetes.core.k8s_info:

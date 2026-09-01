@@ -1,0 +1,245 @@
+---
+# Integration test for cudn_net's Secondary-VirtualNetwork Subnet handling
+# (namespaceSelector/role:Secondary CUDN, no per-subnet namespace, router pod
+# Multus attachment). Exercises create_subnet.yaml directly.
+#
+# Caveat: this test environment has no OVN-Kubernetes CRDs installed (no
+# ClusterUserDefinedNetwork kind registered) -- same pre-existing gap as every other
+# Subnet integration test in this repo (there was none before this change either).
+# The CUDN-apply task itself fails here with "no matches for kind" regardless of
+# Primary/Secondary, so it's wrapped in block/rescue to let the test continue past
+# that expected failure and assert on the tasks that ran *before* it (namespace
+# creation/skip, CUDN namespaceSelector/role fact computation). The router-pod
+# Multus-attachment task comes *after* the CUDN task in create_subnet.yaml, so it
+# never runs in this environment either -- Test 3 below validates that logic in
+# isolation instead, since it can't be exercised end-to-end here.
+
+# ── Test 1: Secondary Subnet creates no per-subnet namespace, correct CUDN facts ──
+- name: "Subnet Secondary CUDN - Test create"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_vn_uuid: vn-for-subnet-secondary-test-uuid
+    test_subnet_name: subnet-secondary-cudn-test
+
+  tasks:
+    - name: Test Secondary Subnet provisioning
+      block:
+        - name: Set Secondary Subnet fact
+          ansible.builtin.set_fact:
+            subnet:
+              metadata:
+                name: "{{ test_subnet_name }}"
+                namespace: osac-networking
+                labels:
+                  osac.openshift.io/subnet-uuid: "{{ test_subnet_name }}-uuid"
+                annotations:
+                  osac.openshift.io/tenant: test-tenant
+                  osac.openshift.io/networking-type: Secondary
+                  osac.openshift.io/virtual-network-name: vn-for-subnet-secondary-test
+              spec:
+                virtualNetwork: "{{ test_vn_uuid }}"
+                ipv4Cidr: 10.4.1.0/24
+            subnet_name: "{{ test_subnet_name }}"
+
+        - name: Run cudn_net create_subnet (expected to fail at the CUDN-apply step)
+          block:
+            - name: Run cudn_net create_subnet
+              ansible.builtin.include_role:
+                name: osac.templates.cudn_net
+                tasks_from: create_subnet
+          rescue:
+            - name: Note expected CUDN-apply failure
+              ansible.builtin.debug:
+                msg: "Expected in this test env: ClusterUserDefinedNetwork CRD is not installed"
+
+        - name: Get any namespace matching the Subnet's own name
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_subnet_name }}"
+          register: subnet_namespace_result
+
+        - name: Assert no dedicated namespace was created for a Secondary Subnet
+          ansible.builtin.assert:
+            that:
+              - subnet_namespace_result.resources | length == 0
+            fail_msg: "A dedicated namespace was unexpectedly created for a Secondary Subnet"
+            success_msg: "Secondary Subnet namespace-skip: passed"
+
+        - name: Assert the CUDN namespaceSelector and layer2 role facts are correct
+          ansible.builtin.assert:
+            that:
+              - "subnet_cudn_namespace_selector == {'secondary-vn.osac.openshift.io/' ~ test_vn_uuid: 'true'}"
+              - subnet_cudn_layer2_role == 'Secondary'
+            fail_msg: "CUDN namespaceSelector/layer2 role not computed correctly for a Secondary Subnet"
+            success_msg: "Secondary Subnet CUDN facts: passed"
+
+# ── Test 2: Primary Subnet still creates its own dedicated namespace (regression) ──
+- name: "Subnet Secondary CUDN - Test Primary is unaffected"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_vn_uuid: vn-for-subnet-primary-test-uuid
+    test_subnet_name: subnet-primary-cudn-test
+
+  tasks:
+    - name: Test Primary Subnet provisioning
+      block:
+        - name: Set Primary Subnet fact
+          ansible.builtin.set_fact:
+            subnet:
+              metadata:
+                name: "{{ test_subnet_name }}"
+                namespace: osac-networking
+                labels:
+                  osac.openshift.io/subnet-uuid: "{{ test_subnet_name }}-uuid"
+                annotations:
+                  osac.openshift.io/tenant: test-tenant
+                  osac.openshift.io/virtual-network-name: vn-for-subnet-primary-test
+                  # networking-type omitted -- defaults to Primary
+              spec:
+                virtualNetwork: "{{ test_vn_uuid }}"
+                ipv4Cidr: 10.4.2.0/24
+            subnet_name: "{{ test_subnet_name }}"
+
+        - name: Run cudn_net create_subnet (expected to fail at the CUDN-apply step)
+          block:
+            - name: Run cudn_net create_subnet
+              ansible.builtin.include_role:
+                name: osac.templates.cudn_net
+                tasks_from: create_subnet
+          rescue:
+            - name: Note expected CUDN-apply failure
+              ansible.builtin.debug:
+                msg: "Expected in this test env: ClusterUserDefinedNetwork CRD is not installed"
+
+        - name: Get the Subnet's own dedicated namespace
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_subnet_name }}"
+          register: subnet_namespace_result
+
+        - name: Assert the dedicated namespace was created for a Primary Subnet
+          ansible.builtin.assert:
+            that:
+              - subnet_namespace_result.resources | length == 1
+              - subnet_namespace_result.resources[0].metadata.labels['osac.openshift.io/subnet-id'] == test_subnet_name ~ '-uuid'
+              - subnet_namespace_result.resources[0].metadata.labels['osac.openshift.io/virtual-network'] == test_vn_uuid
+            fail_msg: "Primary Subnet's dedicated namespace not created correctly"
+            success_msg: "Primary Subnet namespace: passed"
+
+        - name: Assert the CUDN namespaceSelector and layer2 role facts are unchanged for Primary
+          ansible.builtin.assert:
+            that:
+              - "subnet_cudn_namespace_selector == {'osac.openshift.io/subnet-id': test_subnet_name ~ '-uuid'}"
+              - subnet_cudn_layer2_role == 'Primary'
+            fail_msg: "CUDN namespaceSelector/layer2 role changed for a Primary Subnet"
+            success_msg: "Primary Subnet CUDN facts: passed"
+
+      always:
+        - name: Cleanup -- delete the Subnet's dedicated namespace
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_subnet_name }}"
+          failed_when: false
+
+# ── Test 3: router pod Multus network-attachment list computation (in isolation) ──
+# Validates the exact list-manipulation expressions used in create_subnet.yaml's
+# "Compute updated router pod Multus network attachment list" and delete_subnet.yaml's
+# mirror -- can't be exercised via the role itself here since that task sits after the
+# CUDN-apply step, which never succeeds in this CRD-less test environment (see header).
+- name: "Subnet Secondary CUDN - Test router pod attachment-list computation"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+
+  tasks:
+    - name: Compute attachment list starting from no existing annotation (add subnet-a)
+      ansible.builtin.set_fact:
+        computed_networks: >-
+          {{
+            (
+              ''.split(',') | reject('equalto', '') | list
+            ) | union(['subnet-a'])
+          }}
+
+    - name: Assert first attachment is added correctly
+      ansible.builtin.assert:
+        that:
+          - computed_networks == ['subnet-a']
+        fail_msg: "Adding the first subnet attachment did not produce the expected list"
+        success_msg: "First attachment add: passed"
+
+    - name: Compute attachment list adding a second subnet (subnet-b) to an existing one
+      ansible.builtin.set_fact:
+        computed_networks: >-
+          {{
+            (
+              'subnet-a'.split(',') | reject('equalto', '') | list
+            ) | union(['subnet-b'])
+          }}
+
+    - name: Assert second attachment is added without dropping the first
+      ansible.builtin.assert:
+        that:
+          - computed_networks | sort == ['subnet-a', 'subnet-b']
+        fail_msg: "Adding a second subnet attachment did not preserve the first"
+        success_msg: "Second attachment add: passed"
+
+    - name: Compute attachment list re-adding an already-attached subnet (idempotency)
+      ansible.builtin.set_fact:
+        computed_networks: >-
+          {{
+            (
+              'subnet-a,subnet-b'.split(',') | reject('equalto', '') | list
+            ) | union(['subnet-a'])
+          }}
+
+    - name: Assert re-adding an existing attachment does not duplicate it
+      ansible.builtin.assert:
+        that:
+          - computed_networks | sort == ['subnet-a', 'subnet-b']
+        fail_msg: "Re-adding an existing attachment produced a duplicate"
+        success_msg: "Idempotent re-add: passed"
+
+    - name: Compute attachment list removing one of two subnets
+      ansible.builtin.set_fact:
+        computed_networks: >-
+          {{
+            (
+              'subnet-a,subnet-b'.split(',') | reject('equalto', '') | list
+            ) | difference(['subnet-a'])
+          }}
+
+    - name: Assert removing one attachment leaves the other
+      ansible.builtin.assert:
+        that:
+          - computed_networks == ['subnet-b']
+        fail_msg: "Removing one of two attachments did not leave the other intact"
+        success_msg: "Partial removal: passed"
+
+    - name: Compute attachment list removing the last remaining subnet
+      ansible.builtin.set_fact:
+        computed_networks: >-
+          {{
+            (
+              'subnet-b'.split(',') | reject('equalto', '') | list
+            ) | difference(['subnet-b'])
+          }}
+
+    - name: Assert removing the last attachment leaves an empty, joinable list
+      ansible.builtin.assert:
+        that:
+          - computed_networks == []
+          - (computed_networks | join(',')) == ''
+        fail_msg: "Removing the last attachment did not leave a clean empty list"
+        success_msg: "Full removal: passed"

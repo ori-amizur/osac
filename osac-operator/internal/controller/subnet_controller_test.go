@@ -576,6 +576,61 @@ var _ = Describe("SubnetReconciler", func() {
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("netris"))
 		})
 
+		It("mirrors the parent VirtualNetwork's networking-type and name onto the Subnet", func() {
+			secondaryVnet := &osacv1alpha1.VirtualNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "secondary-vnet",
+					Namespace: "default",
+					Labels:    map[string]string{osacVirtualNetworkIDLabel: "secondary-vnet-uuid"},
+					Annotations: map[string]string{
+						osacImplementationStrategyAnnotation: "cudn-net",
+					},
+				},
+				Spec: osacv1alpha1.VirtualNetworkSpec{
+					Region:         "us-west-1",
+					IPv4CIDR:       "10.3.0.0/16",
+					NetworkClass:   "cudn-net",
+					NetworkingType: osacv1alpha1.VirtualNetworkNetworkingTypeSecondary,
+				},
+			}
+			Expect(k8sClient.Create(ctx, secondaryVnet)).To(Succeed())
+			DeferCleanup(deleteObjectWithClearedFinalizers, ctx, secondaryVnet)
+
+			secondarySubnet := &osacv1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: "secondary-subnet", Namespace: "default"},
+				Spec:       osacv1alpha1.SubnetSpec{VirtualNetwork: "secondary-vnet-uuid", IPv4CIDR: "10.3.1.0/24"},
+			}
+			Expect(k8sClient.Create(ctx, secondarySubnet)).To(Succeed())
+			DeferCleanup(deleteObjectWithClearedFinalizers, ctx, secondarySubnet)
+
+			_, err := reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: secondarySubnet.Name, Namespace: secondarySubnet.Namespace},
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.Subnet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secondarySubnet.Name, Namespace: secondarySubnet.Namespace}, updated)).To(Succeed())
+			Expect(updated.Annotations[osacNetworkingTypeAnnotation]).To(Equal("Secondary"))
+			Expect(updated.Annotations[osacVirtualNetworkNameAnnotation]).To(Equal("secondary-vnet"))
+		})
+
+		It("defaults the networking-type annotation to Primary when the parent VirtualNetwork's field is empty", func() {
+			// vnet/subnet from BeforeEach leave NetworkingType unset - the K8s CRD field
+			// has no kubebuilder default (defaulting happens upstream, in
+			// fulfillment-service's Create validation), so this exercises that fallback.
+			Expect(k8sClient.Create(ctx, subnet)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: subnet.Name, Namespace: subnet.Namespace},
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.Subnet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: subnet.Name, Namespace: subnet.Namespace}, updated)).To(Succeed())
+			Expect(updated.Annotations[osacNetworkingTypeAnnotation]).To(Equal("Primary"))
+			Expect(updated.Annotations[osacVirtualNetworkNameAnnotation]).To(Equal(vnet.Name))
+		})
+
 		It("falls back to the parent VirtualNetwork's resolved implementation-strategy annotation when fabricManager is not set", func() {
 			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
 			Expect(err).NotTo(HaveOccurred())

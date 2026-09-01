@@ -1,8 +1,15 @@
 ---
-# Delete ClusterUserDefinedNetwork and Namespace for Subnet
-# 1. Deletes CUDN first (must be removed before namespace)
-# 2. Deletes namespace
-# Handles "not found" errors gracefully for both resources
+# Delete a Subnet's network resources.
+#
+# For a Primary-type VirtualNetwork's Subnet (the default): deletes the CUDN first (must
+# be removed before namespace), then the Subnet's own dedicated Namespace.
+#
+# For a Secondary-type VirtualNetwork's Subnet: deletes only the CUDN -- there is no
+# per-subnet namespace to delete, it isn't owned by this Subnet (see
+# create_subnet.yaml). Also detaches the subnet from the router pod Deployment's Multus
+# network list.
+#
+# Handles "not found" errors gracefully for both resources.
 
 - name: Include get remote cluster kubeconfig
   ansible.builtin.include_role:
@@ -13,12 +20,15 @@
   ansible.builtin.set_fact:
     subnet_name: "{{ subnet.metadata.name }}"
     subnet_id: "{{ subnet.metadata.labels['osac.openshift.io/subnet-uuid'] | default(subnet.metadata.name) }}"
+    subnet_networking_type: "{{ subnet.metadata.annotations['osac.openshift.io/networking-type'] | default('Primary') }}"
+    subnet_vn_name: "{{ subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] | default('') }}"
 
 - name: Display deletion information
   ansible.builtin.debug:
     msg:
-      - "Deleting CUDN and Namespace for Subnet '{{ subnet_name }}'"
+      - "Deleting CUDN for Subnet '{{ subnet_name }}'"
       - "Subnet ID: {{ subnet_id }}"
+      - "Networking type: {{ subnet_networking_type }}"
 
 - name: Delete ClusterUserDefinedNetwork
   kubernetes.core.k8s:
@@ -41,6 +51,7 @@
       - "Changed: {{ cudn_delete_result.changed | default(false) }}"
 
 - name: Delete Namespace
+  when: subnet_networking_type != 'Secondary'
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: absent
@@ -55,7 +66,51 @@
     - "'NotFound' not in (namespace_delete_result.msg | default(''))"
 
 - name: Display Namespace deletion result
+  when: subnet_networking_type != 'Secondary'
   ansible.builtin.debug:
     msg:
       - "Namespace '{{ subnet_name }}' deletion completed"
       - "Changed: {{ namespace_delete_result.changed | default(false) }}"
+
+- name: Detach the subnet from the router pod Deployment
+  when: subnet_networking_type == 'Secondary'
+  block:
+    - name: Get the router pod Deployment
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_pod_name }}"
+      register: router_pod_deployment_info
+
+    - name: Compute updated router pod Multus network attachment list
+      when: router_pod_deployment_info.resources | length > 0
+      ansible.builtin.set_fact:
+        router_pod_networks: >-
+          {{
+            (
+              (router_pod_deployment_info.resources[0].spec.template.metadata.annotations | default({}))
+                .get('k8s.v1.cni.cncf.io/networks', '')
+                .split(',') | reject('equalto', '') | list
+            ) | difference([subnet_name])
+          }}
+
+    - name: Patch router pod Deployment to detach the subnet
+      when: router_pod_deployment_info.resources | length > 0
+      kubernetes.core.k8s_json_patch:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_pod_name }}"
+        patch:
+          - op: add
+            path: /spec/template/metadata/annotations
+            value:
+              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | join(',') }}"
+
+    - name: Display router pod detachment result
+      when: router_pod_deployment_info.resources | length > 0
+      ansible.builtin.debug:
+        msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | join(', ') }}"

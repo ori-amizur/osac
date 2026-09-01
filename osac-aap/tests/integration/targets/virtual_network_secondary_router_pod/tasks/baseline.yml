@@ -13,6 +13,7 @@
     - ../../../common_vars.yml
   vars:
     test_vn_name: vn-secondary-router-pod-test
+    test_vn_uuid: vn-secondary-router-pod-test-uuid
     virtual_network_name: "{{ test_vn_name }}"
     # Matches cudn_net's router_pod_name default (defaults/main.yaml) -- asserted
     # directly rather than relying on the role-default var leaking into this scope.
@@ -27,6 +28,8 @@
               metadata:
                 name: "{{ test_vn_name }}"
                 namespace: osac-networking
+                labels:
+                  osac.openshift.io/virtualnetwork-uuid: "{{ test_vn_uuid }}"
                 annotations:
                   osac.openshift.io/tenant: test-tenant
               spec:
@@ -51,7 +54,7 @@
             that:
               - router_namespace_result.resources | length == 1
               - router_namespace_result.resources[0].metadata.labels['osac.openshift.io/tenant'] == 'test-tenant'
-              - router_namespace_result.resources[0].metadata.labels['osac.openshift.io/virtual-network'] == test_vn_name
+              - router_namespace_result.resources[0].metadata.labels['secondary-vn.osac.openshift.io/' ~ test_vn_uuid] == 'true'
             fail_msg: "Router pod namespace not created correctly"
             success_msg: "Router pod namespace: passed"
 
@@ -89,6 +92,7 @@
     - ../../../common_vars.yml
   vars:
     test_vn_name: vn-secondary-router-pod-delete-test
+    test_vn_uuid: vn-secondary-router-pod-delete-test-uuid
     virtual_network_name: "{{ test_vn_name }}"
 
   tasks:
@@ -98,6 +102,8 @@
           metadata:
             name: "{{ test_vn_name }}"
             namespace: osac-networking
+            labels:
+              osac.openshift.io/virtualnetwork-uuid: "{{ test_vn_uuid }}"
             annotations:
               osac.openshift.io/tenant: test-tenant
           spec:
@@ -139,6 +145,7 @@
     - ../../../common_vars.yml
   vars:
     test_vn_name: vn-primary-no-router-pod-test
+    test_vn_uuid: vn-primary-no-router-pod-test-uuid
     virtual_network_name: "{{ test_vn_name }}"
 
   tasks:
@@ -148,6 +155,8 @@
           metadata:
             name: "{{ test_vn_name }}"
             namespace: osac-networking
+            labels:
+              osac.openshift.io/virtualnetwork-uuid: "{{ test_vn_uuid }}"
             annotations:
               osac.openshift.io/tenant: test-tenant
           spec:

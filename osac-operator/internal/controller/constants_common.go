@@ -47,6 +47,10 @@ const (
 	// set on ExternalIP CRs
 	osacExternalIPPoolNameAnnotation = osacPrefix + "/externalippool-name"
 
+	// osacNetworkingTypeAnnotation mirrors the parent VirtualNetwork's spec.networkingType
+	// onto a Subnet CR, so AAP playbooks can branch on it without an extra lookup.
+	osacNetworkingTypeAnnotation = osacPrefix + "/networking-type"
+
 	// defaultExternalIPPoolImplementationStrategy is the fallback strategy when none is specified.
 	// Used by ExternalIPPool (from its own spec) and ExternalIP (inherited from parent pool).
 	defaultExternalIPPoolImplementationStrategy = "metallb-l2"

@@ -25,6 +25,7 @@
     vn_region: "{{ virtual_network.spec.region }}"
     vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
     vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
+    vn_uuid: "{{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] }}"
 
 - name: Display VirtualNetwork information
   ansible.builtin.debug:
@@ -46,12 +47,19 @@
   block:
     - name: Build router pod namespace labels
       ansible.builtin.set_fact:
+        # secondary-vn.osac.openshift.io/<vn-uuid> is a per-VN-keyed label, not a single
+        # osac.openshift.io/virtual-network key with the VN as its value: a namespace must
+        # be able to carry this label for more than one Secondary VN at once (e.g. a
+        # dual-attached VM's own namespace, associated with its Primary VN *and*
+        # dual-attached into one or more Secondary VNs) without the values colliding on a
+        # shared key. Subnet's CUDN namespaceSelector (create_subnet.yaml) matches on this
+        # same key, keyed by subnet.spec.virtualNetwork (the same UUID).
         router_pod_namespace_labels: >-
           {{
             default_subnet_labels | combine(
               {'osac.openshift.io/tenant': vn_tenant_id} if vn_tenant_id else {}
             ) | combine(
-              {'osac.openshift.io/virtual-network': vn_name}
+              {'secondary-vn.osac.openshift.io/' ~ vn_uuid: 'true'}
             )
           }}
 

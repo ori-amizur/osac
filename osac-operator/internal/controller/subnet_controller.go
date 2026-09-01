@@ -305,7 +305,15 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 		return *requeue, nil
 	}
 
-	updated, err := r.updateSubnetStrategyAnnotations(ctx, subnet, implementationStrategy, k8sStrategy, vipCIDR, k8sTarget != nil)
+	networkingType := vnet.Spec.NetworkingType
+	if networkingType == "" {
+		// No CRD-level default exists for this field (defaulting happens upstream, in
+		// fulfillment-service's Create validation) - a VirtualNetwork CR created
+		// directly against the K8s API can still leave it empty.
+		networkingType = v1alpha1.VirtualNetworkNetworkingTypePrimary
+	}
+	updated, err := r.updateSubnetStrategyAnnotations(ctx, subnet, implementationStrategy, k8sStrategy, vipCIDR,
+		string(networkingType), vnet.Name, k8sTarget != nil)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -373,14 +381,17 @@ func (r *SubnetReconciler) ensureVNetLockLease(ctx context.Context, subnet *v1al
 }
 
 // updateSubnetStrategyAnnotations stamps the implementation-strategy, k8s
-// implementation-strategy, and VIP CIDR annotations AAP playbooks rely on, persisting
-// subnet if anything changed. The k8s annotation is compared and, when hasK8sTarget is
-// false, removed unconditionally (not just when previously present) so a Subnet
-// transitioning from dual-dispatch to fabric-only doesn't leave a stale k8s target for
-// handleDeprovisioning to act on. Returns true when it persisted a change — the caller
+// implementation-strategy, VIP CIDR, networking-type, and parent-VirtualNetwork-name
+// annotations AAP playbooks rely on, persisting subnet if anything changed. The k8s
+// annotation is compared and, when hasK8sTarget is false, removed unconditionally (not
+// just when previously present) so a Subnet transitioning from dual-dispatch to
+// fabric-only doesn't leave a stale k8s target for handleDeprovisioning to act on.
+// networkingType and virtualNetworkName mirror the parent VirtualNetwork as resolved by
+// the caller (getParentVirtualNetwork) — they're always present since every Subnet has a
+// parent VN by the time this runs. Returns true when it persisted a change — the caller
 // should return immediately in that case, since the change itself triggers a fresh
 // reconcile that resumes with up-to-date annotations.
-func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, vipCIDR string, hasK8sTarget bool) (bool, error) {
+func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, vipCIDR, networkingType, virtualNetworkName string, hasK8sTarget bool) (bool, error) {
 	if subnet.Annotations == nil {
 		subnet.Annotations = make(map[string]string)
 	}
@@ -402,6 +413,14 @@ func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, 
 		changed = true
 	} else if vipCIDR == "" && subnet.Annotations[osacVIPCIDRAnnotation] != "" {
 		delete(subnet.Annotations, osacVIPCIDRAnnotation)
+		changed = true
+	}
+	if subnet.Annotations[osacNetworkingTypeAnnotation] != networkingType {
+		subnet.Annotations[osacNetworkingTypeAnnotation] = networkingType
+		changed = true
+	}
+	if subnet.Annotations[osacVirtualNetworkNameAnnotation] != virtualNetworkName {
+		subnet.Annotations[osacVirtualNetworkNameAnnotation] = virtualNetworkName
 		changed = true
 	}
 	if !changed {

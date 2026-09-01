@@ -42,6 +42,7 @@ ROLE_TESTS=(
   "finalizer"
   "lease"
   "virtual_network_secondary_router_pod"
+  "subnet_secondary_cudn"
 )
 
 ROLE_SCENARIO_TESTS=(

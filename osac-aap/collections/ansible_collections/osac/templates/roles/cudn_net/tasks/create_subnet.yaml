@@ -1,7 +1,16 @@
 ---
-# Subnet role creates Namespace and ClusterUserDefinedNetwork (CUDN) for network provisioning
-# 1. Creates namespace with required labels for OVN primary UDN
-# 2. Creates CUDN with namespaceSelector matching the namespace
+# Subnet role creates the network resources for a Subnet.
+#
+# For a Subnet on a Primary-type VirtualNetwork (the default): creates a dedicated
+# Namespace (with required labels for OVN primary UDN) and a role:Primary CUDN targeting
+# that namespace.
+#
+# For a Subnet on a Secondary-type VirtualNetwork: no dedicated namespace is created --
+# the VirtualNetwork already has one shared namespace (its router pod's namespace, from
+# create_virtual_network.yaml). Instead, creates a role:Secondary CUDN whose
+# namespaceSelector matches the same per-VN-UUID-keyed label the shared namespace already
+# carries, and attaches the new subnet to the router pod Deployment's Multus network list
+# (see design.md's "Router pod gains an interface for the new subnet", AC3).
 
 - name: Include get remote cluster kubeconfig
   ansible.builtin.include_role:
@@ -17,6 +26,8 @@
     subnet_ipv6_cidr: "{{ subnet.spec.ipv6Cidr | default('') }}"
     subnet_tenant_id: "{{ subnet.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
     subnet_virtual_network: "{{ subnet.spec.virtualNetwork | default('') }}"
+    subnet_networking_type: "{{ subnet.metadata.annotations['osac.openshift.io/networking-type'] | default('Primary') }}"
+    subnet_vn_name: "{{ subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] | default('') }}"
 
 - name: Build CUDN subnets array
   ansible.builtin.set_fact:
@@ -56,6 +67,7 @@
       - "Namespace labels: {{ namespace_labels }}"
 
 - name: Create Namespace for Subnet
+  when: subnet_networking_type != 'Secondary'
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: present
@@ -68,10 +80,24 @@
   register: namespace_result
 
 - name: Display Namespace creation result
+  when: subnet_networking_type != 'Secondary'
   ansible.builtin.debug:
     msg:
       - "Namespace '{{ subnet_name }}' created/updated successfully"
       - "Changed: {{ namespace_result.changed | default(false) }}"
+
+- name: Build CUDN namespaceSelector and layer2 role
+  ansible.builtin.set_fact:
+    # Secondary: match the per-VN-UUID-keyed label the VirtualNetwork's shared namespace
+    # already carries (create_virtual_network.yaml) rather than a fixed namespace name.
+    # Primary: unchanged, matches this subnet's own dedicated namespace.
+    subnet_cudn_namespace_selector: >-
+      {{
+        {'secondary-vn.osac.openshift.io/' ~ subnet_virtual_network: 'true'}
+        if subnet_networking_type == 'Secondary'
+        else {'osac.openshift.io/subnet-id': subnet_id}
+      }}
+    subnet_cudn_layer2_role: "{{ 'Secondary' if subnet_networking_type == 'Secondary' else default_layer2_role }}"
 
 - name: Create ClusterUserDefinedNetwork
   kubernetes.core.k8s:
@@ -85,12 +111,11 @@
         labels: "{{ default_subnet_labels }}"
       spec:
         namespaceSelector:
-          matchLabels:
-            osac.openshift.io/subnet-id: "{{ subnet_id }}"
+          matchLabels: "{{ subnet_cudn_namespace_selector }}"
         network:
           topology: "Layer2"
           layer2:
-            role: "{{ default_layer2_role }}"
+            role: "{{ subnet_cudn_layer2_role }}"
             ipamLifecycle: "{{ default_ipam_lifecycle }}"
             subnets: "{{ cudn_subnets }}"
   register: cudn_result
@@ -100,3 +125,43 @@
     msg:
       - "CUDN '{{ subnet_name }}' created successfully"
       - "Resource UID: {{ cudn_result.result.metadata.uid | default('N/A') }}"
+
+- name: Attach the new subnet to the router pod Deployment
+  when: subnet_networking_type == 'Secondary'
+  block:
+    - name: Get the router pod Deployment
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_pod_name }}"
+      register: router_pod_deployment_info
+
+    - name: Compute updated router pod Multus network attachment list
+      ansible.builtin.set_fact:
+        router_pod_networks: >-
+          {{
+            (
+              (router_pod_deployment_info.resources[0].spec.template.metadata.annotations | default({}))
+                .get('k8s.v1.cni.cncf.io/networks', '')
+                .split(',') | reject('equalto', '') | list
+            ) | union([subnet_name])
+          }}
+
+    - name: Patch router pod Deployment to attach the new subnet
+      kubernetes.core.k8s_json_patch:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_pod_name }}"
+        patch:
+          - op: add
+            path: /spec/template/metadata/annotations
+            value:
+              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | join(',') }}"
+
+    - name: Display router pod attachment result
+      ansible.builtin.debug:
+        msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | join(', ') }}"

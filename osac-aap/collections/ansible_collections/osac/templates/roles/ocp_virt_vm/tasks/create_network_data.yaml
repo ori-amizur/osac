@@ -19,6 +19,15 @@
 # Primary UDN elsewhere plus a Secondary VN subnet) need a second, additional interface
 # and VN-CIDR-scoped routing instead of replacing the VM's sole interface, and are out of
 # scope here (blocked on the same deferred multi-NIC-VM support as Story 1.03's AC2).
+#
+# `binding: {name: l2bridge}` below is carried over from create_build_spec.yaml's
+# existing (pod:{}/Primary-UDN) interface, on the assumption that it's a KubeVirt network
+# binding plugin generically supporting OVN-Kubernetes UDN networks (Primary and
+# Secondary alike), not something specific to the pod:{} default-network case -- this
+# repo defines no NetworkBindingPlugin registration to confirm that against, and it
+# hasn't been validated on a live cluster with a Multus-attached Secondary UDN NAD.
+# Verify before relying on this in production; plain `bridge` is very plausibly wrong
+# here instead (it assumes a traditional Linux-bridge NAD, not an OVN-K UDN one).
 
 - name: Initialize vm_network_data (no injection by default)
   ansible.builtin.set_fact:
@@ -48,25 +57,23 @@
       ansible.builtin.set_fact:
         vm_template_spec: "{{ vm_template_spec | combine(secondary_subnet_network_patch, recursive=True, list_merge='replace') }}"
       vars:
-        # Namespace-qualified even though, in this single-attachment story's scope, the
-        # VM already lives in the same namespace as the NAD (both resolve to the parent
-        # VN's shared namespace) -- qualifying it now means this doesn't need revisiting
-        # once dual-attachment (a VM in a *different*, foreign namespace) is built.
+        # Bare name, not namespace-qualified: a ClusterUserDefinedNetwork creates a real
+        # NAD in *every* namespace its namespaceSelector matches, so the NAD this
+        # references is always local to whichever namespace the VM actually lives in --
+        # the router pod's shared namespace here (single-attachment scope), or (once
+        # built) a dual-attached VM's own foreign namespace via the shared-label
+        # mechanism. Cross-namespace referencing is never needed by this design.
         secondary_subnet_network_patch:
           networks:
             - name: default
               multus:
-                networkName: >-
-                  {{
-                    vm_primary_subnet_info.resources[0].metadata.annotations['osac.openshift.io/virtual-network-name']
-                    ~ '/' ~ vm_subnet_ref
-                  }}
+                networkName: "{{ vm_subnet_ref }}"
           domain:
             devices:
               interfaces:
                 - name: default
                   binding:
-                    name: l2bridge
+                    name: l2bridge  # see design note below -- not independently verified
 
     - name: Look up the cluster DNS Service ClusterIP
       kubernetes.core.k8s_info:

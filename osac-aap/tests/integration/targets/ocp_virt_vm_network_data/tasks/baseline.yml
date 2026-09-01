@@ -119,7 +119,7 @@
             that:
               - vm_template_spec.networks | length == 1
               - vm_template_spec.networks[0].name == 'default'
-              - vm_template_spec.networks[0].multus.networkName == test_vm_namespace ~ '/' ~ test_subnet_name
+              - vm_template_spec.networks[0].multus.networkName == test_subnet_name
               - "'pod' not in vm_template_spec.networks[0]"
               - vm_template_spec.domain.devices.interfaces | length == 1
               - vm_template_spec.domain.devices.interfaces[0].binding.name == 'l2bridge'

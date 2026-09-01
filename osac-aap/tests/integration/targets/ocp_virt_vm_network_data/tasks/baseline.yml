@@ -64,6 +64,7 @@
                 namespace: "{{ test_namespace }}"
                 annotations:
                   osac.openshift.io/networking-type: Secondary
+                  osac.openshift.io/virtual-network-name: "{{ test_vm_namespace }}"
               spec:
                 virtualNetwork: test-vn-uuid
                 ipv4Cidr: 10.5.1.0/24
@@ -75,6 +76,22 @@
                 namespace: "{{ test_namespace }}"
             vm_subnet_ref: "{{ test_subnet_name }}"
             compute_instance_target_namespace: "{{ test_vm_namespace }}"
+            # Mimics create_build_spec.yaml's default output -- the interface/network
+            # this role is expected to override for a Secondary-VN VM.
+            vm_template_spec:
+              domain:
+                devices:
+                  disks:
+                    - name: root-disk
+                      disk:
+                        bus: virtio
+                  interfaces:
+                    - name: default
+                      binding:
+                        name: l2bridge
+              networks:
+                - name: default
+                  pod: {}
 
         - name: Run ocp_virt_vm create_network_data
           ansible.builtin.include_role:
@@ -96,6 +113,20 @@
               - test_vm_namespace ~ '.svc.cluster.local' in parsed_network_data.network.config[0].subnets[0].dns_search
             fail_msg: "Generated network-config did not carry the expected gateway/DNS settings"
             success_msg: "Secondary-VN network-config injection: passed"
+
+        - name: Assert the VM's default interface was replaced with a Multus attachment to the subnet's NAD
+          ansible.builtin.assert:
+            that:
+              - vm_template_spec.networks | length == 1
+              - vm_template_spec.networks[0].name == 'default'
+              - vm_template_spec.networks[0].multus.networkName == test_vm_namespace ~ '/' ~ test_subnet_name
+              - "'pod' not in vm_template_spec.networks[0]"
+              - vm_template_spec.domain.devices.interfaces | length == 1
+              - vm_template_spec.domain.devices.interfaces[0].binding.name == 'l2bridge'
+              - vm_template_spec.domain.devices.disks | length == 1
+              - vm_template_spec.domain.devices.disks[0].name == 'root-disk'
+            fail_msg: "VM interface/network was not correctly replaced with the subnet's Multus attachment"
+            success_msg: "VM interface Multus attachment: passed"
 
       always:
         - name: Cleanup -- delete the Subnet's namespace and the DNS namespace

@@ -1,13 +1,24 @@
 ---
-# Computes vm_network_data: cloud-init network-config content injected for a VM attached
-# to a Secondary VirtualNetwork subnet -- a route to the subnet's .1 gateway plus DNS
-# resolver config, per design.md's cloud-init route/DNS injection requirements (Story
-# 1.04). Empty string (no injection) for a Primary-type subnet, or when the referenced
-# Subnet can't be found. Single-attachment (Secondary-VN-only) scope only: this looks at
-# networkAttachments[0] alone (vm_subnet_ref, already resolved by create_validate.yaml) --
-# dual-attached VMs (a Primary UDN elsewhere plus a Secondary VN subnet) need
-# VN-CIDR-scoped routing instead of this default-route injection, and are out of scope
-# here (blocked on the same deferred multi-NIC-VM support as Story 1.03's AC2).
+# For a VM whose primary (single-attachment scope: sole) subnet is Secondary-type:
+# 1. Replaces the VM's default pod-network interface (create_build_spec.yaml's
+#    `networks: [{name: default, pod: {}}]`) with an explicit Multus attachment to the
+#    subnet's CUDN-generated NetworkAttachmentDefinition. This is necessary, not
+#    cosmetic: `pod: {}` only gets transparently intercepted by OVN-Kubernetes for a
+#    role:Primary UDN matching the namespace -- a role:Secondary UDN (what every
+#    Secondary VN subnet's CUDN uses) never becomes a namespace's default network, so
+#    without this the VM would attach to the cluster's own default network instead of
+#    the subnet's Layer2 network.
+# 2. Computes vm_network_data: cloud-init network-config content (route to the subnet's
+#    .1 gateway plus DNS resolver config) for that same interface, per design.md's
+#    cloud-init route/DNS injection requirements (Story 1.04).
+# Both are no-ops (empty vm_network_data, networks/interfaces untouched) for a
+# Primary-type subnet, or when the referenced Subnet can't be found.
+#
+# Single-attachment (Secondary-VN-only) scope only: this looks at networkAttachments[0]
+# alone (vm_subnet_ref, already resolved by create_validate.yaml) -- dual-attached VMs (a
+# Primary UDN elsewhere plus a Secondary VN subnet) need a second, additional interface
+# and VN-CIDR-scoped routing instead of replacing the VM's sole interface, and are out of
+# scope here (blocked on the same deferred multi-NIC-VM support as Story 1.03's AC2).
 
 - name: Initialize vm_network_data (no injection by default)
   ansible.builtin.set_fact:
@@ -32,6 +43,30 @@
           {{
             (vm_primary_subnet_info.resources[0].spec.ipv4Cidr | ansible.netcommon.ipaddr('1')).split('/')[0]
           }}
+
+    - name: Replace the VM's default pod-network interface with the subnet's NAD
+      ansible.builtin.set_fact:
+        vm_template_spec: "{{ vm_template_spec | combine(secondary_subnet_network_patch, recursive=True, list_merge='replace') }}"
+      vars:
+        # Namespace-qualified even though, in this single-attachment story's scope, the
+        # VM already lives in the same namespace as the NAD (both resolve to the parent
+        # VN's shared namespace) -- qualifying it now means this doesn't need revisiting
+        # once dual-attachment (a VM in a *different*, foreign namespace) is built.
+        secondary_subnet_network_patch:
+          networks:
+            - name: default
+              multus:
+                networkName: >-
+                  {{
+                    vm_primary_subnet_info.resources[0].metadata.annotations['osac.openshift.io/virtual-network-name']
+                    ~ '/' ~ vm_subnet_ref
+                  }}
+          domain:
+            devices:
+              interfaces:
+                - name: default
+                  binding:
+                    name: l2bridge
 
     - name: Look up the cluster DNS Service ClusterIP
       kubernetes.core.k8s_info:

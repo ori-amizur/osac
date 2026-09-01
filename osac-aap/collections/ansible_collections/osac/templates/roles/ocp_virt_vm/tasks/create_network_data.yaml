@@ -1,0 +1,77 @@
+---
+# Computes vm_network_data: cloud-init network-config content injected for a VM attached
+# to a Secondary VirtualNetwork subnet -- a route to the subnet's .1 gateway plus DNS
+# resolver config, per design.md's cloud-init route/DNS injection requirements (Story
+# 1.04). Empty string (no injection) for a Primary-type subnet, or when the referenced
+# Subnet can't be found. Single-attachment (Secondary-VN-only) scope only: this looks at
+# networkAttachments[0] alone (vm_subnet_ref, already resolved by create_validate.yaml) --
+# dual-attached VMs (a Primary UDN elsewhere plus a Secondary VN subnet) need
+# VN-CIDR-scoped routing instead of this default-route injection, and are out of scope
+# here (blocked on the same deferred multi-NIC-VM support as Story 1.03's AC2).
+
+- name: Initialize vm_network_data (no injection by default)
+  ansible.builtin.set_fact:
+    vm_network_data: ""
+
+- name: Look up the ComputeInstance's primary subnet
+  kubernetes.core.k8s_info:
+    api_version: osac.openshift.io/v1alpha1
+    kind: Subnet
+    name: "{{ vm_subnet_ref }}"
+    namespace: "{{ compute_instance.metadata.namespace }}"
+  register: vm_primary_subnet_info
+
+- name: Build cloud-init network-config for a Secondary-VN-only VM
+  when:
+    - vm_primary_subnet_info.resources | length > 0
+    - (vm_primary_subnet_info.resources[0].metadata.annotations | default({})).get('osac.openshift.io/networking-type', 'Primary') == 'Secondary'
+  block:
+    - name: Compute the subnet's gateway address
+      ansible.builtin.set_fact:
+        vm_subnet_gateway: >-
+          {{
+            (vm_primary_subnet_info.resources[0].spec.ipv4Cidr | ansible.netcommon.ipaddr('1')).split('/')[0]
+          }}
+
+    - name: Look up the cluster DNS Service ClusterIP
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: v1
+        kind: Service
+        name: "{{ cluster_dns_service_name }}"
+        namespace: "{{ cluster_dns_service_namespace }}"
+      register: vm_cluster_dns_info
+
+    - name: Build cloud-init network-config content
+      when: vm_cluster_dns_info.resources | length > 0
+      ansible.builtin.set_fact:
+        # eth0: KubeVirt's own interface name in create_build_spec.yaml is "default", not
+        # a guest-visible name -- eth0 is the common guest-side name for a KubeVirt
+        # virtio-bound interface on typical cloud images (predictable-naming disabled),
+        # but this is an assumption, not confirmed against a live VM in this environment.
+        vm_network_data: >-
+          {{
+            {
+              'network': {
+                'version': 1,
+                'config': [{
+                  'type': 'physical',
+                  'name': 'eth0',
+                  'subnets': [{
+                    'type': 'dhcp4',
+                    'routes': [{
+                      'network': '0.0.0.0',
+                      'netmask': '0.0.0.0',
+                      'gateway': vm_subnet_gateway
+                    }],
+                    'dns_nameservers': [vm_cluster_dns_info.resources[0].spec.clusterIP],
+                    'dns_search': [
+                      compute_instance_target_namespace ~ '.svc.cluster.local',
+                      'svc.cluster.local',
+                      'cluster.local'
+                    ]
+                  }]
+                }]
+              }
+            } | to_nice_yaml
+          }}

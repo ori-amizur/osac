@@ -328,6 +328,13 @@ metallb:
 hubAccess:
   enabled: false
 
+# --- Router Pod SCC (Secondary VirtualNetwork) ---
+# OpenShift-only: SecurityContextConstraints + ClusterRole granting the NET_ADMIN
+# capability Secondary VirtualNetwork router pods need for SNAT (see
+# osac-router-agent/entrypoint.sh). See router-pod-scc.yaml for the security review note.
+routerPodScc:
+  enabled: false
+
 bundledVault:
   enabled: false
   devRootToken: ""

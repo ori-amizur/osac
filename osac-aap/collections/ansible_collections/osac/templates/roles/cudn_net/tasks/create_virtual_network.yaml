@@ -75,6 +75,38 @@
             labels: "{{ router_pod_namespace_labels }}"
       register: router_pod_namespace_result
 
+    - name: Create router pod ServiceAccount
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: "{{ router_pod_service_account_name }}"
+            namespace: "{{ vn_name }}"
+            labels: "{{ default_subnet_labels }}"
+
+    - name: Bind router pod ServiceAccount to the router pod SCC
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: "{{ router_pod_service_account_name }}-scc"
+            namespace: "{{ vn_name }}"
+            labels: "{{ default_subnet_labels }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: "{{ router_pod_scc_cluster_role }}"
+          subjects:
+            - kind: ServiceAccount
+              name: "{{ router_pod_service_account_name }}"
+              namespace: "{{ vn_name }}"
+
     - name: Create router pod Deployment
       kubernetes.core.k8s:
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -98,10 +130,30 @@
                   osac.openshift.io/router-pod: "true"
                   osac.openshift.io/virtual-network: "{{ vn_name }}"
               spec:
+                serviceAccountName: "{{ router_pod_service_account_name }}"
+                # net.ipv4.ip_forward must be set here, not by the entrypoint: /proc/sys
+                # is mounted read-only regardless of capabilities, confirmed by direct
+                # testing -- `sysctl -w` from inside the container fails with "permission
+                # denied" even with NET_ADMIN. This is Kubernetes' safe/namespaced-sysctls
+                # mechanism, applied by the container runtime before the container starts.
+                securityContext:
+                  sysctls:
+                    - name: net.ipv4.ip_forward
+                      value: "1"
                 containers:
                   - name: router
                     image: "{{ router_pod_image }}"
-                    command: "{{ router_pod_command }}"
+                    # No command override: osac-router-agent's own ENTRYPOINT runs the
+                    # forwarding/SNAT setup.
+                    # NET_ADMIN for the entrypoint's nft SNAT rule (osac-router-agent).
+                    # Requires the router pod ServiceAccount above to be bound to a SCC
+                    # allowing it (see osac-installer's router-pod-scc.yaml) -- on a
+                    # cluster without that SCC bound, this Deployment's pods will fail
+                    # admission.
+                    securityContext:
+                      capabilities:
+                        add:
+                          - NET_ADMIN
       register: router_pod_deployment_result
 
     - name: Display router pod provisioning result

@@ -1479,6 +1479,17 @@
         }
       }
     },
+    "routerPodScc": {
+      "type": "object",
+      "description": "SecurityContextConstraints + ClusterRole granting NET_ADMIN to Secondary VirtualNetwork router pods (OpenShift-only)",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create the router pod SCC and its use-granting ClusterRole",
+          "default": false
+        }
+      }
+    },
     "bundledVault": {
       "type": "object",
       "description": "Bundled OpenBao (Vault-compatible) secret store for dev/CI environments. When enabled, deploys a single-replica OpenBao instance in dev mode with emptyDir storage.",

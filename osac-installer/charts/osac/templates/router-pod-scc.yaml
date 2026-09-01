@@ -1,0 +1,68 @@
+{{- if .Values.routerPodScc.enabled }}
+# Secondary VirtualNetwork router pods need NET_ADMIN to configure SNAT (see
+# osac-router-agent's entrypoint.sh) -- no broader privilege than that. osac-aap creates a
+# ServiceAccount per Secondary VirtualNetwork's own namespace and a namespaced RoleBinding
+# to this ClusterRole (see cudn_net/tasks/create_virtual_network.yaml); this chart only
+# installs the cluster-scoped SCC and the ClusterRole granting `use` on it, once.
+#
+# Fixed names (not {{ .Release.Namespace }}-qualified like hub-access's own ClusterRole):
+# osac-aap references this ClusterRole by a fixed name when building each Secondary
+# VirtualNetwork's RoleBinding, so it doesn't need to know the Helm release namespace.
+# Known limitation: this doesn't support multiple OSAC releases on one cluster the way
+# hub-access's per-release naming does -- flagging alongside the broader SCC security
+# review this whole feature already needs.
+#
+# No existing SCC precedent elsewhere in this repo -- flagging this new cluster-scoped
+# surface for security review before real deployment.
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: osac-router-pod
+  labels:
+    {{- include "osac.labels" . | nindent 4 }}
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities:
+  - NET_ADMIN
+defaultAddCapabilities: null
+requiredDropCapabilities:
+  - ALL
+readOnlyRootFilesystem: false
+runAsUser:
+  type: MustRunAsRange
+seLinuxContext:
+  type: MustRunAs
+fsGroup:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+users: []
+groups: []
+volumes:
+  - configMap
+  - downwardAPI
+  - emptyDir
+  - projected
+  - secret
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: osac-router-pod-scc
+  labels:
+    {{- include "osac.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - security.openshift.io
+    resources:
+      - securitycontextconstraints
+    resourceNames:
+      - osac-router-pod
+    verbs:
+      - use
+{{- end }}

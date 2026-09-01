@@ -72,9 +72,18 @@
       - "Namespace '{{ subnet_name }}' deletion completed"
       - "Changed: {{ namespace_delete_result.changed | default(false) }}"
 
-- name: Detach the subnet from the router pod Deployment
+- name: Detach the subnet from the router pod and release its gateway address
   when: subnet_networking_type == 'Secondary'
   block:
+    - name: Delete IPAMClaim for the subnet's gateway address
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: absent
+        api_version: k8s.cni.cncf.io/v1alpha1
+        kind: IPAMClaim
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ subnet_name }}"
+
     - name: Get the router pod Deployment
       kubernetes.core.k8s_info:
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -84,16 +93,14 @@
         name: "{{ router_pod_name }}"
       register: router_pod_deployment_info
 
-    - name: Compute updated router pod Multus network attachment list
+    - name: Compute updated router pod Multus network selection list
       when: router_pod_deployment_info.resources | length > 0
       ansible.builtin.set_fact:
         router_pod_networks: >-
           {{
-            (
-              (router_pod_deployment_info.resources[0].spec.template.metadata.annotations | default({}))
-                .get('k8s.v1.cni.cncf.io/networks', '')
-                .split(',') | reject('equalto', '') | list
-            ) | difference([subnet_name])
+            (router_pod_deployment_info.resources[0].spec.template.metadata.annotations | default({}))
+              .get('k8s.v1.cni.cncf.io/networks', '[]') | from_json
+              | rejectattr('name', 'equalto', subnet_name) | list
           }}
 
     - name: Patch router pod Deployment to detach the subnet
@@ -108,9 +115,9 @@
           - op: add
             path: /spec/template/metadata/annotations
             value:
-              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | join(',') }}"
+              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | to_json }}"
 
     - name: Display router pod detachment result
       when: router_pod_deployment_info.resources | length > 0
       ansible.builtin.debug:
-        msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | join(', ') }}"
+        msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | map(attribute='name') | join(', ') }}"

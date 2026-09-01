@@ -23,6 +23,14 @@ default_vm_internal_network: "hypershift"
 default_vm_storage_class: "nfs-client"
 default_vm_labels: "{{ {compute_instance_label: compute_instance_name} }}"
 
+# Cluster DNS Service consulted for a Secondary-VN-only VM's injected resolver config
+# (create_network_data.yaml) -- OpenShift's default DNS Service. Deliberately not the
+# router pod's own /etc/resolv.conf (design.md's literal wording): every default-DNS-policy
+# pod in the cluster has identical resolv.conf content, so this Service's ClusterIP is
+# the same value without needing exec-into-pod RBAC.
+cluster_dns_service_name: dns-default
+cluster_dns_service_namespace: openshift-dns
+
 # Setup the defaults described in the arg_specs (Linux profile).
 default_arg_specs:
   exposed_ports: "22/tcp"

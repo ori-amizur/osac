@@ -366,6 +366,14 @@ hubAccess:
   enabled: true
 
 # ---------------------
+# Router Pod SCC (Secondary VirtualNetwork)
+# ---------------------
+routerPodScc:
+  # Create the SecurityContextConstraints + ClusterRole granting NET_ADMIN to Secondary
+  # VirtualNetwork router pods. OpenShift-only; leave false on non-OpenShift clusters.
+  enabled: true
+
+# ---------------------
 # Publish Templates
 # ---------------------
 publishTemplates:

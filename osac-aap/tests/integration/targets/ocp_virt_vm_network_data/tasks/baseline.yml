@@ -1,0 +1,175 @@
+---
+# Integration test for ocp_virt_vm's create_network_data.yaml (Story 1.04 cloud-init
+# route/DNS injection for a Secondary-VN-only VM's single subnet attachment). Unlike
+# create_subnet.yaml/delete_subnet.yaml's CUDN dependency, this only needs OSAC's own
+# Subnet CRD (installed by the real test harness's setup_test_env.sh via
+# osac-operator/config/crd/bases/, so this is exercised for real, not flagged as an
+# environment gap) plus a plain Kubernetes Service -- no OVN-Kubernetes CRDs needed.
+
+# ── Test 1: Secondary-VN subnet injects a route + DNS network-config ──
+- name: "Ocp_virt_vm network_data - Test Secondary VN subnet"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_namespace: ocp-virt-vm-network-data-test
+    test_subnet_name: subnet-network-data-test
+    test_vm_namespace: vm-network-data-test-ns
+
+  tasks:
+    - name: Test Secondary-VN subnet network-config injection
+      block:
+        - name: Create the Subnet's own namespace, and the DNS namespace and Service
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ item }}"
+          loop:
+            - apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ test_namespace }}"
+            - apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: openshift-dns
+            - apiVersion: v1
+              kind: Service
+              metadata:
+                name: dns-default
+                namespace: openshift-dns
+              spec:
+                ports:
+                  - port: 53
+                    protocol: UDP
+          loop_control:
+            label: "{{ item.kind }}/{{ item.metadata.name }}"
+
+        - name: Read back the DNS Service's assigned ClusterIP
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Service
+            name: dns-default
+            namespace: openshift-dns
+          register: dns_service_result
+
+        - name: Create the Secondary-VN Subnet fixture
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: osac.openshift.io/v1alpha1
+              kind: Subnet
+              metadata:
+                name: "{{ test_subnet_name }}"
+                namespace: "{{ test_namespace }}"
+                annotations:
+                  osac.openshift.io/networking-type: Secondary
+              spec:
+                virtualNetwork: test-vn-uuid
+                ipv4Cidr: 10.5.1.0/24
+
+        - name: Set ComputeInstance facts for a single-attachment Secondary-VN VM
+          ansible.builtin.set_fact:
+            compute_instance:
+              metadata:
+                namespace: "{{ test_namespace }}"
+            vm_subnet_ref: "{{ test_subnet_name }}"
+            compute_instance_target_namespace: "{{ test_vm_namespace }}"
+
+        - name: Run ocp_virt_vm create_network_data
+          ansible.builtin.include_role:
+            name: osac.templates.ocp_virt_vm
+            tasks_from: create_network_data.yaml
+
+        - name: Parse the generated network-config
+          ansible.builtin.set_fact:
+            parsed_network_data: "{{ vm_network_data | from_yaml }}"
+
+        - name: Assert the network-config carries the expected route and DNS settings
+          ansible.builtin.assert:
+            that:
+              - vm_network_data | length > 0
+              - parsed_network_data.network.version == 1
+              - parsed_network_data.network.config[0].name == 'eth0'
+              - parsed_network_data.network.config[0].subnets[0].routes[0].gateway == '10.5.1.1'
+              - parsed_network_data.network.config[0].subnets[0].dns_nameservers == [dns_service_result.resources[0].spec.clusterIP]
+              - test_vm_namespace ~ '.svc.cluster.local' in parsed_network_data.network.config[0].subnets[0].dns_search
+            fail_msg: "Generated network-config did not carry the expected gateway/DNS settings"
+            success_msg: "Secondary-VN network-config injection: passed"
+
+      always:
+        - name: Cleanup -- delete the Subnet's namespace and the DNS namespace
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ item }}"
+          loop:
+            - "{{ test_namespace }}"
+            - openshift-dns
+          failed_when: false
+
+# ── Test 2: Primary-type subnet injects nothing (regression check) ──
+- name: "Ocp_virt_vm network_data - Test Primary subnet is unaffected"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_namespace: ocp-virt-vm-network-data-primary-test
+    test_subnet_name: subnet-network-data-primary-test
+
+  tasks:
+    - name: Test Primary-type subnet is unaffected
+      block:
+        - name: Create the Subnet's own namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ test_namespace }}"
+
+        - name: Create the Primary Subnet fixture
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: osac.openshift.io/v1alpha1
+              kind: Subnet
+              metadata:
+                name: "{{ test_subnet_name }}"
+                namespace: "{{ test_namespace }}"
+                # networking-type omitted -- defaults to Primary
+              spec:
+                virtualNetwork: test-vn-primary-uuid
+                ipv4Cidr: 10.5.2.0/24
+
+        - name: Set ComputeInstance facts for a Primary-subnet VM
+          ansible.builtin.set_fact:
+            compute_instance:
+              metadata:
+                namespace: "{{ test_namespace }}"
+            vm_subnet_ref: "{{ test_subnet_name }}"
+            compute_instance_target_namespace: "{{ test_subnet_name }}"
+
+        - name: Run ocp_virt_vm create_network_data
+          ansible.builtin.include_role:
+            name: osac.templates.ocp_virt_vm
+            tasks_from: create_network_data.yaml
+
+        - name: Assert no network-config was generated for a Primary-type subnet
+          ansible.builtin.assert:
+            that:
+              - vm_network_data == ''
+            fail_msg: "network-config was unexpectedly generated for a Primary-type subnet"
+            success_msg: "Primary subnet unaffected: passed"
+
+      always:
+        - name: Cleanup -- delete the Subnet's namespace
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_namespace }}"
+          failed_when: false

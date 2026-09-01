@@ -126,9 +126,68 @@
       - "CUDN '{{ subnet_name }}' created successfully"
       - "Resource UID: {{ cudn_result.result.metadata.uid | default('N/A') }}"
 
-- name: Attach the new subnet to the router pod Deployment
+- name: Reserve the subnet's persistent gateway address and attach it to the router pod
   when: subnet_networking_type == 'Secondary'
   block:
+    - name: Compute the subnet's .1 gateway address
+      ansible.builtin.set_fact:
+        subnet_gateway_address: "{{ subnet_ipv4_cidr | ansible.netcommon.ipaddr('1') }}"
+      when: subnet_ipv4_cidr | length > 0
+      # IPv6-only subnets aren't handled yet -- out of scope for this pass, same as the
+      # rest of Story 1.04's Secondary-VN-only scope.
+
+    - name: Create IPAMClaim for the subnet's gateway address
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: present
+        definition:
+          # k8s.cni.cncf.io/v1alpha1 IPAMClaim (from k8snetworkplumbingwg/ipamclaims, an
+          # OVN-Kubernetes dependency, not an OSAC-defined CRD).
+          apiVersion: k8s.cni.cncf.io/v1alpha1
+          kind: IPAMClaim
+          metadata:
+            name: "{{ subnet_name }}"
+            namespace: "{{ subnet_vn_name }}"
+            labels: "{{ default_subnet_labels }}"
+          spec:
+            # network: assumed to be the CUDN's own name, matching how the CUDN and its
+            # generated NAD already share that name elsewhere in this role -- unconfirmed
+            # against a live OVN-Kubernetes cluster (no UDN/IPAMClaim CRDs installed in
+            # this repo's test environment); validate before relying on this in production.
+            network: "{{ subnet_name }}"
+            interface: "{{ subnet_name }}"
+      when: subnet_gateway_address is defined
+
+    - name: Reserve the gateway address on the IPAMClaim's status
+      # kubernetes.core.k8s (this collection's pinned version, 5.2.0) cannot write the
+      # status subresource -- confirmed by direct testing: a definition including a
+      # `status:` key is silently ignored, and this version has no dedicated status
+      # module either. `kubectl`'s own --subresource flag (available in this execution
+      # environment, per AGENTS.md) is the only mechanism found. OVN-Kubernetes's own
+      # IPAMClaim allocator only honors a pre-existing claim if `status.ips` is already
+      # non-empty when it processes it -- this must run as a second, separate call after
+      # the create above, not combined into one.
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - patch
+          - ipamclaim
+          - "{{ subnet_name }}"
+          - -n
+          - "{{ subnet_vn_name }}"
+          - --type=merge
+          - --subresource=status
+          - -p
+          - "{{ {'status': {'ips': [subnet_gateway_address]}} | to_json }}"
+      environment: >-
+        {{
+          {'KUBECONFIG': remote_cluster_kubeconfig}
+          if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
+          else {}
+        }}
+      when: subnet_gateway_address is defined
+      changed_when: true
+
     - name: Get the router pod Deployment
       kubernetes.core.k8s_info:
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -138,15 +197,26 @@
         name: "{{ router_pod_name }}"
       register: router_pod_deployment_info
 
-    - name: Compute updated router pod Multus network attachment list
+    - name: Compute updated router pod Multus network selection list
       ansible.builtin.set_fact:
+        # JSON-array form, not the bare comma-separated names used previously: OVN-K only
+        # honors a secondary attachment's IPAMClaim reference when it's given explicitly
+        # via the NetworkSelectionElement's ipam-claim-reference field (confirmed --
+        # there's no auto-naming fallback for secondary/non-default attachments), which
+        # the bare comma-separated form has no way to carry. `interface` pinned to the
+        # subnet's own name also makes interface naming stable across add/remove, instead
+        # of positional (net1/net2/...).
         router_pod_networks: >-
           {{
             (
               (router_pod_deployment_info.resources[0].spec.template.metadata.annotations | default({}))
-                .get('k8s.v1.cni.cncf.io/networks', '')
-                .split(',') | reject('equalto', '') | list
-            ) | union([subnet_name])
+                .get('k8s.v1.cni.cncf.io/networks', '[]') | from_json
+                | rejectattr('name', 'equalto', subnet_name) | list
+            ) + [{
+              'name': subnet_name,
+              'interface': subnet_name,
+              'ipam-claim-reference': subnet_name
+            }]
           }}
 
     - name: Patch router pod Deployment to attach the new subnet
@@ -160,8 +230,8 @@
           - op: add
             path: /spec/template/metadata/annotations
             value:
-              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | join(',') }}"
+              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | to_json }}"
 
     - name: Display router pod attachment result
       ansible.builtin.debug:
-        msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | join(', ') }}"
+        msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | map(attribute='name') | join(', ') }}"

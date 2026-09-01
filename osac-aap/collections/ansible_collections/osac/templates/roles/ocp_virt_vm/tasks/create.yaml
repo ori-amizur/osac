@@ -73,6 +73,11 @@
     tasks_from: configure_permitted_host_devices.yaml
   when: compute_instance.spec.gpu is defined
 
+- name: Compute cloud-init network-config for a Secondary VirtualNetwork subnet
+  ansible.builtin.include_role:
+    name: osac.templates.ocp_virt_vm
+    tasks_from: create_network_data.yaml
+
 - name: Step - Create secrets (user-data, SSH) and add to spec
   ansible.builtin.include_role:
     name: "{{ (create_step_secrets_override | default(create_step_secrets_default)).name }}"

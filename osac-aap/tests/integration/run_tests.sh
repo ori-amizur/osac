@@ -43,6 +43,7 @@ ROLE_TESTS=(
   "lease"
   "virtual_network_secondary_router_pod"
   "subnet_secondary_cudn"
+  "ocp_virt_vm_network_data"
 )
 
 ROLE_SCENARIO_TESTS=(

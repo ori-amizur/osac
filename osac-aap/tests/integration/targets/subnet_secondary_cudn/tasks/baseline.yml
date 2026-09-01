@@ -151,9 +151,9 @@
             name: "{{ test_subnet_name }}"
           failed_when: false
 
-# ── Test 3: router pod Multus network-attachment list computation (in isolation) ──
-# Validates the exact list-manipulation expressions used in create_subnet.yaml's
-# "Compute updated router pod Multus network attachment list" and delete_subnet.yaml's
+# ── Test 3: router pod Multus network-selection list computation (in isolation) ──
+# Validates the exact JSON-array list-manipulation expressions used in create_subnet.yaml's
+# "Compute updated router pod Multus network selection list" and delete_subnet.yaml's
 # mirror -- can't be exercised via the role itself here since that task sits after the
 # CUDN-apply step, which never succeeds in this CRD-less test environment (see header).
 - name: "Subnet Secondary CUDN - Test router pod attachment-list computation"
@@ -167,15 +167,15 @@
       ansible.builtin.set_fact:
         computed_networks: >-
           {{
-            (
-              ''.split(',') | reject('equalto', '') | list
-            ) | union(['subnet-a'])
+            ('[]' | from_json | rejectattr('name', 'equalto', 'subnet-a') | list)
+            + [{'name': 'subnet-a', 'interface': 'subnet-a', 'ipam-claim-reference': 'subnet-a'}]
           }}
 
     - name: Assert first attachment is added correctly
       ansible.builtin.assert:
         that:
-          - computed_networks == ['subnet-a']
+          - computed_networks | map(attribute='name') | list == ['subnet-a']
+          - computed_networks[0]['ipam-claim-reference'] == 'subnet-a'
         fail_msg: "Adding the first subnet attachment did not produce the expected list"
         success_msg: "First attachment add: passed"
 
@@ -183,15 +183,14 @@
       ansible.builtin.set_fact:
         computed_networks: >-
           {{
-            (
-              'subnet-a'.split(',') | reject('equalto', '') | list
-            ) | union(['subnet-b'])
+            (computed_networks | rejectattr('name', 'equalto', 'subnet-b') | list)
+            + [{'name': 'subnet-b', 'interface': 'subnet-b', 'ipam-claim-reference': 'subnet-b'}]
           }}
 
     - name: Assert second attachment is added without dropping the first
       ansible.builtin.assert:
         that:
-          - computed_networks | sort == ['subnet-a', 'subnet-b']
+          - computed_networks | map(attribute='name') | sort | list == ['subnet-a', 'subnet-b']
         fail_msg: "Adding a second subnet attachment did not preserve the first"
         success_msg: "Second attachment add: passed"
 
@@ -199,47 +198,58 @@
       ansible.builtin.set_fact:
         computed_networks: >-
           {{
-            (
-              'subnet-a,subnet-b'.split(',') | reject('equalto', '') | list
-            ) | union(['subnet-a'])
+            (computed_networks | rejectattr('name', 'equalto', 'subnet-a') | list)
+            + [{'name': 'subnet-a', 'interface': 'subnet-a', 'ipam-claim-reference': 'subnet-a'}]
           }}
 
     - name: Assert re-adding an existing attachment does not duplicate it
       ansible.builtin.assert:
         that:
-          - computed_networks | sort == ['subnet-a', 'subnet-b']
+          - computed_networks | map(attribute='name') | sort | list == ['subnet-a', 'subnet-b']
         fail_msg: "Re-adding an existing attachment produced a duplicate"
         success_msg: "Idempotent re-add: passed"
 
     - name: Compute attachment list removing one of two subnets
       ansible.builtin.set_fact:
-        computed_networks: >-
-          {{
-            (
-              'subnet-a,subnet-b'.split(',') | reject('equalto', '') | list
-            ) | difference(['subnet-a'])
-          }}
+        computed_networks: "{{ computed_networks | rejectattr('name', 'equalto', 'subnet-a') | list }}"
 
     - name: Assert removing one attachment leaves the other
       ansible.builtin.assert:
         that:
-          - computed_networks == ['subnet-b']
+          - computed_networks | map(attribute='name') | list == ['subnet-b']
         fail_msg: "Removing one of two attachments did not leave the other intact"
         success_msg: "Partial removal: passed"
 
     - name: Compute attachment list removing the last remaining subnet
       ansible.builtin.set_fact:
-        computed_networks: >-
-          {{
-            (
-              'subnet-b'.split(',') | reject('equalto', '') | list
-            ) | difference(['subnet-b'])
-          }}
+        computed_networks: "{{ computed_networks | rejectattr('name', 'equalto', 'subnet-b') | list }}"
 
-    - name: Assert removing the last attachment leaves an empty, joinable list
+    - name: Assert removing the last attachment leaves an empty, serializable list
       ansible.builtin.assert:
         that:
           - computed_networks == []
-          - (computed_networks | join(',')) == ''
+          - (computed_networks | to_json) == '[]'
         fail_msg: "Removing the last attachment did not leave a clean empty list"
         success_msg: "Full removal: passed"
+
+    - name: Compute the gateway address for a subnet CIDR
+      ansible.builtin.set_fact:
+        computed_gateway: "{{ '10.4.1.0/24' | ansible.netcommon.ipaddr('1') }}"
+
+    - name: Assert the gateway address is the CIDR's first host address
+      ansible.builtin.assert:
+        that:
+          - computed_gateway == '10.4.1.1/24'
+        fail_msg: "Gateway address computation did not produce the expected .1 address"
+        success_msg: "Gateway address computation: passed"
+
+    - name: Compute the IPAMClaim status patch payload
+      ansible.builtin.set_fact:
+        computed_status_patch: "{{ {'status': {'ips': [computed_gateway]}} | to_json }}"
+
+    - name: Assert the status patch payload round-trips correctly
+      ansible.builtin.assert:
+        that:
+          - (computed_status_patch | from_json).status.ips == [computed_gateway]
+        fail_msg: "IPAMClaim status patch payload was not constructed correctly"
+        success_msg: "IPAMClaim status patch payload: passed"

@@ -1,0 +1,20 @@
+# Build context: mono-repo root (not osac-router-agent/ alone), matching every other
+# component's Containerfile in this repo.
+# Invoke with: podman build -f osac-router-agent/Containerfile .
+FROM registry.access.redhat.com/ubi10-minimal:10.2
+
+# nftables for the entrypoint's SNAT setup -- ubi10-minimal doesn't ship it, and
+# RHEL10/UBI10 dropped the iptables package entirely in favor of nftables (confirmed:
+# `microdnf install iptables` has no match on this base image). No Go build here (unlike
+# sibling components): this image runs a shell entrypoint, not a compiled binary, until
+# the real ConfigMap-watching agent design.md describes replaces it.
+RUN microdnf install -y nftables && microdnf clean all
+
+COPY --chown=0:0 osac-router-agent/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+
+# No USER directive: NET_ADMIN is a capability, not a UID requirement, so this doesn't
+# need to run as root -- the router pod's SCC (osac-installer) assigns an arbitrary
+# non-root UID the same way OpenShift's own restricted-style SCCs do, while separately
+# granting only the NET_ADMIN capability the entrypoint actually needs.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

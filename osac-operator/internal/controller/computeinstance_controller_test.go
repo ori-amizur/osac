@@ -2614,6 +2614,52 @@ var _ = Describe("ComputeInstance Controller", func() {
 			Expect(subnetNS).To(Equal(subnetRef))
 		})
 
+		It("should return the parent VirtualNetwork's name for a Secondary-type subnet, not the Subnet CR name", func() {
+			const subnetRef = "test-subnet-secondary-cr"
+			const parentVNName = "test-vn-secondary"
+
+			// Mirrors SubnetReconciler.updateSubnetStrategyAnnotations (subnet_controller.go):
+			// a Secondary-type subnet's namespace is the parent VN's own shared namespace, not
+			// a dedicated namespace named after the Subnet CR (that stopped being true for
+			// Secondary VNs in Story 1.03 -- there is no such namespace to find).
+			subnet := &osacv1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      subnetRef,
+					Namespace: namespaceName,
+					Annotations: map[string]string{
+						osacNetworkingTypeAnnotation:     "Secondary",
+						osacVirtualNetworkNameAnnotation: parentVNName,
+					},
+				},
+				Spec: osacv1alpha1.SubnetSpec{
+					VirtualNetwork: "vnet-secondary-123",
+					IPv4CIDR:       "10.0.1.0/24",
+				},
+			}
+			Expect(k8sClient.Create(ctx, subnet)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, subnet)
+			}()
+
+			instance := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-ci-with-secondary-subnet",
+					Namespace: namespaceName,
+				},
+				Spec: newTestComputeInstanceSpec("test_template"),
+			}
+			instance.Spec.NetworkAttachments = []osacv1alpha1.ComputeNetworkAttachment{{SubnetRef: subnetRef}}
+
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: subnetRef, Namespace: namespaceName}, &osacv1alpha1.Subnet{})
+			}).Should(Succeed())
+
+			subnetNS, err := reconciler.resolveSubnetTargetNamespace(ctx, instance)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(subnetNS).To(Equal(parentVNName))
+			Expect(subnetNS).NotTo(Equal(subnetRef))
+		})
+
 		It("should return error when subnet CR does not exist", func() {
 			instance := &osacv1alpha1.ComputeInstance{
 				ObjectMeta: metav1.ObjectMeta{

@@ -392,8 +392,7 @@ func (r *ComputeInstanceReconciler) handleDeprovisioning(ctx context.Context, in
 }
 
 // resolveSubnetTargetNamespace looks up the Subnet CR referenced by the primary subnet
-// (networkAttachments[0].subnetRef) and returns the subnet target
-// namespace (which equals the Subnet CR name).
+// (networkAttachments[0].subnetRef) and returns the subnet target namespace.
 // Returns empty string if no primary subnet is set.
 // Returns error if Subnet CR lookup fails.
 func (r *ComputeInstanceReconciler) resolveSubnetTargetNamespace(ctx context.Context, instance *v1alpha1.ComputeInstance) (string, error) {
@@ -417,8 +416,18 @@ func (r *ComputeInstanceReconciler) resolveSubnetTargetNamespace(ctx context.Con
 		return "", fmt.Errorf("failed to get Subnet CR %s: %w", primarySubnetRef, err)
 	}
 
-	// Subnet namespace = Subnet CR name (established pattern from Phase 17)
-	subnetTargetNamespace := subnet.Name
+	// Secondary VirtualNetworks share one namespace across every subnet (the VN's own
+	// router pod namespace, Story 1.02/1.03) rather than a namespace per Subnet -- for
+	// those, the target namespace is the parent VN's own name, mirrored onto the Subnet
+	// CR alongside its networking-type by SubnetReconciler.updateSubnetStrategyAnnotations
+	// (subnet_controller.go). "subnet namespace = Subnet CR name" (established pattern
+	// from Phase 17) only holds for a Primary-type subnet's own dedicated namespace.
+	var subnetTargetNamespace string
+	if subnet.Annotations[osacNetworkingTypeAnnotation] == string(v1alpha1.VirtualNetworkNetworkingTypeSecondary) {
+		subnetTargetNamespace = subnet.Annotations[osacVirtualNetworkNameAnnotation]
+	} else {
+		subnetTargetNamespace = subnet.Name
+	}
 
 	log.Info("Resolved subnet target namespace from Subnet CR",
 		"primarySubnetRef", primarySubnetRef,

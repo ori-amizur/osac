@@ -108,6 +108,20 @@ var _ = Describe("Describe Virtual Network", func() {
 			Expect(output).NotTo(ContainSubstring("VIRTUAL_NETWORK_STATE_"))
 		})
 
+		It("should strip VIRTUAL_NETWORK_NETWORKING_TYPE_ prefix from networking type", func() {
+			vn := publicv1.VirtualNetwork_builder{
+				Id: "vnet-007",
+				Spec: publicv1.VirtualNetworkSpec_builder{
+					NetworkingType: publicv1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY,
+				}.Build(),
+			}.Build()
+
+			output := formatVirtualNetwork(vn)
+			Expect(output).To(ContainSubstring("Networking Type:"))
+			Expect(output).To(ContainSubstring("SECONDARY"))
+			Expect(output).NotTo(ContainSubstring("VIRTUAL_NETWORK_NETWORKING_TYPE_"))
+		})
+
 		It("should show '-' for message when status has no message", func() {
 			vn := publicv1.VirtualNetwork_builder{
 				Id:   "vnet-006",

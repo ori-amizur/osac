@@ -109,6 +109,8 @@ func RenderVirtualNetwork(w io.Writer, vn *publicv1.VirtualNetwork) {
 		ipv6Cidr = v
 	}
 
+	networkingType := strings.TrimPrefix(vn.GetSpec().GetNetworkingType().String(), "VIRTUAL_NETWORK_NETWORKING_TYPE_")
+
 	state := "-"
 	message := "-"
 	if vn.GetStatus() != nil {
@@ -122,6 +124,7 @@ func RenderVirtualNetwork(w io.Writer, vn *publicv1.VirtualNetwork) {
 	fmt.Fprintf(writer, "Name:\t%s\n", name)
 	fmt.Fprintf(writer, "IPv4 CIDR:\t%s\n", ipv4Cidr)
 	fmt.Fprintf(writer, "IPv6 CIDR:\t%s\n", ipv6Cidr)
+	fmt.Fprintf(writer, "Networking Type:\t%s\n", networkingType)
 	fmt.Fprintf(writer, "State:\t%s\n", state)
 	fmt.Fprintf(writer, "Message:\t%s\n", message)
 	writer.Flush()

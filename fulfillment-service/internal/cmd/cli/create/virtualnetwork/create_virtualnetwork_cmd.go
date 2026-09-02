@@ -16,6 +16,7 @@ package virtualnetwork
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/proto"
@@ -58,14 +59,21 @@ func Cmd() *cobra.Command {
 		"",
 		ipv6CidrFlagHelp,
 	)
+	flags.StringVar(
+		&runner.args.networkingType,
+		"networking-type",
+		"",
+		networkingTypeFlagHelp,
+	)
 	return result
 }
 
 type runnerContext struct {
 	args struct {
-		name     string
-		ipv4Cidr string
-		ipv6Cidr string
+		name           string
+		ipv4Cidr       string
+		ipv6Cidr       string
+		networkingType string
 	}
 	logger   *slog.Logger
 	console  *terminal.Console
@@ -101,6 +109,16 @@ func (c *runnerContext) run(cmd *cobra.Command, args []string) error {
 	}
 	if c.args.ipv6Cidr != "" {
 		spec.Ipv6Cidr = &c.args.ipv6Cidr
+	}
+	if c.args.networkingType != "" {
+		val, ok := publicv1.VirtualNetworkNetworkingType_value["VIRTUAL_NETWORK_NETWORKING_TYPE_"+strings.ToUpper(c.args.networkingType)]
+		if !ok {
+			return fmt.Errorf(
+				"unknown networking type %q, valid values are Primary and Secondary",
+				c.args.networkingType,
+			)
+		}
+		spec.NetworkingType = publicv1.VirtualNetworkNetworkingType(val)
 	}
 	vn := publicv1.VirtualNetwork_builder{
 		Metadata: publicv1.Metadata_builder{
@@ -138,6 +156,12 @@ To create a dual-stack virtual network:
 {{ bt 3 }}shell
 {{ binary }} create virtualnetwork --name my-network --ipv4-cidr 10.0.0.0/16 --ipv6-cidr fd00::/64
 {{ bt 3 }}
+
+To create a Secondary (router-pod model) virtual network:
+
+{{ bt 3 }}shell
+{{ binary }} create virtualnetwork --name my-network --ipv4-cidr 10.0.0.0/16 --networking-type Secondary
+{{ bt 3 }}
 `
 
 const nameFlagHelp = `
@@ -152,4 +176,11 @@ _CIDR_ - IPv4 CIDR block for this network, for example
 const ipv6CidrFlagHelp = `
 _CIDR_ - IPv6 CIDR block for this network, for example
 {{ bt }}fd00::/64{{ bt }}.
+`
+
+const networkingTypeFlagHelp = `
+_TYPE_ - Networking model for this virtual network. Valid values are
+{{ bt }}Primary{{ bt }} (OSAC's existing per-subnet Primary UDN model) and
+{{ bt }}Secondary{{ bt }} (router-pod model). Optional; defaults to
+{{ bt }}Primary{{ bt }} when omitted. Immutable after creation.
 `

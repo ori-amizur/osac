@@ -28,6 +28,10 @@ columns:
 - header: IPV6-CIDR
   value: "has(this.spec.ipv6_cidr)? this.spec.ipv6_cidr: '-'"
 
+- header: NETWORKING-TYPE
+  value: this.spec.networking_type
+  type: osac.public.v1.VirtualNetworkNetworkingType
+
 - header: STATE
   value: this.status.state
   type: osac.public.v1.VirtualNetworkState

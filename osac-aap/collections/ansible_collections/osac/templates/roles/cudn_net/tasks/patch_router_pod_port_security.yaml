@@ -1,0 +1,170 @@
+---
+# Shared by create_subnet.yaml and delete_subnet.yaml: (re)patches OVN port security on
+# every one of the router pod's CURRENT subnet attachments (router_pod_networks, the same
+# list already computed for the Multus annotation). Router pod recreation invalidates every
+# existing logical switch port, not just the one that changed, so this always re-applies to
+# the full current attachment set, not just the newly added/removed one.
+#
+# TEMPORARY STOPGAP (see design.md "Port security"): OVN-Kubernetes's UDN/CUDN API has no
+# declarative, tenant-scoped way to relax per-port anti-spoof port security -- the only
+# related field (ipam.mode: Disabled) disables it for the whole logical switch, breaking
+# DHCP-based VM addressing this design depends on. This reaches into OVN's northbound
+# database directly via `ovn-nbctl` exec'd into the `nbdb` container of the ovnkube-node pod
+# on the router pod's own node, which requires `pods/exec` in openshift-ovn-kubernetes on
+# whichever credential this role runs with. That credential already has cluster-admin in the
+# default single-cluster deployment (osac-sa); multi-cluster (remote VMaaS cluster)
+# deployments must grant this explicitly as a new prerequisite (see
+# osac-operator/docs/vmaas-dedicated-cluster/README.md). Accepted, documented, temporary
+# tradeoff -- not a resolved problem -- pending an upstream OVN-Kubernetes mechanism or a
+# future redesign.
+#
+# No live OVN-Kubernetes cluster is available in this repo's test environment (same gap as
+# the rest of this role's CUDN/IPAMClaim-dependent code) -- the ovnkube-node pod label and
+# the LSP matching logic below must be verified against a real cluster before this is
+# considered production-ready.
+#
+# Never trusts a computed logical switch port name outright: OVN-Kubernetes's UDN naming
+# formula (GetUserDefinedNetworkPrefix + composePortName, go-controller/pkg/util) is an
+# internal, unexported implementation detail with no compatibility guarantee. Instead this
+# queries for ports by the long-standing, stable `<namespace>_<podname>` suffix only, cross-
+# checks the count against router_pod_networks, and uses the computed per-subnet prefix
+# together with the pod's own Multus network-status annotation (a stable, publicly
+# documented, cross-project format) purely to MATCH each discovered port to its subnet --
+# never to synthesize a name to blindly act on. Anything that doesn't cleanly match is a
+# hard failure, not a best-effort guess: nothing gets patched unless it's confidently
+# identified.
+
+- name: Wait for the router pod Deployment rollout to complete
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_name }}"
+  register: router_pod_rollout_info
+  until:
+    - router_pod_rollout_info.resources | length > 0
+    - (router_pod_rollout_info.resources[0].status.updatedReplicas | default(0)) == (router_pod_rollout_info.resources[0].spec.replicas | default(1))
+    - (router_pod_rollout_info.resources[0].status.readyReplicas | default(0)) == (router_pod_rollout_info.resources[0].spec.replicas | default(1))
+  retries: 30
+  delay: 10
+
+- name: Look up the current router pod
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: router_pod_info
+
+- name: Extract the running router pod
+  ansible.builtin.set_fact:
+    router_pod_running_list: "{{ router_pod_info.resources | selectattr('status.phase', 'equalto', 'Running') | list }}"
+
+- name: Require exactly one running router pod
+  ansible.builtin.assert:
+    that:
+      - router_pod_running_list | length == 1
+    fail_msg: >-
+      Expected exactly one Running router pod in namespace {{ subnet_vn_name }}
+      (found {{ router_pod_running_list | length }} of {{ router_pod_info.resources | length }}
+      total); cannot safely determine which logical switch ports to patch.
+
+- name: Set router pod name/node/network-status facts
+  ansible.builtin.set_fact:
+    router_pod_actual_name: "{{ router_pod_running_list[0].metadata.name }}"
+    router_pod_node_name: "{{ router_pod_running_list[0].spec.nodeName }}"
+    router_pod_network_status: >-
+      {{
+        (router_pod_running_list[0].metadata.annotations | default({}))
+          .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+      }}
+
+- name: Look up the ovnkube-node pod on the router pod's node
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    field_selectors:
+      - "spec.nodeName={{ router_pod_node_name }}"
+    label_selectors:
+      - "{{ ovnkube_node_pod_label }}"
+  register: ovnkube_node_pod_info
+
+- name: Require exactly one ovnkube-node pod on that node
+  ansible.builtin.assert:
+    that:
+      - ovnkube_node_pod_info.resources | length == 1
+    fail_msg: >-
+      Expected exactly one '{{ ovnkube_node_pod_label }}' pod on node {{ router_pod_node_name }}
+      in namespace {{ ovn_kubernetes_namespace }}
+      (found {{ ovnkube_node_pod_info.resources | length }}); cannot patch OVN port security
+      without it.
+
+- name: Set ovnkube-node pod fact
+  ansible.builtin.set_fact:
+    ovnkube_node_pod_name: "{{ ovnkube_node_pod_info.resources[0].metadata.name }}"
+
+- name: Build the environment for kubectl exec against the target cluster
+  ansible.builtin.set_fact:
+    router_pod_exec_environment: >-
+      {{
+        {'KUBECONFIG': remote_cluster_kubeconfig}
+        if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
+        else {}
+      }}
+
+- name: Build the expected logical switch port suffix for this router pod
+  ansible.builtin.set_fact:
+    router_pod_lsp_suffix: "_{{ subnet_vn_name }}_{{ router_pod_actual_name }}"
+
+- name: List logical switch ports matching the router pod's stable name suffix
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ ovnkube_node_pod_name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - --bare
+      - --columns=name
+      - find
+      - logical_switch_port
+  environment: "{{ router_pod_exec_environment }}"
+  register: router_pod_lsp_list_result
+  changed_when: false
+
+- name: Filter to this router pod's own logical switch ports
+  ansible.builtin.set_fact:
+    router_pod_lsp_candidates: >-
+      {{
+        router_pod_lsp_list_result.stdout_lines
+        | select('match', '^.*' ~ router_pod_lsp_suffix ~ '$')
+        | list
+      }}
+
+- name: Require the number of discovered ports to match the number of current attachments
+  ansible.builtin.assert:
+    that:
+      - router_pod_lsp_candidates | length == router_pod_networks | length
+    fail_msg: >-
+      Found {{ router_pod_lsp_candidates | length }} logical switch port(s) ending in
+      '{{ router_pod_lsp_suffix }}' but expected {{ router_pod_networks | length }}
+      (one per current router pod attachment:
+      {{ router_pod_networks | map(attribute='name') | join(', ') }}).
+      Refusing to guess -- not patching any port.
+
+- name: Match and patch OVN port security for each current attachment
+  ansible.builtin.include_tasks: patch_router_pod_lsp.yaml
+  loop: "{{ router_pod_networks }}"
+  loop_control:
+    loop_var: router_pod_attachment
+    label: "{{ router_pod_attachment.name }}"

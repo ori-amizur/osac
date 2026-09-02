@@ -138,6 +138,55 @@ Pass `REMOTE_CLUSTER_KUBECONFIG_SECRET_NAME=<secret-name>` to the
 config-as-code job (or set it in the relevant config vars). The Secret must
 be readable by the `osac-sa` service account in the AAP namespace.
 
+#### Required remote-cluster RBAC for OVN port-security patching (Secondary VirtualNetworks)
+
+If this deployment uses Secondary VirtualNetworks (the router-pod model), the
+`cudn_net` role's subnet provisioning patches OVN northbound port security on
+the router pod's logical switch ports directly (see `design.md`'s "Port
+security" section in the `secondary-virtualnetwork-router-pod` enhancement —
+this is a temporary stopgap; no declarative OVN-Kubernetes mechanism for this
+exists today). That requires `pods/exec` into the `ovnkube-node` pods in
+`openshift-ovn-kubernetes` **on the remote cluster**.
+
+Unlike the single-cluster deployment (where `osac-sa`'s existing cluster-admin
+binding already covers this), the remote-cluster kubeconfig here has no
+OSAC-defined RBAC — it's whatever was supplied when the Secret was created in
+step 1. **This is not optional**: without the grant below, applied on the
+*remote* cluster, subnet creation/deletion for Secondary VirtualNetworks will
+fail at the port-security patch step. Apply to the remote cluster, scoped to
+the ServiceAccount backing the supplied kubeconfig:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: osac-ovn-port-security-patcher
+  namespace: openshift-ovn-kubernetes
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: <remote-sa>-ovn-port-security-patcher
+  namespace: openshift-ovn-kubernetes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: osac-ovn-port-security-patcher
+subjects:
+  - kind: ServiceAccount
+    name: <remote-sa>
+    namespace: <remote-sa-namespace>
+```
+
+Not needed if this deployment doesn't use Secondary VirtualNetworks.
+
 ## References
 
 - [MGMT-23102](https://redhat.atlassian.net/browse/MGMT-23102) — Add the

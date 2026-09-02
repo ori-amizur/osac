@@ -1,0 +1,65 @@
+---
+# Matches ONE router pod attachment (router_pod_attachment, from router_pod_networks) to its
+# logical switch port among router_pod_lsp_candidates, using the computed UDN-prefix as the
+# primary hint and the pod's own Multus network-status annotation as a second, independent
+# signal, then patches OVN port security for it. See patch_router_pod_port_security.yaml for
+# why neither signal is trusted alone. Included in a loop from that file.
+
+- name: Compute the candidate logical switch port name for this attachment
+  ansible.builtin.set_fact:
+    router_pod_attachment_lsp_candidate: >-
+      {{
+        (router_pod_attachment.name | replace('-', '.') | replace('/', '.'))
+        ~ router_pod_lsp_suffix
+      }}
+
+- name: Require the computed candidate to be among the discovered ports
+  ansible.builtin.assert:
+    that:
+      - router_pod_attachment_lsp_candidate in router_pod_lsp_candidates
+    fail_msg: >-
+      Computed logical switch port name '{{ router_pod_attachment_lsp_candidate }}' for
+      attachment '{{ router_pod_attachment.name }}' was not found among the discovered ports
+      ({{ router_pod_lsp_candidates | join(', ') }}). Not patching this attachment.
+
+- name: Find this attachment in the router pod's own network-status annotation
+  ansible.builtin.set_fact:
+    router_pod_attachment_network_status: >-
+      {{
+        router_pod_network_status
+        | selectattr('name', 'in', [router_pod_attachment.name, subnet_vn_name ~ '/' ~ router_pod_attachment.name])
+        | list
+      }}
+
+- name: Require the attachment to be present exactly once in the pod's own network-status annotation
+  ansible.builtin.assert:
+    that:
+      - router_pod_attachment_network_status | length == 1
+    fail_msg: >-
+      Attachment '{{ router_pod_attachment.name }}' not found (or found more than once) in
+      the router pod's own k8s.v1.cni.cncf.io/network-status annotation -- cannot
+      independently confirm this attachment is live before patching its port security.
+      Not patching this attachment.
+
+- name: Patch OVN port security for this attachment's logical switch port
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ ovnkube_node_pod_name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - lsp-set-port-security
+      - "{{ router_pod_attachment_lsp_candidate }}"
+  environment: "{{ router_pod_exec_environment }}"
+  changed_when: true
+
+- name: Display port-security patch result
+  ansible.builtin.debug:
+    msg: >-
+      OVN port security cleared for attachment '{{ router_pod_attachment.name }}'
+      on logical switch port '{{ router_pod_attachment_lsp_candidate }}'

@@ -235,3 +235,7 @@
     - name: Display router pod attachment result
       ansible.builtin.debug:
         msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | map(attribute='name') | join(', ') }}"
+
+    - name: Patch OVN port security for the router pod's current subnet attachments
+      ansible.builtin.include_tasks: patch_router_pod_port_security.yaml
+      when: (router_pod_networks | default([])) | length > 0

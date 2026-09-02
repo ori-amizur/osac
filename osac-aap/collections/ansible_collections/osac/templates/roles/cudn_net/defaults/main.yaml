@@ -14,3 +14,11 @@ router_pod_service_account_name: router-pod
 # Fixed cluster-scoped ClusterRole name from osac-installer's router-pod-scc.yaml
 # (not release-namespace-qualified -- see that file's own naming note).
 router_pod_scc_cluster_role: osac-router-pod-scc
+
+# OVN NB port-security patching (temporary stopgap, see design.md "Port security" and
+# patch_router_pod_port_security.yaml) -- where the OVN northbound DB lives and how to
+# reach it via kubectl exec. Not verifiable in this repo's test environment (no live
+# OVN-Kubernetes cluster); confirm against a real cluster before relying on these defaults.
+ovn_kubernetes_namespace: openshift-ovn-kubernetes
+ovnkube_node_pod_label: app=ovnkube-node
+ovnkube_node_nbdb_container: nbdb

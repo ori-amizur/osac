@@ -1,0 +1,43 @@
+# Grants osac-sa (see osac-sa.yaml) the minimum permissions the cudn_net role's
+# patch_router_pod_port_security.yaml task needs: finding and exec'ing into the
+# ovnkube-node pod that hosts OVN's northbound database, to patch OVN port security on the
+# router pod's logical switch ports (see design.md "Port security" -- a temporary stopgap,
+# no declarative OVN-Kubernetes mechanism exists for this today).
+#
+# This grant is currently redundant: osac-sa already has cluster-admin via the
+# ClusterRoleBinding in osac-sa.yaml, which already includes everything below. It is added
+# explicitly anyway so this specific capability is documented and minimally scoped on its
+# own terms, and keeps working unchanged the day osac-sa's cluster-admin binding is
+# narrowed (a separate, out-of-scope follow-up).
+#
+# Multi-cluster (remote VMaaS cluster) deployments: this is NOT redundant there. The
+# equivalent Role/RoleBinding must be applied to the remote cluster, scoped to whichever
+# ServiceAccount backs the deployer-supplied remote-cluster kubeconfig (see
+# osac-operator/docs/vmaas-dedicated-cluster/README.md) -- that kubeconfig has no
+# OSAC-defined RBAC, so without this the port-security patch step fails outright there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: osac-ovn-port-security-patcher
+  namespace: openshift-ovn-kubernetes
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: osac-sa-ovn-port-security-patcher
+  namespace: openshift-ovn-kubernetes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: osac-ovn-port-security-patcher
+subjects:
+  - kind: ServiceAccount
+    name: osac-sa
+    namespace: default

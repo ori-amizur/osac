@@ -1312,19 +1312,6 @@ func (s *PrivateComputeInstancesServer) autoCleanupExternalIP(ctx context.Contex
 			return fmt.Errorf("auto_external_ip_attachment cleanup: failed to delete attachment: %w", err)
 		}
 
-		if s.notifier != nil {
-			attResp, getErr := s.externalIPAttachmentDao.Get().SetId(attachmentID).Do(ctx)
-			if getErr == nil {
-				attEvent := privatev1.Event_builder{
-					Type:                 privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
-					ExternalIpAttachment: attResp.GetObject(),
-				}.Build()
-				if notifyErr := s.notifier.Notify(ctx, attEvent); notifyErr != nil {
-					s.logger.WarnContext(ctx, "Failed to notify ExternalIPAttachment deletion", "error", notifyErr)
-				}
-			}
-		}
-
 		if eipID != "" {
 			err = s.updateExternalIPAttachedFlag(ctx, eipID, false)
 			if err != nil {
@@ -1340,19 +1327,6 @@ func (s *PrivateComputeInstancesServer) autoCleanupExternalIP(ctx context.Contex
 			_, err = s.externalIPDao.Delete().SetId(eipID).Do(ctx)
 			if err != nil {
 				return fmt.Errorf("auto_external_ip_attachment cleanup: failed to delete ExternalIP: %w", err)
-			}
-
-			if s.notifier != nil {
-				updatedEIP, getErr := s.externalIPDao.Get().SetId(eipID).Do(ctx)
-				if getErr == nil {
-					eipEvent := privatev1.Event_builder{
-						Type:       privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
-						ExternalIp: updatedEIP.GetObject(),
-					}.Build()
-					if notifyErr := s.notifier.Notify(ctx, eipEvent); notifyErr != nil {
-						s.logger.WarnContext(ctx, "Failed to notify ExternalIP deletion", "error", notifyErr)
-					}
-				}
 			}
 
 			if poolRef != nil {

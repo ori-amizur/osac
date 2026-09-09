@@ -911,6 +911,9 @@ func setupExternalIPAttachmentControllers(
 		clusterOrderNamespace, baremetalInstanceNamespace,
 		provider, statusPollInterval, maxJobHistory, targetCluster,
 	)
+	if grpcConn != nil {
+		reconciler.ComputeInstancesClient = privatev1.NewComputeInstancesClient(grpcConn)
+	}
 	reconciler.NetworkProvisioningEnabled = networkProvisioningEnabled
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("externalipattachment controller: %w", err)

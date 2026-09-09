@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +40,7 @@ import (
 
 	bmfov1alpha1 "github.com/osac-project/osac/bare-metal-fulfillment-operator/api/v1alpha1"
 	"github.com/osac-project/osac/osac-operator/api/v1alpha1"
+	privatev1 "github.com/osac-project/osac/osac-operator/internal/api/osac/private/v1"
 	"github.com/osac-project/osac/osac-operator/pkg/provisioning"
 )
 
@@ -67,6 +70,11 @@ type ExternalIPAttachmentReconciler struct {
 	StatusPollInterval         time.Duration
 	MaxJobHistory              int
 	targetCluster              mc.ClusterName
+	// ComputeInstancesClient is used to distinguish a ComputeInstance CR that
+	// has not been synchronized yet from a ComputeInstance that was deleted.
+	// The API creates auto-attached ExternalIPAttachments atomically with the
+	// ComputeInstance, so the attachment event can arrive first.
+	ComputeInstancesClient privatev1.ComputeInstancesClient
 	// NetworkProvisioningEnabled controls whether the controller dispatches AAP
 	// provisioning jobs. When false, resources are set to Ready immediately.
 	NetworkProvisioningEnabled bool
@@ -449,6 +457,27 @@ func (r *ExternalIPAttachmentReconciler) resolveComputeInstance(
 		return nil, ctrl.Result{}, err
 	}
 	if len(ciList.Items) == 0 {
+		// The fulfillment API creates the ComputeInstance and its automatic
+		// ExternalIPAttachment in one operation, while their Kubernetes events
+		// are delivered independently. If the API object still exists, the CR is
+		// merely lagging behind and deleting the attachment here would lose the
+		// requested external access permanently.
+		if r.ComputeInstancesClient != nil {
+			response, err := r.ComputeInstancesClient.Get(ctx, privatev1.ComputeInstancesGetRequest_builder{
+				Id: *attachment.Spec.ComputeInstance,
+			}.Build())
+			if err == nil && response.GetObject() != nil {
+				apiInstance := response.GetObject()
+				if apiInstance.GetMetadata().GetDeletionTimestamp() == nil {
+					log.Info("ComputeInstance CR has not been synchronized yet, requeueing",
+						"computeInstanceUUID", *attachment.Spec.ComputeInstance)
+					return nil, ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+				}
+			} else if err != nil && status.Code(err) != codes.NotFound {
+				return nil, ctrl.Result{}, fmt.Errorf("checking ComputeInstance in fulfillment service: %w", err)
+			}
+		}
+
 		log.Info("auto-detaching: ComputeInstance no longer exists", "computeInstanceUUID", *attachment.Spec.ComputeInstance)
 		if err := r.Delete(ctx, attachment); err != nil {
 			return nil, ctrl.Result{}, client.IgnoreNotFound(err)

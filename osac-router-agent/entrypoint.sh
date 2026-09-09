@@ -19,19 +19,19 @@
 set -eu
 
 CLUSTER_NET_IFACE="${ROUTER_POD_CLUSTER_NET_IFACE:-eth0}"
+CLUSTER_NET_IP="${ROUTER_POD_CLUSTER_NET_IP:?ROUTER_POD_CLUSTER_NET_IP must be set from the Downward API}"
 
-# masquerade rewrites the source to whatever address is currently assigned to
-# CLUSTER_NET_IFACE -- equivalent to an explicit SNAT-to-own-pod-IP here without needing
-# to look the address up (e.g. via the Downward API), since that's exactly this
-# interface's own address. `nft`, not `iptables`: RHEL10/UBI10 dropped the iptables
-# package in favor of nftables.
+# Use explicit SNAT rather than nft's masquerade expression. The OpenShift node used for
+# this deployment supports the SNAT expression but returns ENOENT for masquerade, while
+# the Downward API gives us the same cluster-network pod IP that masquerade would select.
+# `nft`, not `iptables`: RHEL10/UBI10 dropped the iptables package in favor of nftables.
 nft add table ip nat
 nft -- add chain ip nat postrouting '{ type nat hook postrouting priority 100 ; }'
 # `add table`/`add chain` are no-ops if already present, but `add rule` isn't -- guard
 # against duplicate rules accumulating if the container restarts within the same pod
 # (the network namespace, and any nft ruleset in it, outlives a container restart).
-if ! nft list chain ip nat postrouting | grep -q "oifname \"${CLUSTER_NET_IFACE}\" masquerade"; then
-  nft add rule ip nat postrouting oifname "${CLUSTER_NET_IFACE}" masquerade
+if ! nft list chain ip nat postrouting | grep -q "oifname \"${CLUSTER_NET_IFACE}\" snat to"; then
+  nft add rule ip nat postrouting oifname "\"${CLUSTER_NET_IFACE}\"" snat to "${CLUSTER_NET_IP}"
 fi
 
 exec tail -f /dev/null

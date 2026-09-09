@@ -9,7 +9,9 @@
   ansible.builtin.set_fact:
     router_pod_attachment_lsp_candidate: >-
       {{
-        (router_pod_attachment.name | replace('-', '.') | replace('/', '.'))
+        (subnet_vn_name | replace('-', '.'))
+        ~ '.'
+        ~ (router_pod_attachment.name | replace('-', '.') | replace('/', '.'))
         ~ router_pod_lsp_suffix
       }}
 

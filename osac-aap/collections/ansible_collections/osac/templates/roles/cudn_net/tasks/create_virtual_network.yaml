@@ -148,6 +148,12 @@
                         valueFrom:
                           fieldRef:
                             fieldPath: status.podIP
+                      # Filled by create_subnet.yaml from the persistent IPAMClaim
+                      # statuses. The router agent adds these addresses to the matching
+                      # Multus interfaces because IPAMClaim reservation alone does not
+                      # configure an address inside the pod.
+                      - name: ROUTER_POD_GATEWAY_IPS
+                        value: ""
                     # No command override: osac-router-agent's own ENTRYPOINT runs the
                     # forwarding/SNAT setup.
                     # NET_ADMIN for the entrypoint's nft SNAT rule (osac-router-agent).

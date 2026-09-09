@@ -91,10 +91,9 @@
     - name: Build cloud-init network-config content
       when: vm_cluster_dns_info.resources | length > 0
       ansible.builtin.set_fact:
-        # eth0: KubeVirt's own interface name in create_build_spec.yaml is "default", not
-        # a guest-visible name -- eth0 is the common guest-side name for a KubeVirt
-        # virtio-bound interface on typical cloud images (predictable-naming disabled),
-        # but this is an assumption, not confirmed against a live VM in this environment.
+        # KubeVirt's interface name ("default") is not guest-visible. The Fedora/RHEL
+        # cloud image used by OSAC exposes the first virtio NIC as enp1s0; using eth0
+        # silently drops this network-config because that device does not exist.
         vm_network_data: >-
           {{
             {
@@ -102,7 +101,7 @@
                 'version': 1,
                 'config': [{
                   'type': 'physical',
-                  'name': 'eth0',
+                  'name': 'enp1s0',
                   'subnets': [{
                     'type': 'dhcp4',
                     'routes': [{

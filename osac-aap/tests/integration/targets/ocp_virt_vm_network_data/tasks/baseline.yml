@@ -107,7 +107,7 @@
             that:
               - vm_network_data | length > 0
               - parsed_network_data.network.version == 1
-              - parsed_network_data.network.config[0].name == 'eth0'
+              - parsed_network_data.network.config[0].name == 'enp1s0'
               - parsed_network_data.network.config[0].subnets[0].routes[0].gateway == '10.5.1.1'
               - parsed_network_data.network.config[0].subnets[0].dns_nameservers == [dns_service_result.resources[0].spec.clusterIP]
               - test_vm_namespace ~ '.svc.cluster.local' in parsed_network_data.network.config[0].subnets[0].dns_search
@@ -337,7 +337,7 @@
           ansible.builtin.assert:
             that:
               - parsed_network_data.network.config | length == 1
-              - parsed_network_data.network.config[0].name == 'eth1'
+              - parsed_network_data.network.config[0].name == 'enp2s0'
               - parsed_network_data.network.config[0].subnets[0].routes[0].network == '10.6.128.0'
               - parsed_network_data.network.config[0].subnets[0].routes[0].netmask == '255.255.128.0'
               - parsed_network_data.network.config[0].subnets[0].routes[0].gateway == '10.6.130.1'

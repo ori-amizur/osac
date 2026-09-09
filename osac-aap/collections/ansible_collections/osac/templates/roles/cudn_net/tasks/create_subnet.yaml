@@ -219,6 +219,38 @@
             }]
           }}
 
+    - name: Get all reserved router gateway IPAMClaims
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: k8s.cni.cncf.io/v1alpha1
+        kind: IPAMClaim
+        namespace: "{{ subnet_vn_name }}"
+        label_selectors:
+          - "osac.openshift.io/managed-by=osac-fulfillment"
+      register: router_gateway_claims_info
+
+    - name: Initialize the router gateway mapping
+      ansible.builtin.set_fact:
+        router_pod_gateway_ips: []
+
+    - name: Build the router gateway mapping from persistent claim addresses
+      ansible.builtin.set_fact:
+        router_pod_gateway_ips: >-
+          {{ router_pod_gateway_ips + [item.metadata.name ~ '=' ~ item.status.ips[0]] }}
+      loop: "{{ router_gateway_claims_info.resources }}"
+      when:
+        - item.status is defined
+        - item.status.ips is defined
+        - item.status.ips | length > 0
+
+    - name: Require every attached subnet to have a reserved gateway address
+      ansible.builtin.assert:
+        that:
+          - router_pod_gateway_ips | length == router_pod_networks | length
+        fail_msg: >-
+          Expected one persistent gateway claim per router attachment ({{ router_pod_networks | map(attribute='name') | join(', ') }}),
+          but found {{ router_pod_gateway_ips | length }} reserved addresses.
+
     - name: Patch router pod Deployment to attach the new subnet
       kubernetes.core.k8s_json_patch:
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -227,6 +259,15 @@
         namespace: "{{ subnet_vn_name }}"
         name: "{{ router_pod_name }}"
         patch:
+          - op: replace
+            path: /spec/template/spec/containers/0/env
+            value:
+              - name: ROUTER_POD_CLUSTER_NET_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              - name: ROUTER_POD_GATEWAY_IPS
+                value: "{{ router_pod_gateway_ips | join(',') }}"
           - op: add
             path: /spec/template/metadata/annotations
             value:

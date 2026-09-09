@@ -12,8 +12,9 @@
 # Appends (never replaces) a Multus NIC to vm_template_spec, named "net<N>" (N starting at
 # 1) to avoid colliding with networkAttachments[0]'s "default" interface, and appends a
 # VN-CIDR-scoped cloud-init route (no DNS -- networkAttachments[0]'s own DNS applies) to
-# vm_additional_network_configs. Guest interface naming ("eth<N>") is the same unconfirmed
-# assumption flagged for "eth0" in create_network_data.yaml.
+# vm_additional_network_configs. Guest interface naming follows the Fedora/RHEL cloud
+# image's predictable virtio names: the default NIC is enp1s0 and net1/net2/... become
+# enp2s0/enp3s0/....
 
 - name: Look up the additional attachment's Subnet
   kubernetes.core.k8s_info:
@@ -62,7 +63,7 @@
           {{
             vm_additional_network_configs + [{
               'type': 'physical',
-              'name': 'eth' ~ (additional_attachment_index0 + 1),
+              'name': 'enp' ~ (additional_attachment_index0 + 2) ~ 's0',
               'subnets': [{
                 'type': 'dhcp4',
                 'routes': [{

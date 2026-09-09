@@ -5,10 +5,12 @@ FROM registry.access.redhat.com/ubi10-minimal:10.2
 
 # nftables for the entrypoint's SNAT setup -- ubi10-minimal doesn't ship it, and
 # RHEL10/UBI10 dropped the iptables package entirely in favor of nftables (confirmed:
-# `microdnf install iptables` has no match on this base image). No Go build here (unlike
-# sibling components): this image runs a shell entrypoint, not a compiled binary, until
-# the real ConfigMap-watching agent design.md describes replaces it.
-RUN microdnf install -y nftables && microdnf clean all
+# `microdnf install iptables` has no match on this base image). iproute is needed to
+# assign each subnet's reserved gateway address to the router pod's Multus interface.
+# No Go build here (unlike sibling components): this image runs a shell entrypoint, not
+# a compiled binary, until the real ConfigMap-watching agent design.md describes replaces
+# it.
+RUN microdnf install -y nftables iproute && microdnf clean all
 
 COPY --chown=0:0 osac-router-agent/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh

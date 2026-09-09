@@ -142,6 +142,7 @@
                 containers:
                   - name: router
                     image: "{{ router_pod_image }}"
+                    imagePullPolicy: Always
                     env:
                       - name: ROUTER_POD_CLUSTER_NET_IP
                         valueFrom:

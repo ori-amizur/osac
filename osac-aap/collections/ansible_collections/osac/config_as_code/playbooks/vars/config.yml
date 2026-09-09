@@ -26,6 +26,7 @@ aap_ee_image: "{{ lookup('env', 'AAP_EE_IMAGE', default='ghcr.io/osac-project/os
 # that image only exists in the node's local store and was never pushed to
 # a real registry.
 aap_ee_image_pull: "{{ lookup('env', 'AAP_EE_IMAGE_PULL', default='always') }}"
+osac_router_pod_image: "{{ lookup('env', 'OSAC_ROUTER_POD_IMAGE', default='ghcr.io/osac-project/osac-router-agent:latest') }}"
 license_manifest_path: "{{ lookup('env', 'LICENSE_MANIFEST_PATH', default='/var/secrets/config-as-code-manifest/license.zip') }}"
 remote_cluster_kubeconfig_secret_name: "{{ lookup('env', 'REMOTE_CLUSTER_KUBECONFIG_SECRET_NAME', default='') }}"
 remote_cluster_kubeconfig_secret_key: "{{ lookup('env', 'REMOTE_CLUSTER_KUBECONFIG_SECRET_KEY', default='kubeconfig') }}"

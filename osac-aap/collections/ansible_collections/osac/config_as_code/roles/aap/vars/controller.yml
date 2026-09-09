@@ -140,6 +140,8 @@ controller_templates: # noqa: var-naming[no-role-prefix]
     allow_simultaneous: true
     ask_variables_on_launch: true
     verbosity: 0
+    extra_vars:
+      router_pod_image: "{{ osac_router_pod_image }}"
   - name: "{{ aap_prefix }}-delete-virtual-network"
     project: "{{ aap_prefix }}"
     organization: "{{ aap_organization_name }}"
@@ -164,6 +166,8 @@ controller_templates: # noqa: var-naming[no-role-prefix]
     allow_simultaneous: true
     ask_variables_on_launch: true
     verbosity: 0
+    extra_vars:
+      router_pod_image: "{{ osac_router_pod_image }}"
   - name: "{{ aap_prefix }}-delete-subnet"
     project: "{{ aap_prefix }}"
     organization: "{{ aap_organization_name }}"

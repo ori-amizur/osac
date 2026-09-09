@@ -372,6 +372,11 @@ routerPodScc:
   # Create the SecurityContextConstraints + ClusterRole granting NET_ADMIN to Secondary
   # VirtualNetwork router pods. OpenShift-only; leave false on non-OpenShift clusters.
   enabled: true
+  # Also allow net.ipv4.ip_forward in every node kubelet. Required for the pod-level
+  # sysctl used by the router Deployment; applying this may roll the node pools.
+  kubeletConfig:
+    enabled: true
+    machineConfigPoolSelector: {}
 
 # ---------------------
 # Publish Templates

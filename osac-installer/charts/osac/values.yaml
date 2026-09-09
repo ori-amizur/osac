@@ -334,6 +334,12 @@ hubAccess:
 # osac-router-agent/entrypoint.sh). See router-pod-scc.yaml for the security review note.
 routerPodScc:
   enabled: false
+  # Allow the router pod's forwarding sysctl on every MachineConfigPool. This
+  # is required in addition to the SCC because the node kubelet must also
+  # allowlist unsafe sysctls. The resource is rendered only on OpenShift.
+  kubeletConfig:
+    enabled: true
+    machineConfigPoolSelector: {}
 
 bundledVault:
   enabled: false

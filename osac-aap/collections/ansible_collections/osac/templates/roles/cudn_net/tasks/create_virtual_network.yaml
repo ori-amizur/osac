@@ -93,10 +93,9 @@
         state: present
         definition:
           apiVersion: rbac.authorization.k8s.io/v1
-          kind: RoleBinding
+          kind: ClusterRoleBinding
           metadata:
-            name: "{{ router_pod_service_account_name }}-scc"
-            namespace: "{{ vn_name }}"
+            name: "{{ router_pod_service_account_name }}-scc-{{ vn_name }}"
             labels: "{{ default_subnet_labels }}"
           roleRef:
             apiGroup: rbac.authorization.k8s.io
@@ -152,6 +151,8 @@
                     # admission.
                     securityContext:
                       capabilities:
+                        drop:
+                          - ALL
                         add:
                           - NET_ADMIN
       register: router_pod_deployment_result

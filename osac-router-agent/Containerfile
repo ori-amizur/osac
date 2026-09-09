@@ -13,8 +13,7 @@ RUN microdnf install -y nftables && microdnf clean all
 COPY --chown=0:0 osac-router-agent/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
-# No USER directive: NET_ADMIN is a capability, not a UID requirement, so this doesn't
-# need to run as root -- the router pod's SCC (osac-installer) assigns an arbitrary
-# non-root UID the same way OpenShift's own restricted-style SCCs do, while separately
-# granting only the NET_ADMIN capability the entrypoint actually needs.
+# No USER directive: the router pod SCC runs this container as root with every capability
+# dropped except NET_ADMIN. This keeps nftables usable while preserving the minimum
+# capability set needed by the entrypoint.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

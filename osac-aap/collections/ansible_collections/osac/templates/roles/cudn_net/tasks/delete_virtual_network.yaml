@@ -15,6 +15,17 @@
     vn_name: "{{ virtual_network.metadata.name }}"
     vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
 
+- name: Delete router pod SCC ClusterRoleBinding for Secondary VirtualNetworks
+  when: vn_networking_type == 'Secondary'
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ router_pod_service_account_name }}-scc-{{ vn_name }}"
+
 - name: Delete router pod namespace for Secondary VirtualNetworks
   when: vn_networking_type == 'Secondary'
   kubernetes.core.k8s:

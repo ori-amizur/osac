@@ -1487,6 +1487,25 @@
           "type": "boolean",
           "description": "Create the router pod SCC and its use-granting ClusterRole",
           "default": false
+        },
+        "kubeletConfig": {
+          "type": "object",
+          "description": "Allow the router pod forwarding sysctl in selected OpenShift MachineConfigPools",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Create the OpenShift KubeletConfig allowlisting net.ipv4.ip_forward",
+              "default": true
+            },
+            "machineConfigPoolSelector": {
+              "type": "object",
+              "description": "Optional MachineConfigPool label selector; empty applies to all pools",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            }
+          }
         }
       }
     },

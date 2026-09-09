@@ -131,7 +131,7 @@
   block:
     - name: Compute the subnet's .1 gateway address
       ansible.builtin.set_fact:
-        subnet_gateway_address: "{{ subnet_ipv4_cidr | ansible.netcommon.ipaddr('1') }}"
+        subnet_gateway_address: "{{ subnet_ipv4_cidr | ansible.utils.ipaddr('1') }}"
       when: subnet_ipv4_cidr | length > 0
       # IPv6-only subnets aren't handled yet -- out of scope for this pass, same as the
       # rest of Story 1.04's Secondary-VN-only scope.

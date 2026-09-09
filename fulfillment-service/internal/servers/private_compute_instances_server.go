@@ -198,20 +198,26 @@ func (b *PrivateComputeInstancesServerBuilder) Build() (result *PrivateComputeIn
 		return
 	}
 
-	externalIPDao, err := dao.NewGenericDAO[*privatev1.ExternalIP]().
+	externalIPDaoBuilder := dao.NewGenericDAO[*privatev1.ExternalIP]().
 		SetLogger(b.logger).
 		SetTenancyLogic(b.tenancyLogic).
-		SetMetricsRegisterer(b.metricsRegisterer).
-		Build()
+		SetMetricsRegisterer(b.metricsRegisterer)
+	if b.notifier != nil {
+		externalIPDaoBuilder.AddEventCallback(makeNotifyCallback[*privatev1.ExternalIP](b.notifier))
+	}
+	externalIPDao, err := externalIPDaoBuilder.Build()
 	if err != nil {
 		return
 	}
 
-	externalIPAttachmentDao, err := dao.NewGenericDAO[*privatev1.ExternalIPAttachment]().
+	externalIPAttachmentDaoBuilder := dao.NewGenericDAO[*privatev1.ExternalIPAttachment]().
 		SetLogger(b.logger).
 		SetTenancyLogic(b.tenancyLogic).
-		SetMetricsRegisterer(b.metricsRegisterer).
-		Build()
+		SetMetricsRegisterer(b.metricsRegisterer)
+	if b.notifier != nil {
+		externalIPAttachmentDaoBuilder.AddEventCallback(makeNotifyCallback[*privatev1.ExternalIPAttachment](b.notifier))
+	}
+	externalIPAttachmentDao, err := externalIPAttachmentDaoBuilder.Build()
 	if err != nil {
 		return
 	}

@@ -66,9 +66,9 @@
               'subnets': [{
                 'type': 'dhcp4',
                 'routes': [{
-                  'network': (vm_additional_vn_info.resources[0].spec.ipv4Cidr | ansible.netcommon.ipaddr('network')),
-                  'netmask': (vm_additional_vn_info.resources[0].spec.ipv4Cidr | ansible.netcommon.ipaddr('netmask')),
-                  'gateway': (additional_subnet.spec.ipv4Cidr | ansible.netcommon.ipaddr('1')).split('/')[0]
+                  'network': (vm_additional_vn_info.resources[0].spec.ipv4Cidr | ansible.utils.ipaddr('network')),
+                  'netmask': (vm_additional_vn_info.resources[0].spec.ipv4Cidr | ansible.utils.ipaddr('netmask')),
+                  'gateway': (additional_subnet.spec.ipv4Cidr | ansible.utils.ipaddr('1')).split('/')[0]
                 }]
               }]
             }]

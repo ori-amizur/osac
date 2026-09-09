@@ -234,7 +234,7 @@
 
     - name: Compute the gateway address for a subnet CIDR
       ansible.builtin.set_fact:
-        computed_gateway: "{{ '10.4.1.0/24' | ansible.netcommon.ipaddr('1') }}"
+        computed_gateway: "{{ '10.4.1.0/24' | ansible.utils.ipaddr('1') }}"
 
     - name: Assert the gateway address is the CIDR's first host address
       ansible.builtin.assert:

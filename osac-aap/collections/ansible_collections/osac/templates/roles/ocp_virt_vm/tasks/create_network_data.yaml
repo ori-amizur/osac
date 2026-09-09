@@ -55,7 +55,7 @@
       ansible.builtin.set_fact:
         vm_subnet_gateway: >-
           {{
-            (vm_primary_subnet_info.resources[0].spec.ipv4Cidr | ansible.netcommon.ipaddr('1')).split('/')[0]
+            (vm_primary_subnet_info.resources[0].spec.ipv4Cidr | ansible.utils.ipaddr('1')).split('/')[0]
           }}
 
     - name: Replace the VM's default pod-network interface with the subnet's NAD

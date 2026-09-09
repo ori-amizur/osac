@@ -62,7 +62,16 @@
 
 - name: Extract the running router pod
   ansible.builtin.set_fact:
-    router_pod_running_list: "{{ router_pod_info.resources | selectattr('status.phase', 'equalto', 'Running') | list }}"
+    # A rolling Deployment can briefly expose the terminating old pod and the new
+    # pod as Running at the same time. A deletionTimestamp identifies the old pod;
+    # keep the ambiguity check for two non-terminating pods.
+    router_pod_running_list: >-
+      {{
+        router_pod_info.resources
+        | selectattr('status.phase', 'equalto', 'Running')
+        | rejectattr('metadata.deletionTimestamp', 'defined')
+        | list
+      }}
 
 - name: Require exactly one running router pod
   ansible.builtin.assert:

@@ -9,8 +9,10 @@
 # the VirtualNetwork already has one shared namespace (its router pod's namespace, from
 # create_virtual_network.yaml). Instead, creates a role:Secondary CUDN whose
 # namespaceSelector matches the same per-VN-UUID-keyed label the shared namespace already
-# carries, and attaches the new subnet to the router pod Deployment's Multus network list
-# (see design.md's "Router pod gains an interface for the new subnet", AC3).
+# carries, and attaches the new subnet to the running router Pod's Multus network list
+# (see design.md's "Router pod gains an interface for the new subnet", AC3). The Pod is
+# patched directly so multus-dynamic-networks-controller can inject the interface without
+# triggering a Deployment rollout.
 
 - name: Include get remote cluster kubeconfig
   ansible.builtin.include_role:
@@ -189,17 +191,28 @@
       when: subnet_gateway_address is defined
       changed_when: true
 
-    - name: Get the router pod Deployment
+    - name: Get the running router pod
       kubernetes.core.k8s_info:
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
-        api_version: apps/v1
-        kind: Deployment
+        api_version: v1
+        kind: Pod
         namespace: "{{ subnet_vn_name }}"
-        name: "{{ router_pod_name }}"
-      register: router_pod_deployment_info
+        label_selectors:
+          - "osac.openshift.io/router-pod=true"
+          - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+      register: router_pod_info
+      until:
+        - router_pod_info.resources | length == 1
+        - router_pod_info.resources[0].status.phase | default('') == 'Running'
+        - router_pod_info.resources[0].metadata.deletionTimestamp is not defined
+      retries: 30
+      delay: 2
 
     - name: Compute updated router pod Multus network selection list
       ansible.builtin.set_fact:
+        # Read the current list from the Pod, not the Deployment template. Live attachment
+        # deliberately leaves the template unchanged so this task must preserve every
+        # attachment already injected into the running Pod.
         # JSON-array form, not the bare comma-separated names used previously: OVN-K only
         # honors a secondary attachment's IPAMClaim reference when it's given explicitly
         # via the NetworkSelectionElement's ipam-claim-reference field (confirmed --
@@ -210,7 +223,7 @@
         router_pod_networks: >-
           {{
             (
-              (router_pod_deployment_info.resources[0].spec.template.metadata.annotations | default({}))
+              (router_pod_info.resources[0].metadata.annotations | default({}))
                 .get('k8s.v1.cni.cncf.io/networks', '[]') | from_json
                 | rejectattr('name', 'equalto', subnet_name) | list
             ) + [{
@@ -283,22 +296,8 @@
         router_pod_config_version: "{{ router_pod_networks | to_json }}"
         router_pod_config_routes: []
 
-    - name: Patch router pod Deployment to attach the new subnet
-      kubernetes.core.k8s_json_patch:
-        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
-        api_version: apps/v1
-        kind: Deployment
-        namespace: "{{ subnet_vn_name }}"
-        name: "{{ router_pod_name }}"
-        patch:
-          - op: add
-            path: /spec/template/metadata/annotations
-            value:
-              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | to_json }}"
-
-    - name: Display router pod attachment result
-      ansible.builtin.debug:
-        msg: "Router pod Deployment '{{ router_pod_name }}' now attached to: {{ router_pod_networks | map(attribute='name') | join(', ') }}"
+    - name: Attach the new subnet to the running router pod without a restart
+      ansible.builtin.include_tasks: patch_router_pod_networks.yaml
 
     - name: Patch OVN port security for the router pod's current subnet attachments
       ansible.builtin.include_tasks: patch_router_pod_port_security.yaml

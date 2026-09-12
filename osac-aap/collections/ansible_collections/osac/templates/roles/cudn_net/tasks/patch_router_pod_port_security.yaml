@@ -150,6 +150,17 @@
   environment: "{{ router_pod_exec_environment }}"
   register: router_pod_lsp_list_result
   changed_when: false
+  until:
+    - router_pod_lsp_list_result.rc == 0
+    - >-
+      (
+        router_pod_lsp_list_result.stdout_lines
+        | select('match', '^.*' ~ router_pod_lsp_suffix ~ '$')
+        | list
+        | length
+      ) == (router_pod_networks | length)
+  retries: 30
+  delay: 2
 
 - name: Filter to this router pod's own logical switch ports
   ansible.builtin.set_fact:

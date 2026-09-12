@@ -1,0 +1,63 @@
+---
+# Attach the desired Secondary UDN set to the already-running router Pod.
+#
+# This intentionally patches the Pod rather than the Deployment template. A
+# Deployment-template change rolls the Pod, while the multus-dynamic-networks-
+# controller watches the Pod annotation and can inject the interface in place.
+# The Deployment recreation/fallback path is handled by a later Epic 2 story.
+
+- name: Wait for the running router pod before live attachment
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: router_pod_live_attach_info
+  until:
+    - router_pod_live_attach_info.resources | length == 1
+    - router_pod_live_attach_info.resources[0].status.phase | default('') == 'Running'
+    - router_pod_live_attach_info.resources[0].metadata.deletionTimestamp is not defined
+  retries: 30
+  delay: 2
+
+- name: Set the running router pod identity and annotations
+  ansible.builtin.set_fact:
+    router_pod_live_attach_name: "{{ router_pod_live_attach_info.resources[0].metadata.name }}"
+    router_pod_live_attach_annotations: "{{ router_pod_live_attach_info.resources[0].metadata.annotations | default({}) }}"
+
+- name: Add the Multus annotation map to the router pod
+  when: router_pod_live_attach_annotations | length == 0
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_live_attach_name }}"
+    patch:
+      - op: add
+        path: /metadata/annotations
+        value:
+          k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | to_json }}"
+
+- name: Update the router pod's Multus network attachment annotation live
+  when: router_pod_live_attach_annotations | length > 0
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_live_attach_name }}"
+    patch:
+      - op: add
+        path: /metadata/annotations/k8s.v1.cni.cncf.io~1networks
+        value: "{{ router_pod_networks | to_json }}"
+
+- name: Display router pod live-attachment result
+  ansible.builtin.debug:
+    msg: >-
+      Router pod '{{ router_pod_live_attach_name }}' was patched in place with
+      {{ router_pod_networks | map(attribute='name') | join(', ') }};
+      the Deployment template was not changed.

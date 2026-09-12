@@ -1,0 +1,28 @@
+---
+# Writes the Linux network state consumed by osac-router-agent. This is deliberately
+# separate from OVN port-security reconciliation: the latter remains the temporary,
+# direct-ovn-nbctl AAP stopgap in patch_router_pod_port_security.yaml.
+
+- name: Write router agent ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ router_pod_config_map_name }}"
+        namespace: "{{ router_pod_config_namespace }}"
+        labels: "{{ default_subnet_labels | combine({'osac.openshift.io/router-config': 'true'}) }}"
+        annotations:
+          osac.openshift.io/tenant: "{{ router_pod_config_tenant }}"
+          osac.openshift.io/owner-reference: "{{ router_pod_config_owner_reference }}"
+      data:
+        config.json: >-
+          {{
+            {
+              'version': router_pod_config_version | default(''),
+              'gatewayIPs': router_pod_config_gateway_ips | default([]),
+              'routes': router_pod_config_routes | default([])
+            } | to_json
+          }}

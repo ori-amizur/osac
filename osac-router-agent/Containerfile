@@ -1,21 +1,28 @@
 # Build context: mono-repo root (not osac-router-agent/ alone), matching every other
 # component's Containerfile in this repo.
 # Invoke with: podman build -f osac-router-agent/Containerfile .
+FROM registry.access.redhat.com/ubi10/go-toolset:1.26.7-1787775323 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /opt/app-root/src/osac-router-agent
+COPY --chown=1001:1001 osac-router-agent/go.mod ./
+RUN go mod download
+COPY --chown=1001:1001 osac-router-agent/*.go ./
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -buildvcs=false -a -o /opt/app-root/src/router-agent .
+
 FROM registry.access.redhat.com/ubi10-minimal:10.2
 
-# nftables for the entrypoint's SNAT setup -- ubi10-minimal doesn't ship it, and
+# nftables for the agent's SNAT setup -- ubi10-minimal doesn't ship it, and
 # RHEL10/UBI10 dropped the iptables package entirely in favor of nftables (confirmed:
 # `microdnf install iptables` has no match on this base image). iproute is needed to
-# assign each subnet's reserved gateway address to the router pod's Multus interface.
-# No Go build here (unlike sibling components): this image runs a shell entrypoint, not
-# a compiled binary, until the real ConfigMap-watching agent design.md describes replaces
-# it.
+# assign each subnet's reserved gateway address to the router pod's Multus interface and
+# install the desired routes.
 RUN microdnf install -y nftables iproute && microdnf clean all
 
-COPY --chown=0:0 osac-router-agent/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh
+COPY --from=builder /opt/app-root/src/router-agent /usr/local/bin/router-agent
 
 # No USER directive: the router pod SCC runs this container as root with every capability
-# dropped except NET_ADMIN. This keeps nftables usable while preserving the minimum
-# capability set needed by the entrypoint.
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# dropped except NET_ADMIN. This keeps nftables and netlink usable while preserving the
+# minimum capability set needed by the agent.
+ENTRYPOINT ["/usr/local/bin/router-agent"]

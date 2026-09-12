@@ -244,6 +244,28 @@
         - item.status.ips is defined
         - item.status.ips | length > 0
 
+    - name: Build router agent gateway configuration from persistent claim addresses
+      ansible.builtin.set_fact:
+        router_pod_config_gateway_ips: >-
+          {{ router_pod_config_gateway_ips | default([]) + [{
+            'interface': item.metadata.name,
+            'address': item.status.ips[0]
+          }] }}
+      loop: "{{ router_gateway_claims_info.resources }}"
+      when:
+        - item.status is defined
+        - item.status.ips is defined
+        - item.status.ips | length > 0
+
+    - name: Require every attached subnet to have router agent configuration
+      ansible.builtin.assert:
+        that:
+          - (router_pod_config_gateway_ips | default([])) | length == router_pod_networks | length
+        fail_msg: >-
+          Expected one router agent gateway configuration per router attachment
+          ({{ router_pod_networks | map(attribute='name') | join(', ') }}),
+          but found {{ router_pod_config_gateway_ips | default([]) | length }}.
+
     - name: Require every attached subnet to have a reserved gateway address
       ansible.builtin.assert:
         that:
@@ -251,6 +273,15 @@
         fail_msg: >-
           Expected one persistent gateway claim per router attachment ({{ router_pod_networks | map(attribute='name') | join(', ') }}),
           but found {{ router_pod_gateway_ips | length }} reserved addresses.
+
+    - name: Update router agent configuration
+      ansible.builtin.include_tasks: write_router_config.yaml
+      vars:
+        router_pod_config_namespace: "{{ subnet_vn_name }}"
+        router_pod_config_tenant: "{{ subnet_tenant_id }}"
+        router_pod_config_owner_reference: "{{ subnet_virtual_network }}"
+        router_pod_config_version: "{{ router_pod_networks | to_json }}"
+        router_pod_config_routes: []
 
     - name: Patch router pod Deployment to attach the new subnet
       kubernetes.core.k8s_json_patch:
@@ -260,15 +291,6 @@
         namespace: "{{ subnet_vn_name }}"
         name: "{{ router_pod_name }}"
         patch:
-          - op: replace
-            path: /spec/template/spec/containers/0/env
-            value:
-              - name: ROUTER_POD_CLUSTER_NET_IP
-                valueFrom:
-                  fieldRef:
-                    fieldPath: status.podIP
-              - name: ROUTER_POD_GATEWAY_IPS
-                value: "{{ router_pod_gateway_ips | join(',') }}"
           - op: add
             path: /spec/template/metadata/annotations
             value:

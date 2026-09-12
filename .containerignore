@@ -12,5 +12,5 @@
 !osac-csi-driver/
 !osac-metering/
 
-# osac-router-agent: shell entrypoint only, not a Go module
+# osac-router-agent: ConfigMap-watching Go agent
 !osac-router-agent/

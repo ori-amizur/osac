@@ -6,9 +6,9 @@
 # For networkingType: Secondary, this provisions the router-pod foundation: one
 # namespace and one router pod Deployment per VirtualNetwork (see design.md's
 # "Router pod and namespace provisioning for Secondary VirtualNetworks"). The
-# Deployment's container is a placeholder for now — the ConfigMap-watching agent
-# and subnet interfaces are added by later stories; this story only establishes
-# the namespace + pod skeleton with the default cluster-network interface.
+# Deployment's container starts with the cluster-network interface and a projected
+# ConfigMap containing the initial empty router configuration. Subnet tasks update
+# that ConfigMap as gateway claims are created.
 
 - name: Include get remote cluster kubeconfig
   ansible.builtin.include_role:
@@ -106,6 +106,16 @@
               name: "{{ router_pod_service_account_name }}"
               namespace: "{{ vn_name }}"
 
+    - name: Initialize router agent configuration
+      ansible.builtin.include_tasks: write_router_config.yaml
+      vars:
+        router_pod_config_namespace: "{{ vn_name }}"
+        router_pod_config_tenant: "{{ vn_tenant_id }}"
+        router_pod_config_owner_reference: "{{ vn_uuid }}"
+        router_pod_config_version: "0"
+        router_pod_config_gateway_ips: []
+        router_pod_config_routes: []
+
     - name: Create router pod Deployment
       kubernetes.core.k8s:
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -130,7 +140,7 @@
                   osac.openshift.io/virtual-network: "{{ vn_name }}"
               spec:
                 serviceAccountName: "{{ router_pod_service_account_name }}"
-                # net.ipv4.ip_forward must be set here, not by the entrypoint: /proc/sys
+                # net.ipv4.ip_forward must be set here, not by the agent: /proc/sys
                 # is mounted read-only regardless of capabilities, confirmed by direct
                 # testing -- `sysctl -w` from inside the container fails with "permission
                 # denied" even with NET_ADMIN. This is Kubernetes' safe/namespaced-sysctls
@@ -148,15 +158,15 @@
                         valueFrom:
                           fieldRef:
                             fieldPath: status.podIP
-                      # Filled by create_subnet.yaml from the persistent IPAMClaim
-                      # statuses. The router agent adds these addresses to the matching
-                      # Multus interfaces because IPAMClaim reservation alone does not
-                      # configure an address inside the pod.
-                      - name: ROUTER_POD_GATEWAY_IPS
-                        value: ""
-                    # No command override: osac-router-agent's own ENTRYPOINT runs the
-                    # forwarding/SNAT setup.
-                    # NET_ADMIN for the entrypoint's nft SNAT rule (osac-router-agent).
+                      - name: ROUTER_POD_CONFIG_FILE
+                        value: "{{ router_pod_config_file }}"
+                    volumeMounts:
+                      - name: router-agent-config
+                        mountPath: "{{ router_pod_config_file | dirname }}"
+                        readOnly: true
+                    # No command override: osac-router-agent runs the forwarding/SNAT
+                    # and ConfigMap-driven netlink setup.
+                    # NET_ADMIN for the agent's nft SNAT and netlink operations.
                     # Requires the router pod ServiceAccount above to be bound to a SCC
                     # allowing it (see osac-installer's router-pod-scc.yaml) -- on a
                     # cluster without that SCC bound, this Deployment's pods will fail
@@ -167,6 +177,10 @@
                           - ALL
                         add:
                           - NET_ADMIN
+                volumes:
+                  - name: router-agent-config
+                    configMap:
+                      name: "{{ router_pod_config_map_name }}"
       register: router_pod_deployment_result
 
     - name: Display router pod provisioning result

@@ -20,8 +20,10 @@
   ansible.builtin.set_fact:
     subnet_name: "{{ subnet.metadata.name }}"
     subnet_id: "{{ subnet.metadata.labels['osac.openshift.io/subnet-uuid'] | default(subnet.metadata.name) }}"
+    subnet_tenant_id: "{{ subnet.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
     subnet_networking_type: "{{ subnet.metadata.annotations['osac.openshift.io/networking-type'] | default('Primary') }}"
     subnet_vn_name: "{{ subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] | default('') }}"
+    subnet_virtual_network: "{{ subnet.spec.virtualNetwork | default('') }}"
 
 - name: Display deletion information
   ansible.builtin.debug:
@@ -102,6 +104,43 @@
               .get('k8s.v1.cni.cncf.io/networks', '[]') | from_json
               | rejectattr('name', 'equalto', subnet_name) | list
           }}
+
+    - name: Get remaining router gateway IPAMClaims
+      when: router_pod_deployment_info.resources | length > 0
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: k8s.cni.cncf.io/v1alpha1
+        kind: IPAMClaim
+        namespace: "{{ subnet_vn_name }}"
+        label_selectors:
+          - "osac.openshift.io/managed-by=osac-fulfillment"
+      register: router_gateway_claims_info
+
+    - name: Build remaining router agent gateway configuration
+      ansible.builtin.set_fact:
+        router_pod_config_gateway_ips: >-
+          {{ router_pod_config_gateway_ips | default([]) + [{
+            'interface': item.metadata.name,
+            'address': item.status.ips[0]
+          }] }}
+      loop: "{{ router_gateway_claims_info.resources | default([]) }}"
+      when:
+        - router_pod_deployment_info.resources | length > 0
+        - item.metadata.name in (router_pod_networks | default([]) | map(attribute='name') | list)
+        - item.status is defined
+        - item.status.ips is defined
+        - item.status.ips | length > 0
+
+    - name: Update router agent configuration after subnet removal
+      when: router_pod_deployment_info.resources | length > 0
+      ansible.builtin.include_tasks: write_router_config.yaml
+      vars:
+        router_pod_config_namespace: "{{ subnet_vn_name }}"
+        router_pod_config_tenant: "{{ subnet_tenant_id }}"
+        router_pod_config_owner_reference: "{{ subnet_virtual_network }}"
+        router_pod_config_version: "{{ router_pod_networks | default([]) | to_json }}"
+        router_pod_config_gateway_ips: "{{ router_pod_config_gateway_ips | default([]) }}"
+        router_pod_config_routes: []
 
     - name: Patch router pod Deployment to detach the subnet
       when: router_pod_deployment_info.resources | length > 0

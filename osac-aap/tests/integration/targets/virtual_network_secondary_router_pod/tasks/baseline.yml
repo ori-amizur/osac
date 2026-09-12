@@ -75,6 +75,25 @@
             fail_msg: "Router pod Deployment not created correctly, or unexpectedly has subnet attachments"
             success_msg: "Router pod Deployment: passed"
 
+        - name: Get the router agent ConfigMap
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: ConfigMap
+            namespace: "{{ test_vn_name }}"
+            name: router-config
+          register: router_config_result
+
+        - name: Assert the router agent ConfigMap was initialized
+          ansible.builtin.assert:
+            that:
+              - router_config_result.resources | length == 1
+              - router_config_result.resources[0].metadata.annotations['osac.openshift.io/tenant'] == 'test-tenant'
+              - router_config_result.resources[0].metadata.annotations['osac.openshift.io/owner-reference'] == test_vn_uuid
+              - (router_config_result.resources[0].data['config.json'] | from_json)['gatewayIPs'] | length == 0
+              - (router_config_result.resources[0].data['config.json'] | from_json)['routes'] | length == 0
+            fail_msg: "Router agent ConfigMap was not initialized correctly"
+            success_msg: "Router agent ConfigMap: passed"
+
       always:
         - name: Cleanup -- delete router pod namespace
           kubernetes.core.k8s:

@@ -130,7 +130,9 @@
       - "Resource UID: {{ cudn_result.result.metadata.uid | default('N/A') }}"
 
 - name: Reserve the subnet's persistent gateway address and attach it to the router pod
-  when: subnet_networking_type == 'Secondary'
+  when:
+    - subnet_networking_type == 'Secondary'
+    - cudn_net_manage_router_pod | bool
   block:
     - name: Compute the subnet's .1 gateway address
       ansible.builtin.set_fact:

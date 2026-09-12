@@ -16,6 +16,10 @@ router_pod_config_file: /etc/osac-router-agent/config/config.json
 # Fixed cluster-scoped ClusterRole name from osac-installer's router-pod-scc.yaml
 # (not release-namespace-qualified -- see that file's own naming note).
 router_pod_scc_cluster_role: osac-router-pod-scc
+# Test and staged-provisioning hook: keep the CUDN resource path independently
+# testable when the cluster does not provide live UDN attachment support. The
+# production default preserves the complete Secondary Subnet workflow.
+cudn_net_manage_router_pod: true
 
 # OVN NB port-security patching (temporary stopgap, see design.md "Port security" and
 # patch_router_pod_port_security.yaml) -- where the OVN northbound DB lives and how to

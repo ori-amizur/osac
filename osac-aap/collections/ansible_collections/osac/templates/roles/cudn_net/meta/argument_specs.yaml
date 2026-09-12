@@ -10,6 +10,10 @@ argument_specs:
         type: str
         required: true
         description: Name of the Subnet resource
+      cudn_net_manage_router_pod:
+        type: bool
+        default: true
+        description: Manage the Secondary VirtualNetwork router gateway and Pod attachment
       template_parameters:
         type: dict
         description: Template-specific parameters (reserved for future use)

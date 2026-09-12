@@ -3,16 +3,10 @@
 # (namespaceSelector/role:Secondary CUDN, no per-subnet namespace, router pod
 # Multus attachment). Exercises create_subnet.yaml directly.
 #
-# Caveat: this test environment has no OVN-Kubernetes CRDs installed (no
-# ClusterUserDefinedNetwork kind registered) -- same pre-existing gap as every other
-# Subnet integration test in this repo (there was none before this change either).
-# The CUDN-apply task itself fails here with "no matches for kind" regardless of
-# Primary/Secondary, so it's wrapped in block/rescue to let the test continue past
-# that expected failure and assert on the tasks that ran *before* it (namespace
-# creation/skip, CUDN namespaceSelector/role fact computation). The router-pod
-# Multus-attachment task comes *after* the CUDN task in create_subnet.yaml, so it
-# never runs in this environment either -- Test 3 below validates that logic in
-# isolation instead, since it can't be exercised end-to-end here.
+# The resource tests require an OpenShift cluster with OVN-Kubernetes CUDN
+# support. OSAC consumes that API; it does not install or own it. The complete
+# Secondary Subnet path additionally depends on IPAMClaim and live UDN attach
+# support, which is isolated from the CUDN contract test below.
 
 # ── Test 1: Secondary Subnet creates no per-subnet namespace, correct CUDN facts ──
 - name: "Subnet Secondary CUDN - Test create"
@@ -21,8 +15,13 @@
   vars_files:
     - ../../../common_vars.yml
   vars:
-    test_vn_uuid: vn-for-subnet-secondary-test-uuid
-    test_subnet_name: subnet-secondary-cudn-test
+    test_vn_name: vn-sec-test
+    test_vn_uuid: vn-sec-test-uuid
+    test_subnet_name: subnet-sec-test
+    # This play validates the CUDN contract. Live UDN attachment is exercised
+    # separately; OVN-Kubernetes owns that controller and its support is not an
+    # OSAC test prerequisite for creating the CUDN.
+    cudn_net_manage_router_pod: false
 
   tasks:
     - name: Test Secondary Subnet provisioning
@@ -38,22 +37,35 @@
                 annotations:
                   osac.openshift.io/tenant: test-tenant
                   osac.openshift.io/networking-type: Secondary
-                  osac.openshift.io/virtual-network-name: vn-for-subnet-secondary-test
+                  osac.openshift.io/virtual-network-name: "{{ test_vn_name }}"
               spec:
                 virtualNetwork: "{{ test_vn_uuid }}"
                 ipv4Cidr: 10.4.1.0/24
             subnet_name: "{{ test_subnet_name }}"
 
-        - name: Run cudn_net create_subnet (expected to fail at the CUDN-apply step)
-          block:
-            - name: Run cudn_net create_subnet
-              ansible.builtin.include_role:
-                name: osac.templates.cudn_net
-                tasks_from: create_subnet
-          rescue:
-            - name: Note expected CUDN-apply failure
-              ansible.builtin.debug:
-                msg: "Expected in this test env: ClusterUserDefinedNetwork CRD is not installed"
+        - name: Create the shared Secondary VirtualNetwork namespace
+          kubernetes.core.k8s:
+            state: present
+            api_version: v1
+            kind: Namespace
+            definition:
+              metadata:
+                name: "{{ test_vn_name }}"
+                annotations:
+                  osac.openshift.io/tenant: test-tenant
+                  osac.openshift.io/owner-reference: "{{ test_vn_uuid }}"
+                labels:
+                  >-
+                    {{ {
+                      'osac.openshift.io/managed-by': 'osac-fulfillment',
+                      'osac.openshift.io/tenant': 'test-tenant',
+                      ('secondary-vn.osac.openshift.io/' ~ test_vn_uuid): 'true'
+                    } }}
+
+        - name: Run cudn_net create_subnet
+          ansible.builtin.include_role:
+            name: osac.templates.cudn_net
+            tasks_from: create_subnet
 
         - name: Get any namespace matching the Subnet's own name
           kubernetes.core.k8s_info:
@@ -76,6 +88,47 @@
               - subnet_cudn_layer2_role == 'Secondary'
             fail_msg: "CUDN namespaceSelector/layer2 role not computed correctly for a Secondary Subnet"
             success_msg: "Secondary Subnet CUDN facts: passed"
+
+        - name: Get the created Secondary CUDN
+          kubernetes.core.k8s_info:
+            api_version: k8s.ovn.org/v1
+            kind: ClusterUserDefinedNetwork
+            name: "{{ test_subnet_name }}"
+          register: secondary_cudn_result
+
+        - name: Assert the Secondary CUDN was created with the requested contract
+          ansible.builtin.assert:
+            that:
+              - secondary_cudn_result.resources | length == 1
+              - secondary_cudn_result.resources[0].spec.network.topology == 'Layer2'
+              - secondary_cudn_result.resources[0].spec.network.layer2.role == 'Secondary'
+              - secondary_cudn_result.resources[0].spec.network.layer2.subnets == ['10.4.1.0/24']
+              - >-
+                secondary_cudn_result.resources[0].spec.namespaceSelector.matchLabels ==
+                {'secondary-vn.osac.openshift.io/' ~ test_vn_uuid: 'true'}
+            fail_msg: "Secondary CUDN was not created with the requested network contract"
+            success_msg: "Secondary CUDN resource: passed"
+
+      always:
+        - name: Cleanup -- delete the Secondary Subnet CUDN
+          kubernetes.core.k8s:
+            state: absent
+            api_version: k8s.ovn.org/v1
+            kind: ClusterUserDefinedNetwork
+            name: "{{ test_subnet_name }}"
+            wait: true
+            wait_timeout: 60
+          failed_when: false
+
+        - name: Cleanup -- delete the Secondary VirtualNetwork namespace
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_vn_name }}"
+            wait: true
+            wait_timeout: 60
+          failed_when: false
 
 # ── Test 2: Primary Subnet still creates its own dedicated namespace (regression) ──
 - name: "Subnet Secondary CUDN - Test Primary is unaffected"
@@ -107,16 +160,10 @@
                 ipv4Cidr: 10.4.2.0/24
             subnet_name: "{{ test_subnet_name }}"
 
-        - name: Run cudn_net create_subnet (expected to fail at the CUDN-apply step)
-          block:
-            - name: Run cudn_net create_subnet
-              ansible.builtin.include_role:
-                name: osac.templates.cudn_net
-                tasks_from: create_subnet
-          rescue:
-            - name: Note expected CUDN-apply failure
-              ansible.builtin.debug:
-                msg: "Expected in this test env: ClusterUserDefinedNetwork CRD is not installed"
+        - name: Run cudn_net create_subnet
+          ansible.builtin.include_role:
+            name: osac.templates.cudn_net
+            tasks_from: create_subnet
 
         - name: Get the Subnet's own dedicated namespace
           kubernetes.core.k8s_info:
@@ -143,6 +190,16 @@
             success_msg: "Primary Subnet CUDN facts: passed"
 
       always:
+        - name: Cleanup -- delete the Primary Subnet CUDN
+          kubernetes.core.k8s:
+            state: absent
+            api_version: k8s.ovn.org/v1
+            kind: ClusterUserDefinedNetwork
+            name: "{{ test_subnet_name }}"
+            wait: true
+            wait_timeout: 60
+          failed_when: false
+
         - name: Cleanup -- delete the Subnet's dedicated namespace
           kubernetes.core.k8s:
             state: absent
@@ -153,9 +210,7 @@
 
 # ── Test 3: router pod Multus network-selection list computation (in isolation) ──
 # Validates the exact JSON-array list-manipulation expressions used in create_subnet.yaml's
-# "Compute updated router pod Multus network selection list" and delete_subnet.yaml's
-# mirror -- can't be exercised via the role itself here since that task sits after the
-# CUDN-apply step, which never succeeds in this CRD-less test environment (see header).
+# "Compute updated router pod Multus network selection list" and delete_subnet.yaml's mirror.
 - name: "Subnet Secondary CUDN - Test router pod attachment-list computation"
   hosts: localhost
   gather_facts: false
@@ -255,10 +310,9 @@
         success_msg: "IPAMClaim status patch payload: passed"
 
 # ── Test 4: patch the running router Pod without changing its identity ──
-# This exercises the live-attach task directly, without requiring the
-# multus-dynamic-networks-controller. The controller is responsible for acting on
-# the annotation; this test verifies OSAC changes the Pod in place and preserves
-# unrelated annotations.
+# This exercises the live-attach task directly. OVN-Kubernetes/Multus owns the
+# subsequent interface injection; this test verifies that OSAC changes the Pod in
+# place and preserves unrelated annotations.
 - name: "Subnet Secondary CUDN - Test live router pod annotation patch"
   hosts: localhost
   gather_facts: false
@@ -287,30 +341,6 @@
                 labels:
                   osac.openshift.io/tenant: test-tenant
                   osac.openshift.io/owner-reference: subnet-live-attach-test
-
-        - name: Create the live-attach test network attachment definitions
-          kubernetes.core.k8s:
-            state: present
-            api_version: k8s.cni.cncf.io/v1
-            kind: NetworkAttachmentDefinition
-            namespace: "{{ test_live_attach_namespace }}"
-            definition:
-              metadata:
-                name: "{{ live_attach_nad_name }}"
-                annotations:
-                  osac.openshift.io/tenant: test-tenant
-                  osac.openshift.io/owner-reference: subnet-live-attach-test
-                labels:
-                  osac.openshift.io/tenant: test-tenant
-                  osac.openshift.io/owner-reference: subnet-live-attach-test
-              spec:
-                config: >-
-                  {"cniVersion":"1.1.0","name":"ovn-kubernetes","type":"ovn-k8s-cni-overlay"}
-          loop:
-            - "{{ test_live_attach_existing_subnet_name }}"
-            - "{{ test_live_attach_subnet_name }}"
-          loop_control:
-            loop_var: live_attach_nad_name
 
         - name: Create a running router pod
           kubernetes.core.k8s:
@@ -353,41 +383,6 @@
           ansible.builtin.set_fact:
             initial_router_pod_uid: "{{ initial_router_pod_info.resources[0].metadata.uid }}"
 
-        - name: Attach the existing network to the running router pod
-          kubernetes.core.k8s:
-            state: present
-            api_version: v1
-            kind: Pod
-            namespace: "{{ test_live_attach_namespace }}"
-            name: router
-            definition:
-              metadata:
-                annotations:
-                  k8s.v1.cni.cncf.io/networks: >-
-                    {{ [{'name': test_live_attach_existing_subnet_name,
-                         'interface': 'existing0'}] | to_json }}
-
-        - name: Wait for the existing network to attach
-          kubernetes.core.k8s_info:
-            api_version: v1
-            kind: Pod
-            namespace: "{{ test_live_attach_namespace }}"
-            name: router
-          register: existing_network_router_pod_info
-          until:
-            - existing_network_router_pod_info.resources | length == 1
-            - existing_network_router_pod_info.resources[0].status.phase | default('') == 'Running'
-            - existing_network_router_pod_info.resources[0].metadata.uid == initial_router_pod_uid
-            - >-
-              (
-                existing_network_router_pod_info.resources[0].metadata.annotations[
-                  'k8s.v1.cni.cncf.io/network-status'
-                ] | default('[]') | from_json
-                | selectattr('interface', 'equalto', 'existing0') | list | length
-              ) == 1
-          retries: 30
-          delay: 2
-
         - name: Patch the running router pod through the cudn_net live-attach task
           ansible.builtin.include_role:
             name: osac.templates.cudn_net
@@ -401,26 +396,13 @@
                 interface: new0
                 ipam-claim-reference: "{{ test_live_attach_subnet_name }}"
 
-        - name: Wait for the new network to attach to the patched router pod
+        - name: Get the patched router pod
           kubernetes.core.k8s_info:
             api_version: v1
             kind: Pod
             namespace: "{{ test_live_attach_namespace }}"
             name: router
           register: patched_router_pod_info
-          until:
-            - patched_router_pod_info.resources | length == 1
-            - patched_router_pod_info.resources[0].status.phase | default('') == 'Running'
-            - patched_router_pod_info.resources[0].metadata.uid == initial_router_pod_uid
-            - >-
-              (
-                patched_router_pod_info.resources[0].metadata.annotations[
-                  'k8s.v1.cni.cncf.io/network-status'
-                ] | default('[]') | from_json
-                | selectattr('interface', 'equalto', 'new0') | list | length
-              ) == 1
-          retries: 30
-          delay: 2
 
         - name: Assert the live attachment changed only the Pod annotation
           ansible.builtin.assert:

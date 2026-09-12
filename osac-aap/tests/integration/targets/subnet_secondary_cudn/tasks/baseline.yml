@@ -288,7 +288,31 @@
                   osac.openshift.io/tenant: test-tenant
                   osac.openshift.io/owner-reference: subnet-live-attach-test
 
-        - name: Create a running router pod with an existing annotation
+        - name: Create the live-attach test network attachment definitions
+          kubernetes.core.k8s:
+            state: present
+            api_version: k8s.cni.cncf.io/v1
+            kind: NetworkAttachmentDefinition
+            namespace: "{{ test_live_attach_namespace }}"
+            definition:
+              metadata:
+                name: "{{ live_attach_nad_name }}"
+                annotations:
+                  osac.openshift.io/tenant: test-tenant
+                  osac.openshift.io/owner-reference: subnet-live-attach-test
+                labels:
+                  osac.openshift.io/tenant: test-tenant
+                  osac.openshift.io/owner-reference: subnet-live-attach-test
+              spec:
+                config: >-
+                  {"cniVersion":"1.1.0","name":"ovn-kubernetes","type":"ovn-k8s-cni-overlay"}
+          loop:
+            - "{{ test_live_attach_existing_subnet_name }}"
+            - "{{ test_live_attach_subnet_name }}"
+          loop_control:
+            loop_var: live_attach_nad_name
+
+        - name: Create a running router pod
           kubernetes.core.k8s:
             state: present
             api_version: v1
@@ -301,9 +325,6 @@
                   osac.openshift.io/tenant: test-tenant
                   osac.openshift.io/owner-reference: subnet-live-attach-test
                   osac.test/preserve: keep-me
-                  k8s.v1.cni.cncf.io/networks: >-
-                    [{"name":"{{ test_live_attach_existing_subnet_name }}",
-                    "interface":"{{ test_live_attach_existing_subnet_name }}"}]
                 labels:
                   osac.openshift.io/managed-by: osac-fulfillment
                   osac.openshift.io/router-pod: "true"
@@ -332,6 +353,41 @@
           ansible.builtin.set_fact:
             initial_router_pod_uid: "{{ initial_router_pod_info.resources[0].metadata.uid }}"
 
+        - name: Attach the existing network to the running router pod
+          kubernetes.core.k8s:
+            state: present
+            api_version: v1
+            kind: Pod
+            namespace: "{{ test_live_attach_namespace }}"
+            name: router
+            definition:
+              metadata:
+                annotations:
+                  k8s.v1.cni.cncf.io/networks: >-
+                    {{ [{'name': test_live_attach_existing_subnet_name,
+                         'interface': 'existing0'}] | to_json }}
+
+        - name: Wait for the existing network to attach
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ test_live_attach_namespace }}"
+            name: router
+          register: existing_network_router_pod_info
+          until:
+            - existing_network_router_pod_info.resources | length == 1
+            - existing_network_router_pod_info.resources[0].status.phase | default('') == 'Running'
+            - existing_network_router_pod_info.resources[0].metadata.uid == initial_router_pod_uid
+            - >-
+              (
+                existing_network_router_pod_info.resources[0].metadata.annotations[
+                  'k8s.v1.cni.cncf.io/network-status'
+                ] | default('[]') | from_json
+                | selectattr('interface', 'equalto', 'existing0') | list | length
+              ) == 1
+          retries: 30
+          delay: 2
+
         - name: Patch the running router pod through the cudn_net live-attach task
           ansible.builtin.include_role:
             name: osac.templates.cudn_net
@@ -340,18 +396,31 @@
             subnet_vn_name: "{{ test_live_attach_vn_name }}"
             router_pod_networks:
               - name: "{{ test_live_attach_existing_subnet_name }}"
-                interface: "{{ test_live_attach_existing_subnet_name }}"
+                interface: existing0
               - name: "{{ test_live_attach_subnet_name }}"
-                interface: "{{ test_live_attach_subnet_name }}"
+                interface: new0
                 ipam-claim-reference: "{{ test_live_attach_subnet_name }}"
 
-        - name: Get the patched router pod
+        - name: Wait for the new network to attach to the patched router pod
           kubernetes.core.k8s_info:
             api_version: v1
             kind: Pod
             namespace: "{{ test_live_attach_namespace }}"
             name: router
           register: patched_router_pod_info
+          until:
+            - patched_router_pod_info.resources | length == 1
+            - patched_router_pod_info.resources[0].status.phase | default('') == 'Running'
+            - patched_router_pod_info.resources[0].metadata.uid == initial_router_pod_uid
+            - >-
+              (
+                patched_router_pod_info.resources[0].metadata.annotations[
+                  'k8s.v1.cni.cncf.io/network-status'
+                ] | default('[]') | from_json
+                | selectattr('interface', 'equalto', 'new0') | list | length
+              ) == 1
+          retries: 30
+          delay: 2
 
         - name: Assert the live attachment changed only the Pod annotation
           ansible.builtin.assert:

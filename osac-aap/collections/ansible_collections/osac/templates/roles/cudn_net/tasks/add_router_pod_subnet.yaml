@@ -1,0 +1,161 @@
+---
+# Add one Secondary Subnet while the per-VirtualNetwork router mutex is held.
+
+- name: Compute the subnet's .1 gateway address
+  ansible.builtin.set_fact:
+    subnet_gateway_address: "{{ subnet_ipv4_cidr | ansible.utils.ipaddr('1') }}"
+  when: subnet_ipv4_cidr | length > 0
+  # IPv6-only subnets aren't handled yet -- out of scope for this pass, same as
+  # the rest of the Secondary-VN-only scope.
+
+- name: Create IPAMClaim for the subnet's gateway address
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: present
+    definition:
+      apiVersion: k8s.cni.cncf.io/v1alpha1
+      kind: IPAMClaim
+      metadata:
+        name: "{{ subnet_name }}"
+        namespace: "{{ subnet_vn_name }}"
+        labels: "{{ default_subnet_labels }}"
+      spec:
+        network: "{{ subnet_name }}"
+        interface: "{{ subnet_name }}"
+  when: subnet_gateway_address is defined
+
+- name: Reserve the gateway address on the IPAMClaim's status
+  # kubernetes.core.k8s cannot write the status subresource in the pinned
+  # collection, so kubectl is used for this second call.
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - ipamclaim
+      - "{{ subnet_name }}"
+      - -n
+      - "{{ subnet_vn_name }}"
+      - --type=merge
+      - --subresource=status
+      - -p
+      - "{{ {'status': {'ips': [subnet_gateway_address]}} | to_json }}"
+  environment: >-
+    {{
+      {'KUBECONFIG': remote_cluster_kubeconfig}
+      if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
+      else {}
+    }}
+  when: subnet_gateway_address is defined
+  changed_when: true
+
+- name: Get the running router pod before computing the aggregate attachment list
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: router_pod_info
+  until:
+    - router_pod_info.resources | length == 1
+    - router_pod_info.resources[0].status.phase | default('') == 'Running'
+    - router_pod_info.resources[0].metadata.deletionTimestamp is not defined
+  retries: 30
+  delay: 2
+
+- name: Compute the complete desired router Pod attachment list
+  ansible.builtin.set_fact:
+    # Always read the current running Pod. The Deployment template intentionally
+    # remains unchanged after a successful live attach.
+    router_pod_networks: >-
+      {{
+        (
+          (router_pod_info.resources[0].metadata.annotations | default({}))
+            .get('k8s.v1.cni.cncf.io/networks', '[]') | from_json
+            | rejectattr('name', 'equalto', subnet_name) | list
+        ) + [{
+          'name': subnet_name,
+          'interface': subnet_name,
+          'ipam-claim-reference': subnet_name
+        }]
+      }}
+
+- name: Get all reserved router gateway IPAMClaims
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.cni.cncf.io/v1alpha1
+    kind: IPAMClaim
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/managed-by=osac-fulfillment"
+  register: router_gateway_claims_info
+
+- name: Initialize the router gateway mapping
+  ansible.builtin.set_fact:
+    router_pod_gateway_ips: []
+
+- name: Build the router gateway mapping from persistent claim addresses
+  ansible.builtin.set_fact:
+    router_pod_gateway_ips: >-
+      {{ router_pod_gateway_ips + [item.metadata.name ~ '=' ~ item.status.ips[0]] }}
+  loop: "{{ router_gateway_claims_info.resources }}"
+  when:
+    - item.status is defined
+    - item.status.ips is defined
+    - item.status.ips | length > 0
+
+- name: Build the router agent gateway configuration from persistent claims
+  ansible.builtin.set_fact:
+    router_pod_config_gateway_ips: []
+
+- name: Build the router agent gateway configuration from persistent claims
+  ansible.builtin.set_fact:
+    router_pod_config_gateway_ips: >-
+      {{ router_pod_config_gateway_ips | default([]) + [{
+        'interface': item.metadata.name,
+        'address': item.status.ips[0]
+      }] }}
+  loop: "{{ router_gateway_claims_info.resources }}"
+  when:
+    - item.status is defined
+    - item.status.ips is defined
+    - item.status.ips | length > 0
+
+- name: Require every attached subnet to have router agent configuration
+  ansible.builtin.assert:
+    that:
+      - (router_pod_config_gateway_ips | default([])) | length == router_pod_networks | length
+    fail_msg: >-
+      Expected one router agent gateway configuration per router attachment
+      ({{ router_pod_networks | map(attribute='name') | join(', ') }}),
+      but found {{ router_pod_config_gateway_ips | default([]) | length }}.
+
+- name: Require every attached subnet to have a reserved gateway address
+  ansible.builtin.assert:
+    that:
+      - router_pod_gateway_ips | length == router_pod_networks | length
+    fail_msg: >-
+      Expected one persistent gateway claim per router attachment
+      ({{ router_pod_networks | map(attribute='name') | join(', ') }}),
+      but found {{ router_pod_gateway_ips | length }} reserved addresses.
+
+- name: Update router agent configuration
+  ansible.builtin.include_tasks: write_router_config.yaml
+  vars:
+    router_pod_config_namespace: "{{ subnet_vn_name }}"
+    router_pod_config_tenant: "{{ subnet_tenant_id }}"
+    router_pod_config_owner_reference: "{{ subnet_virtual_network }}"
+    router_pod_config_version: "{{ router_pod_networks | to_json }}"
+    router_pod_config_routes: []
+
+- name: Attach the new subnet, falling back to router Pod recreation on timeout
+  ansible.builtin.include_tasks: patch_router_pod_networks.yaml
+  vars:
+    router_pod_attachment_action: attach
+    router_pod_live_attach_network_name: "{{ subnet_name }}"
+
+- name: Patch OVN port security for the router Pod's current subnet attachments
+  ansible.builtin.include_tasks: patch_router_pod_port_security.yaml
+  when: (router_pod_networks | default([])) | length > 0

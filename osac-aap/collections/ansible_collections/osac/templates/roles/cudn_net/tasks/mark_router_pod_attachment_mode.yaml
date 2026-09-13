@@ -1,0 +1,27 @@
+---
+# Leave an observable result on the current router Pod. This is deliberately
+# separate from the Multus annotation: the dynamic network controller watches
+# only k8s.v1.cni.cncf.io/networks. The OSAC annotation lets operators and tests
+# distinguish a successful live operation from a recreation fallback.
+
+- name: Mark the router Pod attachment mode
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_status_name }}"
+    patch:
+      - op: add
+        path: /metadata/annotations/osac.openshift.io~1router-attachment-mode
+        value: "{{ router_pod_attachment_mode }}"
+      - op: add
+        path: /metadata/annotations/osac.openshift.io~1router-attachment-subnet
+        value: "{{ router_pod_live_attach_network_name }}"
+
+- name: Display the router Pod attachment mode
+  ansible.builtin.debug:
+    msg: >-
+      Router Pod '{{ router_pod_status_name }}' subnet operation for
+      '{{ router_pod_live_attach_network_name }}' completed using the
+      '{{ router_pod_attachment_mode }}' path.

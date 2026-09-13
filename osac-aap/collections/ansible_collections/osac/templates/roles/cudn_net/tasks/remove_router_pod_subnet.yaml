@@ -1,0 +1,120 @@
+---
+# Remove one Secondary Subnet while the per-VirtualNetwork router mutex is held.
+
+- name: Get the current router Pod
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: router_pod_info
+
+- name: Get the router Pod Deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_name }}"
+  register: router_pod_deployment_info
+
+- name: Select a non-terminating running router Pod, if one exists
+  ansible.builtin.set_fact:
+    router_pod_running_list: >-
+      {{
+        router_pod_info.resources
+        | selectattr('status.phase', 'equalto', 'Running')
+        | rejectattr('metadata.deletionTimestamp', 'defined')
+        | list
+      }}
+
+- name: Require an unambiguous current router Pod
+  ansible.builtin.assert:
+    that:
+      - router_pod_running_list | length <= 1
+    fail_msg: >-
+      Found {{ router_pod_running_list | length }} non-terminating running router Pods in
+      {{ subnet_vn_name }}; refusing to compute a removal from an ambiguous snapshot.
+
+- name: Compute the complete desired router Pod attachment list from the latest state
+  ansible.builtin.set_fact:
+    router_pod_networks: >-
+      {{
+        (
+          (
+            router_pod_running_list[0].metadata.annotations | default({})
+          ).get('k8s.v1.cni.cncf.io/networks', '[]') | from_json
+          if router_pod_running_list | length > 0
+          else (
+            (
+              router_pod_deployment_info.resources[0].spec.template.metadata.annotations
+              | default({})
+            ).get('k8s.v1.cni.cncf.io/networks', '[]') | from_json
+            if router_pod_deployment_info.resources | length > 0
+            else []
+          )
+        ) | rejectattr('name', 'equalto', subnet_name) | list
+      }}
+
+- name: Get the remaining router gateway IPAMClaims
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.cni.cncf.io/v1alpha1
+    kind: IPAMClaim
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/managed-by=osac-fulfillment"
+  register: router_gateway_claims_info
+
+- name: Build the remaining router agent gateway configuration
+  ansible.builtin.set_fact:
+    router_pod_config_gateway_ips: []
+
+- name: Build the remaining router agent gateway configuration
+  ansible.builtin.set_fact:
+    router_pod_config_gateway_ips: >-
+      {{ router_pod_config_gateway_ips | default([]) + [{
+        'interface': item.metadata.name,
+        'address': item.status.ips[0]
+      }] }}
+  loop: "{{ router_gateway_claims_info.resources | default([]) }}"
+  when:
+    - item.metadata.name in (router_pod_networks | default([]) | map(attribute='name') | list)
+    - item.metadata.name != subnet_name
+    - item.status is defined
+    - item.status.ips is defined
+    - item.status.ips | length > 0
+
+- name: Update router agent configuration after subnet removal
+  ansible.builtin.include_tasks: write_router_config.yaml
+  vars:
+    router_pod_config_namespace: "{{ subnet_vn_name }}"
+    router_pod_config_tenant: "{{ subnet_tenant_id }}"
+    router_pod_config_owner_reference: "{{ subnet_virtual_network }}"
+    router_pod_config_version: "{{ router_pod_networks | default([]) | to_json }}"
+    router_pod_config_gateway_ips: "{{ router_pod_config_gateway_ips | default([]) }}"
+    router_pod_config_routes: []
+  when: router_pod_deployment_info.resources | length > 0
+
+- name: Detach the subnet, falling back to router Pod recreation on timeout
+  ansible.builtin.include_tasks: patch_router_pod_networks.yaml
+  vars:
+    router_pod_attachment_action: detach
+    router_pod_live_attach_network_name: "{{ subnet_name }}"
+  when: router_pod_deployment_info.resources | length > 0
+
+- name: Release the subnet's persistent gateway address
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    api_version: k8s.cni.cncf.io/v1alpha1
+    kind: IPAMClaim
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ subnet_name }}"
+
+- name: Patch OVN port security for the remaining subnet attachments
+  ansible.builtin.include_tasks: patch_router_pod_port_security.yaml
+  when: (router_pod_networks | default([])) | length > 0

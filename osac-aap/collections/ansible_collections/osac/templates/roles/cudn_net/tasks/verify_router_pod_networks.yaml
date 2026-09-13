@@ -1,0 +1,61 @@
+---
+# Verify the result of a live attach/detach. A per-operation deadline is used;
+# a later Subnet operation cannot extend this operation's deadline.
+
+- name: Wait for the live router Pod network-status update
+  when: cudn_net_router_wait_for_network_status | bool
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_live_attach_name }}"
+  register: router_pod_live_attach_status_info
+  until:
+    - router_pod_live_attach_status_info.resources | length == 1
+    - router_pod_live_attach_status_info.resources[0].status.phase | default('') == 'Running'
+    - >-
+      (
+        (
+          (
+            (router_pod_live_attach_status_info.resources[0].metadata.annotations | default({}))
+              .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+          )
+          | selectattr('name', 'in', [
+              router_pod_live_attach_network_name,
+              subnet_vn_name ~ '/' ~ router_pod_live_attach_network_name
+            ])
+          | list | length
+        ) > 0
+        if router_pod_attachment_action == 'attach'
+        else
+        (
+          (
+            (router_pod_live_attach_status_info.resources[0].metadata.annotations | default({}))
+              .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+          )
+          | selectattr('name', 'in', [
+              router_pod_live_attach_network_name,
+              subnet_vn_name ~ '/' ~ router_pod_live_attach_network_name
+            ])
+          | list | length
+        ) == 0
+      )
+  retries: "{{ (cudn_net_router_live_attach_timeout_seconds / cudn_net_router_live_attach_poll_interval_seconds) | round(0, 'ceil') | int }}"
+  delay: "{{ cudn_net_router_live_attach_poll_interval_seconds }}"
+
+- name: Mark the router Pod operation as live
+  ansible.builtin.set_fact:
+    router_pod_attachment_mode: live
+
+- name: Record the successful live path on the router Pod
+  ansible.builtin.include_tasks: mark_router_pod_attachment_mode.yaml
+  vars:
+    router_pod_status_name: "{{ router_pod_live_attach_name }}"
+
+- name: Report successful live router Pod mutation
+  ansible.builtin.debug:
+    msg: >-
+      Router Pod '{{ router_pod_live_attach_name }}' completed the
+      {{ router_pod_attachment_action }} operation for
+      '{{ router_pod_live_attach_network_name }}' without recreation.

@@ -21,6 +21,17 @@ router_pod_scc_cluster_role: osac-router-pod-scc
 # production default preserves the complete Secondary Subnet workflow.
 cudn_net_manage_router_pod: true
 
+# Live router Pod mutation defaults. The timeout starts after the Pod annotation
+# is patched. Each Subnet operation has its own deadline; a later operation does
+# not extend an earlier one. The Lease mutex prevents overlapping AAP jobs from
+# writing stale aggregate Pod/ConfigMap state.
+cudn_net_router_live_attach_timeout_seconds: 60
+cudn_net_router_live_attach_poll_interval_seconds: 2
+cudn_net_router_wait_for_network_status: true
+cudn_net_router_wait_for_recreated_network_status: true
+cudn_net_router_mutation_lock_retries: 180
+cudn_net_router_mutation_lock_delay_seconds: 1
+
 # OVN NB port-security patching (temporary stopgap, see design.md "Port security" and
 # patch_router_pod_port_security.yaml) -- where the OVN northbound DB lives and how to
 # reach it via kubectl exec. Not verifiable in this repo's test environment (no live

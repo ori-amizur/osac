@@ -1,0 +1,45 @@
+---
+# Mutate the aggregate router-pod state for one Secondary Subnet operation.
+#
+# A router Pod's Multus annotation and the router-agent ConfigMap are aggregate
+# objects shared by every Subnet in the VirtualNetwork.  The AAP subnet jobs can
+# therefore not safely update them from independent snapshots.  The service
+# Lease is the mutex for this critical section; each operation reads the latest
+# Pod/Deployment state while holding it and writes the complete desired state.
+
+- name: Initialize router mutation lock state
+  ansible.builtin.set_fact:
+    router_mutation_lock_acquired: false
+
+- name: Acquire the per-VirtualNetwork router mutation lock
+  ansible.builtin.include_role:
+    name: osac.service.lease
+  vars:
+    lease_state: present
+    lease_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
+    lease_holder: >-
+      cudn-net-{{ awx_job_id | default(ansible_job_id | default('unknown')) }}
+    lease_retries: "{{ cudn_net_router_mutation_lock_retries }}"
+    lease_delay: "{{ cudn_net_router_mutation_lock_delay_seconds }}"
+
+- name: Mark the router mutation lock as held by this job
+  ansible.builtin.set_fact:
+    router_mutation_lock_acquired: true
+
+- name: Reconcile the router Pod and agent configuration
+  block:
+    - name: Add the Secondary Subnet to the router Pod
+      ansible.builtin.include_tasks: add_router_pod_subnet.yaml
+      when: router_pod_mutation_action == 'add'
+
+    - name: Remove the Secondary Subnet from the router Pod
+      ansible.builtin.include_tasks: remove_router_pod_subnet.yaml
+      when: router_pod_mutation_action == 'remove'
+  always:
+    - name: Release the per-VirtualNetwork router mutation lock
+      ansible.builtin.include_role:
+        name: osac.service.lease
+      vars:
+        lease_state: absent
+        lease_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
+      when: router_mutation_lock_acquired | bool

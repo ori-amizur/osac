@@ -1,0 +1,133 @@
+---
+# Recreate the router Pod from the complete desired attachment set.
+#
+# This is the fallback for a live Multus mutation that was accepted by the API
+# but was not reflected in network-status before the per-operation deadline.
+# The Deployment template is changed only here, so successful live operations
+# remain restart-free while the fallback restores a durable desired state.
+
+- name: Get the router Pod Deployment before fallback recreation
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_name }}"
+  register: router_pod_fallback_deployment_info
+
+- name: Require the router Pod Deployment for fallback recreation
+  ansible.builtin.assert:
+    that:
+      - router_pod_fallback_deployment_info.resources | length == 1
+    fail_msg: >-
+      Cannot fall back to router Pod recreation: Deployment
+      {{ subnet_vn_name }}/{{ router_pod_name }} was not found.
+
+- name: Read the Deployment template annotations
+  ansible.builtin.set_fact:
+    router_pod_fallback_previous_generation: >-
+      {{ router_pod_fallback_deployment_info.resources[0].metadata.generation | default(0) | int }}
+    router_pod_fallback_template_annotations: >-
+      {{
+        router_pod_fallback_deployment_info.resources[0].spec.template.metadata.annotations
+        | default({})
+      }}
+
+- name: Add the Multus annotation map to the Deployment template
+  when: router_pod_fallback_template_annotations | length == 0
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_name }}"
+    patch:
+      - op: add
+        path: /spec/template/metadata/annotations
+        value:
+          k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | to_json }}"
+
+- name: Update the Multus annotation on the Deployment template
+  when: router_pod_fallback_template_annotations | length > 0
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_name }}"
+    patch:
+      - op: add
+        path: /spec/template/metadata/annotations/k8s.v1.cni.cncf.io~1networks
+        value: "{{ router_pod_networks | to_json }}"
+
+- name: Wait for the fallback router Pod rollout
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_name }}"
+  register: router_pod_fallback_rollout_info
+  until:
+    - router_pod_fallback_rollout_info.resources | length == 1
+    - >-
+      (router_pod_fallback_rollout_info.resources[0].status.observedGeneration | default(0)) >=
+      (router_pod_fallback_previous_generation + 1)
+    - >-
+      (router_pod_fallback_rollout_info.resources[0].status.updatedReplicas | default(0)) ==
+      (router_pod_fallback_rollout_info.resources[0].spec.replicas | default(1))
+    - >-
+      (router_pod_fallback_rollout_info.resources[0].status.readyReplicas | default(0)) ==
+      (router_pod_fallback_rollout_info.resources[0].spec.replicas | default(1))
+  retries: 60
+  delay: 2
+
+- name: Wait for the recreated router Pod to expose the desired network set
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: router_pod_fallback_info
+  until:
+    - router_pod_fallback_info.resources | length == 1
+    - router_pod_fallback_info.resources[0].status.phase | default('') == 'Running'
+    - router_pod_fallback_info.resources[0].metadata.deletionTimestamp is not defined
+    - router_pod_live_attach_uid | default('') == '' or
+      router_pod_fallback_info.resources[0].metadata.uid != router_pod_live_attach_uid
+    - >-
+      (not cudn_net_router_wait_for_recreated_network_status | bool) or
+      (
+        (
+          (
+            (router_pod_fallback_info.resources[0].metadata.annotations | default({}))
+              .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+          )
+          | selectattr('name', 'in',
+              (router_pod_networks | map(attribute='name') | list)
+              + (router_pod_networks | map(attribute='name')
+                  | map('regex_replace', '^', subnet_vn_name ~ '/') | list)
+            )
+          | list | length
+        ) == (router_pod_networks | length)
+      )
+  retries: "{{ (cudn_net_router_live_attach_timeout_seconds / cudn_net_router_live_attach_poll_interval_seconds) | round(0, 'ceil') | int }}"
+  delay: "{{ cudn_net_router_live_attach_poll_interval_seconds }}"
+
+- name: Report router Pod recreation fallback
+  ansible.builtin.set_fact:
+    router_pod_attachment_mode: recreated
+
+- name: Record the recreation fallback on the new router Pod
+  ansible.builtin.include_tasks: mark_router_pod_attachment_mode.yaml
+  vars:
+    router_pod_status_name: "{{ router_pod_fallback_info.resources[0].metadata.name }}"
+
+- name: Display router Pod recreation fallback result
+  ansible.builtin.debug:
+    msg: >-
+      Router Pod '{{ router_pod_name }}' was recreated with the complete desired
+      attachment set ({{ router_pod_networks | map(attribute='name') | join(', ') }}).

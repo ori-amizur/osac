@@ -194,6 +194,14 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		return ctrl.Result{}, err
 	}
 	fabricManagerConfigured := strconv.FormatBool(plan.FabricTarget() != nil)
+	k8sImplementationStrategy := ""
+	// A k8s-only NetworkClass keeps the existing single-target lifecycle. Persist
+	// the k8s strategy separately only when a fabric target is also present, because
+	// that annotation represents a second provisioning target and is consumed by
+	// the matching multi-target deprovisioning path.
+	if plan.FabricTarget() != nil && plan.K8sTarget() != nil {
+		k8sImplementationStrategy = plan.K8sTarget().Manager.Name
+	}
 
 	// Add implementation-strategy/fabric-manager-configured annotations if not present
 	// or different. This allows AAP playbooks to select the appropriate role without
@@ -210,9 +218,20 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		vnet.Annotations[osacFabricManagerConfiguredAnnotation] = fabricManagerConfigured
 		annotationsChanged = true
 	}
+	if k8sImplementationStrategy == "" {
+		if _, exists := vnet.Annotations[osacK8sImplementationStrategyAnnotation]; exists {
+			delete(vnet.Annotations, osacK8sImplementationStrategyAnnotation)
+			annotationsChanged = true
+		}
+	} else if vnet.Annotations[osacK8sImplementationStrategyAnnotation] != k8sImplementationStrategy {
+		vnet.Annotations[osacK8sImplementationStrategyAnnotation] = k8sImplementationStrategy
+		annotationsChanged = true
+	}
 	if annotationsChanged {
 		log.Info("setting implementation-strategy/fabric-manager-configured annotations",
-			"strategy", implementationStrategy, "fabricManagerConfigured", fabricManagerConfigured)
+			"strategy", implementationStrategy,
+			"k8sStrategy", k8sImplementationStrategy,
+			"fabricManagerConfigured", fabricManagerConfigured)
 		if err := r.Update(ctx, vnet); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -221,9 +240,10 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 
 	// Compute desired config version from spec and inherited implementation strategy
 	desiredVersion, err := provisioning.ComputeDesiredConfigVersion(struct {
-		Spec                   v1alpha1.VirtualNetworkSpec
-		ImplementationStrategy string
-	}{vnet.Spec, implementationStrategy})
+		Spec                      v1alpha1.VirtualNetworkSpec
+		ImplementationStrategy    string
+		K8sImplementationStrategy string
+	}{vnet.Spec, implementationStrategy, k8sImplementationStrategy})
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to compute desired config version: %w", err)
 	}
@@ -232,44 +252,132 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 	// Set phase to Progressing only on first provision (empty phase) or when spec changed
 	// after a previous success. Don't override Failed during backoff.
 	if vnet.Status.Phase == "" || (vnet.Status.Phase == v1alpha1.VirtualNetworkPhaseReady &&
-		!provisioning.IsConfigApplied(&vnet.Status.ProvisioningJobs, vnet.Status.DesiredConfigVersion)) {
+		!isVirtualNetworkConfigApplied(vnet.Status.ProvisioningJobs, vnet.Status.DesiredConfigVersion, plan)) {
 		vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseProgressing
 	}
 
 	// Handle provisioning
-	return r.handleProvisioning(ctx, vnet)
+	return r.handleProvisioning(ctx, vnet, plan)
 }
 
 // handleProvisioning manages the provisioning job lifecycle for a VirtualNetwork.
-// Uses shared RunProvisioningLifecycle with config-version-based backoff on failure.
-func (r *VirtualNetworkReconciler) handleProvisioning(ctx context.Context, vnet *v1alpha1.VirtualNetwork) (ctrl.Result, error) {
+// Dispatcher-backed VirtualNetworks with a fabric target use the shared
+// multi-target lifecycle so the fabric and Kubernetes managers provision
+// independently. Pure k8s-only VirtualNetworks and the legacy no-plan path keep
+// the existing single-target lifecycle and job history. The variadic plan
+// preserves the small unit-test helper contract used by older tests, which
+// exercise the single-target path directly.
+func (r *VirtualNetworkReconciler) handleProvisioning(
+	ctx context.Context,
+	vnet *v1alpha1.VirtualNetwork,
+	plans ...*dispatcher.DispatchPlan,
+) (ctrl.Result, error) {
 	if r.ProvisioningProvider == nil {
 		ctrllog.FromContext(ctx).Info("no provisioning provider configured, skipping provisioning")
 		return ctrl.Result{}, nil
 	}
 
-	return provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, vnet,
+	var plan *dispatcher.DispatchPlan
+	if len(plans) > 0 {
+		plan = plans[0]
+	}
+
+	fabricTarget := plan.FabricTarget()
+	if fabricTarget == nil {
+		return provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, vnet,
+			&provisioning.State{Jobs: &vnet.Status.ProvisioningJobs, DesiredConfigVersion: vnet.Status.DesiredConfigVersion},
+			r.MaxJobHistory, r.StatusPollInterval,
+			&provisioning.PollCallbacks{
+				OnFailed: func(message string) {
+					vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseFailed
+					setReadyConditionFailed(&vnet.Status.Conditions, message)
+				},
+				OnSuccess: func(_ provisioning.ProvisionStatus) {
+					vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseReady
+					setReadyConditionTrue(&vnet.Status.Conditions)
+				},
+			},
+			func() bool {
+				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(vnet), &v1alpha1.VirtualNetwork{}, func(obj client.Object) []v1alpha1.JobStatus {
+					return obj.(*v1alpha1.VirtualNetwork).Status.ProvisioningJobs
+				})
+			},
+			func() error {
+				return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(vnet), vnet.Status)
+			},
+		)
+	}
+
+	targetNames := []string{string(dispatcher.ManagerRoleFabric)}
+	if plan.K8sTarget() != nil {
+		targetNames = append(targetNames, string(dispatcher.ManagerRoleK8s))
+	}
+
+	onFailedFor := func(targetName string) func(string) {
+		return func(message string) {
+			vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseFailed
+			setReadyConditionFailed(&vnet.Status.Conditions, fmt.Sprintf("%s target: %s", targetName, message))
+		}
+	}
+	onSuccess := func(_ provisioning.ProvisionStatus) {
+		if allProvisionTargetsSucceeded(vnet.Status.ProvisioningJobs, vnet.Status.DesiredConfigVersion, targetNames...) {
+			vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseReady
+			setReadyConditionTrue(&vnet.Status.Conditions)
+		}
+	}
+	checkAPIServerFor := func(targetName string) func() bool {
+		return func() bool {
+			return provisioning.CheckAPIServerForNonTerminalProvisionJobAndTarget(
+				ctx, r.APIReader, client.ObjectKeyFromObject(vnet), &v1alpha1.VirtualNetwork{}, func(obj client.Object) []v1alpha1.JobStatus {
+					return obj.(*v1alpha1.VirtualNetwork).Status.ProvisioningJobs
+				}, targetName)
+		}
+	}
+
+	targets := []provisioning.JobTarget{
+		{
+			Name:           string(dispatcher.ManagerRoleFabric),
+			Provider:       newDispatchTargetProvider(r.ProvisioningProvider, fabricTarget.Manager.Name),
+			Callbacks:      &provisioning.PollCallbacks{OnFailed: onFailedFor(string(dispatcher.ManagerRoleFabric)), OnSuccess: onSuccess},
+			CheckAPIServer: checkAPIServerFor(string(dispatcher.ManagerRoleFabric)),
+			// Fabric was the sole VirtualNetwork target before dual dispatch was
+			// introduced, so it owns any existing untargeted job history.
+			AbsorbsLegacyHistory: true,
+		},
+	}
+	if k8sTarget := plan.K8sTarget(); k8sTarget != nil {
+		targets = append(targets, provisioning.JobTarget{
+			Name:           string(dispatcher.ManagerRoleK8s),
+			Provider:       newDispatchTargetProvider(r.ProvisioningProvider, k8sTarget.Manager.Name),
+			Callbacks:      &provisioning.PollCallbacks{OnFailed: onFailedFor(string(dispatcher.ManagerRoleK8s)), OnSuccess: onSuccess},
+			CheckAPIServer: checkAPIServerFor(string(dispatcher.ManagerRoleK8s)),
+		})
+	}
+
+	return provisioning.RunMultiTargetProvisioningLifecycle(ctx, targets, vnet,
 		&provisioning.State{Jobs: &vnet.Status.ProvisioningJobs, DesiredConfigVersion: vnet.Status.DesiredConfigVersion},
 		r.MaxJobHistory, r.StatusPollInterval,
-		&provisioning.PollCallbacks{
-			OnFailed: func(message string) {
-				vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseFailed
-				setReadyConditionFailed(&vnet.Status.Conditions, message)
-			},
-			OnSuccess: func(_ provisioning.ProvisionStatus) {
-				vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseReady
-				setReadyConditionTrue(&vnet.Status.Conditions)
-			},
-		},
-		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(vnet), &v1alpha1.VirtualNetwork{}, func(obj client.Object) []v1alpha1.JobStatus {
-				return obj.(*v1alpha1.VirtualNetwork).Status.ProvisioningJobs
-			})
-		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(vnet), vnet.Status)
 		},
 	)
+}
+
+// isVirtualNetworkConfigApplied reports whether the current desired version has
+// succeeded for every dispatched target. Dispatcher-backed VirtualNetworks with
+// a fabric target use target-tagged history for the fabric and, when present,
+// Kubernetes jobs. The legacy no-plan and pure k8s-only paths use untargeted
+// history.
+func isVirtualNetworkConfigApplied(jobs []v1alpha1.JobStatus, desiredVersion string, plan *dispatcher.DispatchPlan) bool {
+	if plan.FabricTarget() == nil {
+		return provisioning.IsConfigApplied(&jobs, desiredVersion)
+	}
+
+	targetNames := []string{string(dispatcher.ManagerRoleFabric)}
+	if plan.K8sTarget() != nil {
+		targetNames = append(targetNames, string(dispatcher.ManagerRoleK8s))
+	}
+	return allProvisionTargetsSucceeded(jobs, desiredVersion, targetNames...)
 }
 
 // handleDelete processes VirtualNetwork deletion
@@ -376,7 +484,34 @@ func (r *VirtualNetworkReconciler) handleDeprovisioning(ctx context.Context, vne
 		return ctrl.Result{}, nil
 	}
 
-	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ProvisioningProvider, vnet,
+	// Dispatcher-backed VirtualNetworks always tag their fabric jobs, even when
+	// there is no k8s target. Only resources that predate dispatcher target tags
+	// (and have no implementation-strategy annotation) use the legacy untargeted
+	// lifecycle.
+	if vnet.Annotations[osacImplementationStrategyAnnotation] == "" {
+		result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ProvisioningProvider, vnet,
+			&vnet.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
+		if err != nil || !done {
+			return result, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	targets := []provisioning.DeprovisionTarget{
+		{
+			Name:                 string(dispatcher.ManagerRoleFabric),
+			Provider:             newDispatchTargetProvider(r.ProvisioningProvider, vnet.Annotations[osacImplementationStrategyAnnotation]),
+			AbsorbsLegacyHistory: true,
+		},
+	}
+	if k8sStrategy := vnet.Annotations[osacK8sImplementationStrategyAnnotation]; k8sStrategy != "" {
+		targets = append(targets, provisioning.DeprovisionTarget{
+			Name:     string(dispatcher.ManagerRoleK8s),
+			Provider: newDispatchTargetProvider(r.ProvisioningProvider, k8sStrategy),
+		})
+	}
+
+	result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx, targets, vnet,
 		&vnet.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
 	if err != nil || !done {
 		return result, err

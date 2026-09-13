@@ -35,7 +35,7 @@ const (
 	osacImplementationStrategyAnnotation = osacPrefix + "/implementation-strategy"
 
 	// osacK8sImplementationStrategyAnnotation persists the k8s manager's name for
-	// dual-dispatch resources (currently only Subnet). Set in handleUpdate alongside
+	// dual-dispatch resources (Subnet and VirtualNetwork). Set in handleUpdate alongside
 	// osacImplementationStrategyAnnotation (which always holds the fabric manager's
 	// name for these resources) whenever the resolved DispatchPlan has a k8s target,
 	// and read directly by handleDeprovisioning to build the k8s DeprovisionTarget

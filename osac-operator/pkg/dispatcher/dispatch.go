@@ -98,7 +98,12 @@ type ResourceDispatchConfig struct {
 // dispatchTable maps Kubernetes resource kinds to the manager roles that handle
 // their provisioning operations.
 var dispatchTable = map[string]ResourceDispatchConfig{
-	"VirtualNetwork":       {Roles: []ManagerRole{ManagerRoleFabric}, K8sFallback: true},
+	// VirtualNetwork is handled by both managers when a NetworkClass has a
+	// fabric manager and a k8s manager. The k8s target owns Kubernetes-side
+	// resources such as the Secondary VirtualNetwork router pod and, in Phase 2,
+	// its EVPN transit CUDN. With only a k8s manager, K8sFallback deduplicates
+	// the two roles to the existing single k8s target.
+	"VirtualNetwork":       {Roles: []ManagerRole{ManagerRoleFabric, ManagerRoleK8s}, K8sFallback: true},
 	"Subnet":               {Roles: []ManagerRole{ManagerRoleFabric, ManagerRoleK8s}, K8sFallback: true},
 	"SecurityGroup":        {Roles: []ManagerRole{ManagerRoleFabric}, K8sFallback: true},
 	"ExternalIP":           {Roles: []ManagerRole{ManagerRoleFabric}, K8sFallback: true},

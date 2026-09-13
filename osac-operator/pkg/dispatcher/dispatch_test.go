@@ -35,7 +35,7 @@ var _ = Describe("DispatchTable", func() {
 	It("returns config for VirtualNetwork", func() {
 		cfg := dispatcher.LookupDispatchConfig("VirtualNetwork")
 		Expect(cfg).NotTo(BeNil())
-		Expect(cfg.Roles).To(ConsistOf(dispatcher.ManagerRoleFabric))
+		Expect(cfg.Roles).To(ConsistOf(dispatcher.ManagerRoleFabric, dispatcher.ManagerRoleK8s))
 		Expect(cfg.K8sFallback).To(BeTrue())
 	})
 
@@ -166,7 +166,7 @@ var _ = Describe("Dispatcher", func() {
 		}
 	}
 
-	It("dispatches VirtualNetwork to fabric only", func() {
+	It("dispatches VirtualNetwork to fabric only when no k8s manager is configured", func() {
 		stub := newStubWithManagers("netris", "")
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 			newFabricManagerConfigMap("fm-netris", "netris", "ipv4"),
@@ -182,6 +182,43 @@ var _ = Describe("Dispatcher", func() {
 		Expect(plan.Targets).To(HaveLen(1))
 		Expect(plan.Targets[0].Role).To(Equal(dispatcher.ManagerRoleFabric))
 		Expect(plan.Targets[0].Manager.Name).To(Equal("netris"))
+	})
+
+	It("dispatches a k8s-only VirtualNetwork to one k8s target", func() {
+		stub := newStubWithManagers("", "cudn_net")
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			newK8sManagerConfigMap("km-cudn", "cudn_net", "ipv4"),
+		).Build()
+
+		disc, err := networkmanager.NewDiscovery(cl, "osac")
+		Expect(err).NotTo(HaveOccurred())
+
+		d := dispatcher.NewDispatcher(dispatcher.NewResolver(stub, disc))
+
+		plan, err := d.Dispatch(ctx, "VirtualNetwork", "nc-test")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(plan.Targets).To(HaveLen(1))
+		Expect(plan.Targets[0].Role).To(Equal(dispatcher.ManagerRoleK8s))
+		Expect(plan.Targets[0].Manager.Name).To(Equal("cudn_net"))
+	})
+
+	It("dispatches VirtualNetwork to fabric and k8s when both managers are configured", func() {
+		stub := newStubWithManagers("netris", "cudn_net")
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			newFabricManagerConfigMap("fm-netris", "netris", "ipv4"),
+			newK8sManagerConfigMap("km-cudn", "cudn_net", "ipv4"),
+		).Build()
+
+		disc, err := networkmanager.NewDiscovery(cl, "osac")
+		Expect(err).NotTo(HaveOccurred())
+
+		d := dispatcher.NewDispatcher(dispatcher.NewResolver(stub, disc))
+
+		plan, err := d.Dispatch(ctx, "VirtualNetwork", "nc-test")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(plan.Targets).To(HaveLen(2))
+		Expect(plan.FabricTarget().Manager.Name).To(Equal("netris"))
+		Expect(plan.K8sTarget().Manager.Name).To(Equal("cudn_net"))
 	})
 
 	It("dispatches Subnet to fabric + k8s when both configured", func() {

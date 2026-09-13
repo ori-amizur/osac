@@ -191,7 +191,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			Expect(provisionCalled).To(BeTrue(), "provision should be triggered on the follow-up reconcile")
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updatedVnet)).To(Succeed())
-			latestJob := provisioning.FindLatestJobByType(updatedVnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
+			latestJob := provisioning.FindLatestJobByTypeAndTarget(updatedVnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision, string(dispatcher.ManagerRoleFabric))
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("test-job-123"))
 		})
@@ -234,7 +234,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			// Verify the job was persisted to the API server
 			updatedVnet := &osacv1alpha1.VirtualNetwork{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updatedVnet)).To(Succeed())
-			latestJob := provisioning.FindLatestJobByType(updatedVnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
+			latestJob := provisioning.FindLatestJobByTypeAndTarget(updatedVnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision, string(dispatcher.ManagerRoleFabric))
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("concurrent-job-123"))
 		})
@@ -578,10 +578,39 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(1 * time.Second))
 
-			latestJob := provisioning.FindLatestJobByType(vnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeDeprovision)
+			latestJob := provisioning.FindLatestJobByTypeAndTarget(vnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeDeprovision, string(dispatcher.ManagerRoleFabric))
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("deprovision-job-303"))
 			Expect(latestJob.BlockDeletionOnFailure).To(BeTrue())
+		})
+
+		It("should trigger fabric and k8s deprovision jobs for a dual-manager VirtualNetwork", func() {
+			vnet.Finalizers = []string{osacVirtualNetworkFinalizer}
+			vnet.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			vnet.Annotations = map[string]string{
+				osacImplementationStrategyAnnotation:    "netris",
+				osacK8sImplementationStrategyAnnotation: "cudn_net",
+			}
+
+			var seenAnnotations []string
+			triggerCount := 0
+			mockProvider.triggerDeprovisionFunc = func(_ context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
+				triggerCount++
+				seenAnnotations = append(seenAnnotations, resource.GetAnnotations()[osacImplementationStrategyAnnotation])
+				return &provisioning.DeprovisionResult{
+					Action:                 provisioning.DeprovisionTriggered,
+					JobID:                  "dual-deprovision-job-" + string(rune('0'+triggerCount)),
+					BlockDeletionOnFailure: true,
+				}, nil
+			}
+
+			result, err := reconciler.handleDelete(ctx, vnet)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(1 * time.Second))
+			Expect(triggerCount).To(Equal(2))
+			Expect(seenAnnotations).To(ConsistOf("netris", "cudn_net"))
+			Expect(provisioning.FindLatestJobByTypeAndTarget(vnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeDeprovision, string(dispatcher.ManagerRoleFabric))).NotTo(BeNil())
+			Expect(provisioning.FindLatestJobByTypeAndTarget(vnet.Status.ProvisioningJobs, osacv1alpha1.JobTypeDeprovision, string(dispatcher.ManagerRoleK8s))).NotTo(BeNil())
 		})
 
 		It("should skip deprovisioning when deleted before the implementation-strategy annotation was ever stamped", func() {
@@ -890,6 +919,68 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			// strategy (via K8sTarget), it's just not a fabric one.
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("cudn_net"))
 			Expect(updated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("false"))
+			Expect(updated.Annotations).NotTo(HaveKey(osacK8sImplementationStrategyAnnotation))
+		})
+
+		It("dispatches dual-manager VirtualNetworks to fabric and k8s provisioning targets", func() {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			k8sManagerName := "cudn_net"
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-dual", FabricManager: ptr.To("netris"), K8SManager: &k8sManagerName}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			dualVnet := &osacv1alpha1.VirtualNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "dual-vnet",
+					Namespace: "default",
+					Labels:    map[string]string{osacVirtualNetworkIDLabel: "dual-vnet-uuid"},
+				},
+				Spec: osacv1alpha1.VirtualNetworkSpec{
+					Region:       "us-west-1",
+					IPv4CIDR:     "10.4.0.0/16",
+					NetworkClass: "nc-dual",
+				},
+			}
+			Expect(k8sClient.Create(ctx, dualVnet)).To(Succeed())
+			DeferCleanup(deleteObjectWithClearedFinalizers, ctx, dualVnet)
+
+			var seenAnnotations []string
+			triggerCount := 0
+			mockProvider.triggerProvisionFunc = func(_ context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
+				triggerCount++
+				seenAnnotations = append(seenAnnotations, resource.GetAnnotations()[osacImplementationStrategyAnnotation])
+				return &provisioning.ProvisionResult{
+					JobID:        "dual-job-" + string(rune('0'+triggerCount)),
+					InitialState: osacv1alpha1.JobStatePending,
+				}, nil
+			}
+
+			key := types.NamespacedName{Name: dualVnet.Name, Namespace: dualVnet.Namespace}
+			req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: key}}
+
+			// The first reconcile persists the resolved targets and lets the update event
+			// drive the provisioning reconcile, matching the existing controller contract.
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			annotated := &osacv1alpha1.VirtualNetwork{}
+			Expect(k8sClient.Get(ctx, key, annotated)).To(Succeed())
+			Expect(annotated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("netris"))
+			Expect(annotated.Annotations[osacK8sImplementationStrategyAnnotation]).To(Equal("cudn_net"))
+			Expect(annotated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("true"))
+			Expect(triggerCount).To(Equal(0))
+
+			// Once annotations match, one independent provision job is triggered for
+			// each target and each provider call receives its manager-specific strategy.
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(triggerCount).To(Equal(2))
+			Expect(seenAnnotations).To(ConsistOf("netris", "cudn_net"))
+
+			final := &osacv1alpha1.VirtualNetwork{}
+			Expect(k8sClient.Get(ctx, key, final)).To(Succeed())
+			Expect(provisioning.FindLatestJobByTypeAndTarget(final.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision, string(dispatcher.ManagerRoleFabric))).NotTo(BeNil())
+			Expect(provisioning.FindLatestJobByTypeAndTarget(final.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision, string(dispatcher.ManagerRoleK8s))).NotTo(BeNil())
 		})
 
 		It("requeues and sets a blocked condition when the NetworkClass has no manager configured (no legacy fallback)", func() {

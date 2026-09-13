@@ -83,6 +83,16 @@ type ProvisioningProvider interface {
 	Name() string
 }
 
+// RouterPodRecoveryProvider is implemented by providers that can repair the
+// networking state of a replacement Secondary-VirtualNetwork router Pod.
+//
+// This is intentionally a separate, optional interface. Existing provisioning
+// providers and test doubles for resources that do not have router Pods should
+// not need to implement a router-specific operation.
+type RouterPodRecoveryProvider interface {
+	TriggerRouterPodRecovery(ctx context.Context, resource client.Object, podUID string) (*ProvisionResult, error)
+}
+
 // ProvisionStatus represents the current state of a provisioning or deprovisioning job.
 type ProvisionStatus struct {
 	// JobID is the unique identifier for this job.

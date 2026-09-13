@@ -13,6 +13,7 @@ router_pod_image: ghcr.io/osac-project/osac-router-agent:latest
 router_pod_service_account_name: router-pod
 router_pod_config_map_name: router-config
 router_pod_config_file: /etc/osac-router-agent/config/config.json
+router_pod_status_file: /run/osac-router-agent/status.json
 # Fixed cluster-scoped ClusterRole name from osac-installer's router-pod-scc.yaml
 # (not release-namespace-qualified -- see that file's own naming note).
 router_pod_scc_cluster_role: osac-router-pod-scc
@@ -31,6 +32,10 @@ cudn_net_router_wait_for_network_status: true
 cudn_net_router_wait_for_recreated_network_status: true
 cudn_net_router_mutation_lock_retries: 180
 cudn_net_router_mutation_lock_delay_seconds: 1
+cudn_net_router_mutation_lock_duration_seconds: 600
+cudn_net_router_recovery_timeout_seconds: 180
+cudn_net_router_recovery_poll_interval_seconds: 2
+cudn_net_router_recovery_lock_duration_seconds: 600
 
 # OVN NB port-security patching (temporary stopgap, see design.md "Port security" and
 # patch_router_pod_port_security.yaml) -- where the OVN northbound DB lives and how to

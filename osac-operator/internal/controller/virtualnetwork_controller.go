@@ -22,15 +22,21 @@ import (
 	"strconv"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mc "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -41,7 +47,8 @@ import (
 )
 
 const (
-	osacVirtualNetworkFinalizer = "osac.openshift.io/virtualnetwork-finalizer"
+	osacVirtualNetworkFinalizer  = "osac.openshift.io/virtualnetwork-finalizer"
+	virtualNetworkControllerName = "virtualnetwork-controller"
 )
 
 // VirtualNetworkReconciler reconciles a VirtualNetwork object
@@ -49,6 +56,7 @@ type VirtualNetworkReconciler struct {
 	client.Client
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
+	Recorder  events.EventRecorder
 	// mgr and targetCluster are stored for future multi-cluster target client resolution
 	mgr                  mcmanager.Manager
 	NetworkingNamespace  string
@@ -90,6 +98,7 @@ func NewVirtualNetworkReconciler(
 		Client:               mgr.GetLocalManager().GetClient(),
 		APIReader:            mgr.GetLocalManager().GetAPIReader(),
 		Scheme:               mgr.GetLocalManager().GetScheme(),
+		Recorder:             mgr.GetLocalManager().GetEventRecorder(virtualNetworkControllerName),
 		mgr:                  mgr,
 		NetworkingNamespace:  networkingNamespace,
 		ProvisioningProvider: provisioningProvider,
@@ -106,6 +115,8 @@ func NewVirtualNetworkReconciler(
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=subnets,verbs=list
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=securitygroups,verbs=list
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=natgateways,verbs=list
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -257,7 +268,27 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 	}
 
 	// Handle provisioning
-	return r.handleProvisioning(ctx, vnet, plan)
+	result, err := r.handleProvisioning(ctx, vnet, plan)
+	if err != nil {
+		return result, err
+	}
+
+	// Router-pod recovery is independent of the normal VirtualNetwork
+	// config-version lifecycle. A replacement Pod can occur without any VN or
+	// Subnet spec change, so the target-cluster Pod watch reaches this path.
+	if vnet.Spec.NetworkingType == v1alpha1.VirtualNetworkNetworkingTypeSecondary {
+		baseReady := isVirtualNetworkConfigApplied(vnet.Status.ProvisioningJobs, vnet.Status.DesiredConfigVersion, plan)
+		recoveryResult, recoveryErr := r.reconcileRouterPodRecovery(ctx, vnet, baseReady)
+		if recoveryErr != nil {
+			return result, recoveryErr
+		}
+		if recoveryResult.RequeueAfter > 0 &&
+			(result.RequeueAfter == 0 || recoveryResult.RequeueAfter < result.RequeueAfter) {
+			result.RequeueAfter = recoveryResult.RequeueAfter
+		}
+	}
+
+	return result, nil
 }
 
 // handleProvisioning manages the provisioning job lifecycle for a VirtualNetwork.
@@ -547,5 +578,43 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr mcmanager.Manager) error
 			mcbuilder.WithPredicates(NetworkingNamespacePredicate(r.NetworkingNamespace)),
 			mcbuilder.WithEngageWithLocalCluster(true),
 			mcbuilder.WithEngageWithProviderClusters(false)).
+		Watches(
+			&corev1.Pod{},
+			func(_ mc.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return mchandler.TypedEnqueueRequestsFromMapFuncWithClusterPreservation(
+					func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+						return r.mapRouterPodToVirtualNetwork(ctx, obj)
+					},
+				)
+			},
+			mcbuilder.WithPredicates(routerPodPredicate()),
+			mcbuilder.WithEngageWithLocalCluster(true),
+			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithClusterFilter(func(clusterName mc.ClusterName, _ cluster.Cluster) bool {
+				return clusterName == r.targetCluster
+			}),
+		).
 		Complete(r)
+}
+
+func routerPodPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(evt event.CreateEvent) bool {
+			return isRouterPod(evt.Object)
+		},
+		UpdateFunc: func(evt event.UpdateEvent) bool {
+			return isRouterPod(evt.ObjectNew) || isRouterPod(evt.ObjectOld)
+		},
+		DeleteFunc: func(evt event.DeleteEvent) bool {
+			return isRouterPod(evt.Object)
+		},
+		GenericFunc: func(evt event.GenericEvent) bool {
+			return isRouterPod(evt.Object)
+		},
+	}
+}
+
+func isRouterPod(obj client.Object) bool {
+	return obj != nil && obj.GetLabels()[osacRouterPodLabel] == labelValueTrue &&
+		obj.GetLabels()[osacRouterVirtualNetworkLabel] != ""
 }

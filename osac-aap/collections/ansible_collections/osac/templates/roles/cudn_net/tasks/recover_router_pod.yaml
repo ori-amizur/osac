@@ -1,0 +1,211 @@
+---
+# Repair a replacement router Pod without changing the Deployment template or
+# causing another restart. The ConfigMap is the durable aggregate source of
+# truth because successful live subnet attaches intentionally do not update the
+# Deployment template.
+
+- name: Initialize router recovery lock state
+  ansible.builtin.set_fact:
+    router_mutation_lock_acquired: false
+
+- name: Acquire the per-VirtualNetwork router mutation lock for recovery
+  ansible.builtin.include_role:
+    name: osac.service.vnet_lock
+  vars:
+    vnet_lock_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
+    vnet_lock_namespace: "{{ subnet_vn_name }}"
+    vnet_lock_holder: >-
+      cudn-router-recovery-{{ awx_job_id | default(ansible_job_id | default('unknown')) }}
+    vnet_lock_tenant: "{{ subnet_tenant_id | default('') }}"
+    vnet_lock_owner_reference: "{{ subnet_virtual_network | default('') }}"
+    vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    vnet_lock_duration_seconds: "{{ cudn_net_router_recovery_lock_duration_seconds }}"
+    _vnet_lock_max_retries: "{{ cudn_net_router_mutation_lock_retries }}"
+    _vnet_lock_retry_delay: "{{ cudn_net_router_mutation_lock_delay_seconds }}"
+
+- name: Mark the router recovery lock as held
+  ansible.builtin.set_fact:
+    router_mutation_lock_acquired: true
+
+- name: Recover the replacement router Pod
+  block:
+    - name: Get the current router Pod for the requested UID
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: v1
+        kind: Pod
+        namespace: "{{ subnet_vn_name }}"
+        label_selectors:
+          - "osac.openshift.io/router-pod=true"
+          - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+      register: router_recovery_pod_info
+      until:
+        - >-
+          router_recovery_pod_info.resources
+          | selectattr('metadata.uid', 'equalto', router_pod_recovery_uid)
+          | selectattr('status.phase', 'equalto', 'Running')
+          | rejectattr('metadata.deletionTimestamp', 'defined')
+          | list | length == 1
+        - >-
+          (
+            router_recovery_pod_info.resources
+            | selectattr('metadata.uid', 'equalto', router_pod_recovery_uid)
+            | selectattr('status.phase', 'equalto', 'Running')
+            | selectattr('status.conditions', 'defined')
+            | map(attribute='status.conditions')
+            | flatten
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list | length
+          ) == 1
+      retries: "{{ (cudn_net_router_recovery_timeout_seconds / cudn_net_router_recovery_poll_interval_seconds) | round(0, 'ceil') | int }}"
+      delay: "{{ cudn_net_router_recovery_poll_interval_seconds }}"
+
+    - name: Select the requested replacement router Pod
+      ansible.builtin.set_fact:
+        router_recovery_pod: >-
+          {{
+            router_recovery_pod_info.resources
+            | selectattr('metadata.uid', 'equalto', router_pod_recovery_uid)
+            | list | first
+          }}
+
+    - name: Set the replacement router Pod name
+      ansible.builtin.set_fact:
+        router_recovery_pod_name: "{{ router_recovery_pod.metadata.name }}"
+
+    - name: Read the durable router agent configuration
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: v1
+        kind: ConfigMap
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_pod_config_map_name }}"
+      register: router_recovery_config_info
+
+    - name: Require the durable router agent configuration
+      ansible.builtin.assert:
+        that:
+          - router_recovery_config_info.resources | length == 1
+          - router_recovery_config_info.resources[0].data['config.json'] is defined
+        fail_msg: >-
+          Router agent ConfigMap {{ subnet_vn_name }}/{{ router_pod_config_map_name }}
+          is missing; cannot recover Pod {{ router_pod_recovery_uid }} safely.
+
+    - name: Parse the durable router agent configuration
+      ansible.builtin.set_fact:
+        router_recovery_config: >-
+          {{ router_recovery_config_info.resources[0].data['config.json'] | from_json }}
+        router_pod_config_version: >-
+          {{ (router_recovery_config_info.resources[0].data['config.json'] | from_json).version | default('') }}
+        router_pod_networks: >-
+          {{ (router_recovery_config_info.resources[0].data['config.json'] | from_json).networks | default([]) }}
+
+    - name: Recover compatibility with ConfigMaps written before the networks field
+      ansible.builtin.set_fact:
+        router_pod_networks: "{{ router_pod_config_version | from_json }}"
+      when:
+        - router_pod_networks | length == 0
+        - router_pod_config_version not in ['', '0']
+
+    - name: Patch the replacement Pod with the complete attachment set
+      kubernetes.core.k8s_json_patch:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: v1
+        kind: Pod
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_recovery_pod_name }}"
+        patch:
+          - op: add
+            path: /metadata/annotations
+            value:
+              k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | to_json }}"
+      when: (router_recovery_pod.metadata.annotations | default({})) | length == 0
+
+    - name: Update the replacement Pod attachment annotation in place
+      kubernetes.core.k8s_json_patch:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: v1
+        kind: Pod
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_recovery_pod_name }}"
+        patch:
+          - op: add
+            path: /metadata/annotations/k8s.v1.cni.cncf.io~1networks
+            value: "{{ router_pod_networks | to_json }}"
+      when: (router_recovery_pod.metadata.annotations | default({})) | length > 0
+
+    - name: Wait for all desired Multus attachments on the replacement Pod
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: v1
+        kind: Pod
+        namespace: "{{ subnet_vn_name }}"
+        name: "{{ router_recovery_pod_name }}"
+      register: router_recovery_status_info
+      until:
+        - router_recovery_status_info.resources | length == 1
+        - router_recovery_status_info.resources[0].metadata.uid == router_pod_recovery_uid
+        - router_recovery_status_info.resources[0].status.phase | default('') == 'Running'
+        - >-
+          (
+            (
+              (router_recovery_status_info.resources[0].metadata.annotations | default({})
+                ).get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+            )
+            | selectattr('name', 'in',
+                (router_pod_networks | map(attribute='name') | list)
+                + (router_pod_networks | map(attribute='name')
+                    | map('regex_replace', '^', subnet_vn_name ~ '/') | list)
+              )
+            | list | length
+          ) == (router_pod_networks | length)
+      retries: "{{ (cudn_net_router_recovery_timeout_seconds / cudn_net_router_recovery_poll_interval_seconds) | round(0, 'ceil') | int }}"
+      delay: "{{ cudn_net_router_recovery_poll_interval_seconds }}"
+
+    - name: Wait for the router agent to apply the durable configuration
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ subnet_vn_name }}"
+          - "{{ router_recovery_pod_name }}"
+          - -c
+          - router
+          - --
+          - cat
+          - "{{ router_pod_status_file }}"
+      environment: >-
+        {{
+          {'KUBECONFIG': remote_cluster_kubeconfig}
+          if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
+          else {}
+        }}
+      register: router_recovery_agent_status
+      until:
+        - router_recovery_agent_status.rc == 0
+        - >-
+          (router_recovery_agent_status.stdout | from_json).ready | default(false) | bool
+        - >-
+          (router_recovery_agent_status.stdout | from_json).version | default('') == router_pod_config_version
+      retries: "{{ (cudn_net_router_recovery_timeout_seconds / cudn_net_router_recovery_poll_interval_seconds) | round(0, 'ceil') | int }}"
+      delay: "{{ cudn_net_router_recovery_poll_interval_seconds }}"
+      changed_when: false
+
+    - name: Reapply OVN port security to every current router attachment
+      ansible.builtin.include_tasks: patch_router_pod_port_security.yaml
+      vars:
+        router_pod_expected_uid: "{{ router_pod_recovery_uid }}"
+      when: router_pod_networks | length > 0
+  always:
+    - name: Release the router recovery lock
+      ansible.builtin.include_role:
+        name: osac.service.vnet_lock
+      vars:
+        vnet_lock_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
+        vnet_lock_namespace: "{{ subnet_vn_name }}"
+        vnet_lock_holder: >-
+          cudn-router-recovery-{{ awx_job_id | default(ansible_job_id | default('unknown')) }}
+        vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+      when: router_mutation_lock_acquired | bool

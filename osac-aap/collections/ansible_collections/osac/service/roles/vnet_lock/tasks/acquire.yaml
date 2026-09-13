@@ -6,10 +6,31 @@
     _vnet_lock_retry_delay: "{{ _vnet_lock_retry_delay | default(5) | int }}"
     _vnet_lock_acquired: false
 
+- name: Ensure the V-Net Lease exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vnet_lock_kubeconfig | default(omit) }}"
+    state: present
+    definition:
+      apiVersion: coordination.k8s.io/v1
+      kind: Lease
+      metadata:
+        name: "{{ vnet_lock_name }}"
+        namespace: "{{ vnet_lock_namespace }}"
+        labels:
+          osac.openshift.io/managed-by: osac-fulfillment
+          osac.openshift.io/router-lock: "true"
+        annotations:
+          osac.openshift.io/tenant: "{{ vnet_lock_tenant | default('') }}"
+          osac.openshift.io/owner-reference: "{{ vnet_lock_owner_reference | default('') }}"
+      spec:
+        leaseDurationSeconds: "{{ vnet_lock_duration_seconds | default(600) | int }}"
+  register: _vnet_lock_ensure
+
 - name: Attempt lock acquisition
   block:
     - name: Read lease
       kubernetes.core.k8s_info:
+        kubeconfig: "{{ vnet_lock_kubeconfig | default(omit) }}"
         api_version: coordination.k8s.io/v1
         kind: Lease
         name: "{{ vnet_lock_name }}"
@@ -53,6 +74,7 @@
 
         - name: CAS update to acquire
           kubernetes.core.k8s:
+            kubeconfig: "{{ vnet_lock_kubeconfig | default(omit) }}"
             state: present
             definition:
               apiVersion: coordination.k8s.io/v1
@@ -61,6 +83,12 @@
                 name: "{{ vnet_lock_name }}"
                 namespace: "{{ vnet_lock_namespace }}"
                 resourceVersion: "{{ _vnet_lock_resource_version }}"
+                labels:
+                  osac.openshift.io/managed-by: osac-fulfillment
+                  osac.openshift.io/router-lock: "true"
+                annotations:
+                  osac.openshift.io/tenant: "{{ vnet_lock_tenant | default('') }}"
+                  osac.openshift.io/owner-reference: "{{ vnet_lock_owner_reference | default('') }}"
               spec:
                 holderIdentity: "{{ vnet_lock_holder }}"
                 leaseDurationSeconds: "{{ _vnet_lock_duration | int }}"

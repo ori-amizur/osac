@@ -67,10 +67,21 @@
     # keep the ambiguity check for two non-terminating pods.
     router_pod_running_list: >-
       {{
-        router_pod_info.resources
-        | selectattr('status.phase', 'equalto', 'Running')
-        | rejectattr('metadata.deletionTimestamp', 'defined')
-        | list
+        (
+          router_pod_info.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | rejectattr('metadata.deletionTimestamp', 'defined')
+          | selectattr('metadata.uid', 'equalto', router_pod_expected_uid)
+          | list
+        )
+        if (router_pod_expected_uid | default('') | length > 0)
+        else
+        (
+          router_pod_info.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | rejectattr('metadata.deletionTimestamp', 'defined')
+          | list
+        )
       }}
 
 - name: Require exactly one running router pod

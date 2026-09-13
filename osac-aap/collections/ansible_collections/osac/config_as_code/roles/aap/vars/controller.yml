@@ -154,6 +154,18 @@ controller_templates: # noqa: var-naming[no-role-prefix]
     allow_simultaneous: true
     ask_variables_on_launch: true
     verbosity: 0
+  - name: "{{ aap_prefix }}-recover-router-pod"
+    project: "{{ aap_prefix }}"
+    organization: "{{ aap_organization_name }}"
+    job_type: run
+    playbook: "osac-aap/playbook_osac_recover_router_pod.yml"
+    inventory: "{{ aap_prefix }}-networking-operations"
+    execution_environment: "{{ aap_prefix }}-ee"
+    instance_groups:
+      - "{{ aap_prefix }}-networking-operations-ig"
+    allow_simultaneous: true
+    ask_variables_on_launch: true
+    verbosity: 0
   - name: "{{ aap_prefix }}-create-subnet"
     project: "{{ aap_prefix }}"
     organization: "{{ aap_organization_name }}"

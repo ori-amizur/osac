@@ -113,6 +113,7 @@
         router_pod_config_tenant: "{{ vn_tenant_id }}"
         router_pod_config_owner_reference: "{{ vn_uuid }}"
         router_pod_config_version: "0"
+        router_pod_config_networks: []
         router_pod_config_gateway_ips: []
         router_pod_config_routes: []
 
@@ -158,12 +159,16 @@
                         valueFrom:
                           fieldRef:
                             fieldPath: status.podIP
+                      - name: ROUTER_POD_STATUS_FILE
+                        value: "{{ router_pod_status_file }}"
                       - name: ROUTER_POD_CONFIG_FILE
                         value: "{{ router_pod_config_file }}"
                     volumeMounts:
                       - name: router-agent-config
                         mountPath: "{{ router_pod_config_file | dirname }}"
                         readOnly: true
+                      - name: router-agent-status
+                        mountPath: "{{ router_pod_status_file | dirname }}"
                     # No command override: osac-router-agent runs the forwarding/SNAT
                     # and ConfigMap-driven netlink setup.
                     # NET_ADMIN for the agent's nft SNAT and netlink operations.
@@ -181,6 +186,8 @@
                   - name: router-agent-config
                     configMap:
                       name: "{{ router_pod_config_map_name }}"
+                  - name: router-agent-status
+                    emptyDir: {}
       register: router_pod_deployment_result
 
     - name: Display router pod provisioning result

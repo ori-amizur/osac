@@ -22,6 +22,7 @@
           {{
             {
               'version': router_pod_config_version | default(''),
+              'networks': router_pod_config_networks | default([]),
               'gatewayIPs': router_pod_config_gateway_ips | default([]),
               'routes': router_pod_config_routes | default([])
             } | to_json

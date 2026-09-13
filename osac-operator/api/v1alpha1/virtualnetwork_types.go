@@ -84,6 +84,39 @@ const (
 	VirtualNetworkPhaseDeleting VirtualNetworkPhaseType = "Deleting"
 )
 
+// RouterPodRecoveryStatus records the latest router-pod recovery attempt for a
+// Secondary VirtualNetwork. PodUID is the idempotency key: duplicate Pod events
+// for the same replacement must not launch another active recovery job.
+type RouterPodRecoveryStatus struct {
+	// PodUID identifies the router Pod whose networking is being reconciled.
+	// +kubebuilder:validation:Optional
+	PodUID string `json:"podUID,omitempty"`
+
+	// JobID is the AAP recovery job identifier.
+	// +kubebuilder:validation:Optional
+	JobID string `json:"jobID,omitempty"`
+
+	// State is the latest recovery job state.
+	// +kubebuilder:validation:Optional
+	State JobState `json:"state,omitempty"`
+
+	// Attempt counts recovery attempts for this Pod UID.
+	// +kubebuilder:validation:Optional
+	Attempt int32 `json:"attempt,omitempty"`
+
+	// Message contains the latest provider or reconciliation message.
+	// +kubebuilder:validation:Optional
+	Message string `json:"message,omitempty"`
+
+	// LastAttemptTime is when the latest recovery attempt was started.
+	// +kubebuilder:validation:Optional
+	LastAttemptTime *metav1.Time `json:"lastAttemptTime,omitempty"`
+
+	// NextRetryTime prevents a failed recovery from being retried in a tight loop.
+	// +kubebuilder:validation:Optional
+	NextRetryTime *metav1.Time `json:"nextRetryTime,omitempty"`
+}
+
 // VirtualNetworkStatus defines the observed state of VirtualNetwork
 type VirtualNetworkStatus struct {
 	// Phase provides a single-value overview of the state of the VirtualNetwork
@@ -104,6 +137,11 @@ type VirtualNetworkStatus struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Type=string
 	BackendNetworkID string `json:"backendNetworkId,omitempty"`
+
+	// RouterPodRecovery records recovery of the current Secondary VirtualNetwork
+	// router Pod, independently of the normal VirtualNetwork provisioning job.
+	// +kubebuilder:validation:Optional
+	RouterPodRecovery *RouterPodRecoveryStatus `json:"routerPodRecovery,omitempty"`
 
 	// Conditions holds an array of metav1.Condition that describe the state of the VirtualNetwork
 	// +kubebuilder:validation:Optional

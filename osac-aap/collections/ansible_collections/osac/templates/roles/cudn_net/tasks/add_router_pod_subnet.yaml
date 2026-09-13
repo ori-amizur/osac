@@ -148,6 +148,7 @@
     router_pod_config_tenant: "{{ subnet_tenant_id }}"
     router_pod_config_owner_reference: "{{ subnet_virtual_network }}"
     router_pod_config_version: "{{ router_pod_networks | to_json }}"
+    router_pod_config_networks: "{{ router_pod_networks }}"
     router_pod_config_routes: []
 
 - name: Attach the new subnet, falling back to router Pod recreation on timeout

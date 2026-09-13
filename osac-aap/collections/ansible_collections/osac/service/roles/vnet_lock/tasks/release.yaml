@@ -3,6 +3,7 @@
   block:
     - name: Read lease
       kubernetes.core.k8s_info:
+        kubeconfig: "{{ vnet_lock_kubeconfig | default(omit) }}"
         api_version: coordination.k8s.io/v1
         kind: Lease
         name: "{{ vnet_lock_name }}"
@@ -21,6 +22,7 @@
       block:
         - name: CAS update to release
           kubernetes.core.k8s:
+            kubeconfig: "{{ vnet_lock_kubeconfig | default(omit) }}"
             state: present
             definition:
               apiVersion: coordination.k8s.io/v1
@@ -39,7 +41,10 @@
 
         - name: Display release result
           ansible.builtin.debug:
-            msg: "{{ (_vnet_lock_release_result is succeeded) | ternary('Released', 'Release conflict (will expire naturally)') }} V-Net lock '{{ vnet_lock_name }}'"
+            msg: >-
+              {{ (_vnet_lock_release_result is succeeded)
+                 | ternary('Released', 'Release conflict (will expire naturally)') }}
+              V-Net lock '{{ vnet_lock_name }}'
 
     - name: Warn if held by someone else
       ansible.builtin.debug:

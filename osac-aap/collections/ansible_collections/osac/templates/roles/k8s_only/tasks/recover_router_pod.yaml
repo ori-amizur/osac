@@ -1,0 +1,7 @@
+---
+# k8s_only delegates Secondary VirtualNetwork router recovery to cudn_net.
+
+- name: Delegate router Pod recovery to cudn_net
+  ansible.builtin.include_role:
+    name: osac.templates.cudn_net
+    tasks_from: recover_router_pod

@@ -1,0 +1,30 @@
+---
+- name: Recover a Secondary VirtualNetwork router Pod
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    virtual_network: "{{ osac_job_vars.resource }}"
+    router_pod_recovery_uid: "{{ osac_job_vars.router_pod_uid }}"
+    implementation_strategy: >-
+      {{ virtual_network.metadata.annotations
+         ['osac.openshift.io/implementation-strategy'] }}
+    subnet_vn_name: "{{ virtual_network.metadata.name }}"
+    subnet_tenant_id: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}
+    subnet_virtual_network: >-
+      {{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] | default('') }}
+
+  pre_tasks:
+    - name: Show router recovery metadata
+      ansible.builtin.debug:
+        msg:
+          - "VirtualNetwork: {{ subnet_vn_name }}"
+          - "Replacement router Pod UID: {{ router_pod_recovery_uid }}"
+          - "Implementation strategy: {{ implementation_strategy }}"
+
+  tasks:
+    - name: Recover the router Pod through the selected network implementation
+      ansible.builtin.include_role:
+        name: "osac.templates.{{ implementation_strategy }}"
+        tasks_from: recover_router_pod

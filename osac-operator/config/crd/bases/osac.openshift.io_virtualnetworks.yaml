@@ -240,6 +240,48 @@ spec:
                   - type
                   type: object
                 type: array
+              routerPodRecovery:
+                description: |-
+                  RouterPodRecovery records recovery of the current Secondary VirtualNetwork
+                  router Pod, independently of the normal VirtualNetwork provisioning job.
+                properties:
+                  attempt:
+                    description: Attempt counts recovery attempts for this Pod UID.
+                    format: int32
+                    type: integer
+                  jobID:
+                    description: JobID is the AAP recovery job identifier.
+                    type: string
+                  lastAttemptTime:
+                    description: LastAttemptTime is when the latest recovery attempt
+                      was started.
+                    format: date-time
+                    type: string
+                  message:
+                    description: Message contains the latest provider or reconciliation
+                      message.
+                    type: string
+                  nextRetryTime:
+                    description: NextRetryTime prevents a failed recovery from being
+                      retried in a tight loop.
+                    format: date-time
+                    type: string
+                  podUID:
+                    description: PodUID identifies the router Pod whose networking
+                      is being reconciled.
+                    type: string
+                  state:
+                    description: State is the latest recovery job state.
+                    enum:
+                    - Pending
+                    - Waiting
+                    - Running
+                    - Succeeded
+                    - Failed
+                    - Canceled
+                    - Unknown
+                    type: string
+                type: object
             type: object
         required:
         - spec

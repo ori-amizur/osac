@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -37,6 +40,26 @@ func TestRouterAgent(t *testing.T) {
 }
 
 var _ = Describe("Router agent configuration", func() {
+	Describe("writeStatus", func() {
+		It("writes an atomically consumable readiness document", func() {
+			directory, err := os.MkdirTemp("", "router-agent-status-")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(os.RemoveAll, directory)
+
+			statusPath := filepath.Join(directory, "nested", "status.json")
+			Expect(writeStatus(statusPath, AgentStatus{
+				Version: "config-1",
+				Ready:   true,
+			})).To(Succeed())
+
+			raw, err := os.ReadFile(statusPath)
+			Expect(err).NotTo(HaveOccurred())
+			var status AgentStatus
+			Expect(json.Unmarshal(raw, &status)).To(Succeed())
+			Expect(status).To(Equal(AgentStatus{Version: "config-1", Ready: true}))
+		})
+	})
+
 	Describe("parseConfig", func() {
 		It("parses gateway and route state", func() {
 			config, err := parseConfig([]byte(`{

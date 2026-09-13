@@ -16,6 +16,23 @@ argument_specs:
         type: str
         required: true
         description: Unique identifier for this lock holder (e.g. AAP job ID)
+      vnet_lock_kubeconfig:
+        type: str
+        required: false
+        description: Optional kubeconfig for the cluster containing the Lease
+      vnet_lock_duration_seconds:
+        type: int
+        required: false
+        default: 600
+        description: Lease expiry interval used as the crash-recovery safety net
+      vnet_lock_tenant:
+        type: str
+        required: false
+        description: Tenant identifier for tenant-isolation metadata on the Lease
+      vnet_lock_owner_reference:
+        type: str
+        required: false
+        description: Owner/reference identifier for tenant-isolation metadata on the Lease
   release:
     description: >-
       Release a previously acquired K8s Lease. No-op if the Lease is held
@@ -33,3 +50,7 @@ argument_specs:
         type: str
         required: true
         description: Holder identity to match before releasing
+      vnet_lock_kubeconfig:
+        type: str
+        required: false
+        description: Optional kubeconfig for the cluster containing the Lease

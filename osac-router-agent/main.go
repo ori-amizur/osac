@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 
 const (
 	defaultConfigFile = "/etc/osac-router-agent/config/config.json"
+	defaultStatusFile = "/run/osac-router-agent/status.json"
 	defaultPollPeriod = 2 * time.Second
 )
 
@@ -31,6 +33,16 @@ type RouterConfig struct {
 	Version   string          `json:"version,omitempty"`
 	GatewayIP []GatewayIPSpec `json:"gatewayIPs"`
 	Routes    []RouteSpec     `json:"routes"`
+}
+
+// AgentStatus is written after every configuration attempt so an external
+// reconciler can distinguish a Ready Pod from a Pod whose interfaces are still
+// being restored. The status file is local to the Pod and does not require the
+// agent to query or update Kubernetes resources.
+type AgentStatus struct {
+	Version string `json:"version"`
+	Ready   bool   `json:"ready"`
+	Message string `json:"message,omitempty"`
 }
 
 type GatewayIPSpec struct {
@@ -74,6 +86,7 @@ func main() {
 	defer stop()
 
 	configFile := getenv("ROUTER_POD_CONFIG_FILE", defaultConfigFile)
+	statusFile := getenv("ROUTER_POD_STATUS_FILE", defaultStatusFile)
 	pollPeriod := durationFromEnv("ROUTER_POD_CONFIG_POLL_INTERVAL", defaultPollPeriod)
 	clusterInterface := getenv("ROUTER_POD_CLUSTER_NET_IFACE", "eth0")
 	clusterIP := os.Getenv("ROUTER_POD_CLUSTER_NET_IP")
@@ -81,13 +94,14 @@ func main() {
 		log.Fatal("ROUTER_POD_CLUSTER_NET_IP must be set from the Downward API")
 	}
 
-	if err := run(ctx, execCommandRunner{}, configFile, pollPeriod, clusterInterface, clusterIP); err != nil {
+	if err := run(ctx, execCommandRunner{}, configFile, statusFile, pollPeriod, clusterInterface, clusterIP); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, runner commandRunner, configFile string, pollPeriod time.Duration, clusterInterface, clusterIP string) error {
+func run(ctx context.Context, runner commandRunner, configFile, statusFile string, pollPeriod time.Duration, clusterInterface, clusterIP string) error {
 	if err := ensureSNAT(ctx, runner, clusterInterface, clusterIP); err != nil {
+		_ = writeStatus(statusFile, AgentStatus{Ready: false, Message: fmt.Sprintf("configure cluster-network SNAT: %v", err)})
 		return fmt.Errorf("configure cluster-network SNAT: %w", err)
 	}
 
@@ -97,20 +111,27 @@ func run(ctx context.Context, runner commandRunner, configFile string, pollPerio
 		raw, err := os.ReadFile(configFile)
 		if err != nil {
 			log.Printf("waiting for router ConfigMap file %q: %v", configFile, err)
+			_ = writeStatus(statusFile, AgentStatus{Ready: false, Message: err.Error()})
 		} else {
 			hash := configHash(raw)
 			if hash != lastHash {
+				_ = writeStatus(statusFile, AgentStatus{Ready: false, Message: "applying router configuration"})
 				config, parseErr := parseConfig(raw)
 				if parseErr != nil {
 					log.Printf("ignoring invalid router configuration: %v", parseErr)
+					_ = writeStatus(statusFile, AgentStatus{Version: config.Version, Ready: false, Message: parseErr.Error()})
 				} else if reconcileErr := reconcile(ctx, runner, previous, config); reconcileErr != nil {
 					// Do not advance lastHash: a missing interface or a transient
 					// netlink error is retried on the next poll even if the ConfigMap
 					// contents have not changed.
 					log.Printf("router configuration is not applied yet: %v", reconcileErr)
+					_ = writeStatus(statusFile, AgentStatus{Version: config.Version, Ready: false, Message: reconcileErr.Error()})
 				} else {
 					previous = config
 					lastHash = hash
+					if statusErr := writeStatus(statusFile, AgentStatus{Version: config.Version, Ready: true}); statusErr != nil {
+						log.Printf("could not write router agent readiness: %v", statusErr)
+					}
 					log.Printf("router configuration applied (version=%q)", config.Version)
 				}
 			}
@@ -122,6 +143,39 @@ func run(ctx context.Context, runner commandRunner, configFile string, pollPerio
 		case <-time.After(pollPeriod):
 		}
 	}
+}
+
+func writeStatus(path string, status AgentStatus) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".status-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer func() {
+		_ = os.Remove(temporaryName)
+	}()
+	if err := temporary.Chmod(0o644); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(append(raw, '\n')); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
 }
 
 func parseConfig(raw []byte) (RouterConfig, error) {

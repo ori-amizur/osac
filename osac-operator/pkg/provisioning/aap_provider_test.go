@@ -682,6 +682,29 @@ var _ = Describe("AAPProvider", func() {
 			Expect(result.JobID).To(Equal("100"))
 		})
 
+		It("should launch router recovery with the replacement Pod UID", func() {
+			aapClient.getTemplateFunc = func(ctx context.Context, templateName string) (*aap.Template, error) {
+				Expect(templateName).To(Equal("osac-recover-router-pod"))
+				return &aap.Template{ID: 4, Name: templateName, Type: aap.TemplateTypeJob}, nil
+			}
+			aapClient.launchJobTemplateFunc = func(ctx context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+				Expect(req.TemplateName).To(Equal("osac-recover-router-pod"))
+				jobVars := req.ExtraVars["osac_job_vars"].(map[string]any)
+				Expect(jobVars).To(HaveKeyWithValue("router_pod_uid", "pod-uid-2"))
+				return &aap.LaunchJobTemplateResponse{JobID: 400}, nil
+			}
+
+			vnet := &v1alpha1.VirtualNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vnet", Namespace: "default"},
+			}
+			vnet.SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("VirtualNetwork"))
+
+			result, err := provider.TriggerRouterPodRecovery(ctx, vnet, "pod-uid-2")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.JobID).To(Equal("400"))
+			Expect(result.InitialState).To(Equal(v1alpha1.JobStatePending))
+		})
+
 		It("should derive deprovision template name from resource Kind", func() {
 			aapClient.getTemplateFunc = func(ctx context.Context, templateName string) (*aap.Template, error) {
 				Expect(templateName).To(Equal("osac-delete-subnet"))

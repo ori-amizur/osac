@@ -34,8 +34,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mc "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -183,7 +186,41 @@ func (r *SubnetReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			mcbuilder.WithPredicates(NetworkingNamespacePredicate(r.NetworkingNamespace)),
 			mcbuilder.WithEngageWithLocalCluster(true),
 			mcbuilder.WithEngageWithProviderClusters(false)).
+		Watches(
+			&v1alpha1.VirtualNetwork{},
+			mchandler.TypedLift(handler.EnqueueRequestsFromMapFunc(r.mapVirtualNetworkToSubnets)),
+			mcbuilder.WithPredicates(NetworkingNamespacePredicate(r.NetworkingNamespace)),
+			mcbuilder.WithEngageWithLocalCluster(true),
+			mcbuilder.WithEngageWithProviderClusters(false),
+		).
 		Complete(r)
+}
+
+func (r *SubnetReconciler) mapVirtualNetworkToSubnets(ctx context.Context, obj client.Object) []reconcile.Request {
+	vnet, ok := obj.(*v1alpha1.VirtualNetwork)
+	if !ok {
+		return nil
+	}
+
+	vnetUUID := vnet.Labels[osacVirtualNetworkIDLabel]
+	if vnetUUID == "" {
+		return nil
+	}
+	subnets := &v1alpha1.SubnetList{}
+	if err := r.List(ctx, subnets, client.InNamespace(vnet.Namespace), client.MatchingLabels{
+		osacVirtualNetworkIDLabel: vnetUUID,
+	}); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(subnets.Items))
+	for i := range subnets.Items {
+		if subnets.Items[i].Spec.VirtualNetwork != vnetUUID {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&subnets.Items[i])})
+	}
+	return requests
 }
 
 // getParentVirtualNetwork looks up the Subnet's parent VirtualNetwork by UUID label. A nil
@@ -343,7 +380,19 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	}
 
 	// Handle provisioning
-	return r.handleProvisioning(ctx, subnet, plan)
+	result, err = r.handleProvisioning(ctx, subnet, plan)
+	if err != nil {
+		return result, err
+	}
+
+	// A Secondary Subnet cannot be Ready while its parent router Pod is being
+	// recovered. This is independent of the Subnet's own config-version job.
+	readinessResult := r.reconcileParentRouterReadiness(subnet, vnet, plan)
+	if readinessResult.RequeueAfter > 0 &&
+		(result.RequeueAfter == 0 || readinessResult.RequeueAfter < result.RequeueAfter) {
+		result.RequeueAfter = readinessResult.RequeueAfter
+	}
+	return result, nil
 }
 
 // ensureVNetLockLease creates a K8s Lease for V-Net mutex locking if it

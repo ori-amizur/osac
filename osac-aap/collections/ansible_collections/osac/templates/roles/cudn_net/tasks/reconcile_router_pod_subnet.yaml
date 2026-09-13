@@ -13,14 +13,18 @@
 
 - name: Acquire the per-VirtualNetwork router mutation lock
   ansible.builtin.include_role:
-    name: osac.service.lease
+    name: osac.service.vnet_lock
   vars:
-    lease_state: present
-    lease_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
-    lease_holder: >-
+    vnet_lock_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
+    vnet_lock_namespace: "{{ subnet_vn_name }}"
+    vnet_lock_holder: >-
       cudn-net-{{ awx_job_id | default(ansible_job_id | default('unknown')) }}
-    lease_retries: "{{ cudn_net_router_mutation_lock_retries }}"
-    lease_delay: "{{ cudn_net_router_mutation_lock_delay_seconds }}"
+    vnet_lock_tenant: "{{ subnet_tenant_id | default('') }}"
+    vnet_lock_owner_reference: "{{ subnet_virtual_network | default('') }}"
+    vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    vnet_lock_duration_seconds: "{{ cudn_net_router_mutation_lock_duration_seconds }}"
+    _vnet_lock_max_retries: "{{ cudn_net_router_mutation_lock_retries }}"
+    _vnet_lock_retry_delay: "{{ cudn_net_router_mutation_lock_delay_seconds }}"
 
 - name: Mark the router mutation lock as held by this job
   ansible.builtin.set_fact:
@@ -38,8 +42,11 @@
   always:
     - name: Release the per-VirtualNetwork router mutation lock
       ansible.builtin.include_role:
-        name: osac.service.lease
+        name: osac.service.vnet_lock
       vars:
-        lease_state: absent
-        lease_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
+        vnet_lock_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
+        vnet_lock_namespace: "{{ subnet_vn_name }}"
+        vnet_lock_holder: >-
+          cudn-net-{{ awx_job_id | default(ansible_job_id | default('unknown')) }}
+        vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
       when: router_mutation_lock_acquired | bool

@@ -31,10 +31,11 @@ type AAPClient interface {
 //   - Prefix-based: templatePrefix is set, and template names are derived from the
 //     resource Kind (e.g., prefix "osac" + Kind "VirtualNetwork" → "osac-create-virtual-network")
 type AAPProvider struct {
-	client              AAPClient
-	provisionTemplate   string
-	deprovisionTemplate string
-	templatePrefix      string
+	client                    AAPClient
+	provisionTemplate         string
+	deprovisionTemplate       string
+	templatePrefix            string
+	routerPodRecoveryTemplate string
 }
 
 // NewAAPProvider creates a new AAP provider with explicit template names.
@@ -52,8 +53,9 @@ func NewAAPProvider(client AAPClient, provisionTemplate, deprovisionTemplate str
 // "osac-delete-virtual-network".
 func NewAAPProviderWithPrefix(client AAPClient, templatePrefix string) *AAPProvider {
 	return &AAPProvider{
-		client:         client,
-		templatePrefix: templatePrefix,
+		client:                    client,
+		templatePrefix:            templatePrefix,
+		routerPodRecoveryTemplate: templatePrefix + "-recover-router-pod",
 	}
 }
 
@@ -104,6 +106,28 @@ func (p *AAPProvider) TriggerProvision(ctx context.Context, resource client.Obje
 		JobID:        jobID,
 		InitialState: v1alpha1.JobStatePending,
 		Message:      "Provisioning job triggered",
+	}, nil
+}
+
+// TriggerRouterPodRecovery launches the dedicated router-pod repair template.
+// The replacement Pod UID is passed as an idempotency and safety guard to AAP;
+// the playbook must never repair a different Pod selected by a later rollout.
+func (p *AAPProvider) TriggerRouterPodRecovery(ctx context.Context, resource client.Object, podUID string) (*ProvisionResult, error) {
+	if p.routerPodRecoveryTemplate == "" {
+		return nil, fmt.Errorf("router pod recovery template not configured")
+	}
+
+	jobID, err := p.launchTemplateWithVars(ctx, p.routerPodRecoveryTemplate, resource, map[string]any{
+		"router_pod_uid": podUID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ProvisionResult{
+		JobID:        jobID,
+		InitialState: v1alpha1.JobStatePending,
+		Message:      "Router pod recovery job triggered",
 	}, nil
 }
 
@@ -235,6 +259,13 @@ func (p *AAPProvider) launchDeprovisionJob(ctx context.Context, resource client.
 
 // launchTemplate launches the named template (job or workflow) and returns the job ID.
 func (p *AAPProvider) launchTemplate(ctx context.Context, templateName string, resource client.Object) (string, error) {
+	return p.launchTemplateWithVars(ctx, templateName, resource, nil)
+}
+
+// launchTemplateWithVars launches a template after adding operation-specific
+// values to osac_job_vars. Keeping the resource itself unchanged prevents the
+// recovery identity from becoming a persistent VirtualNetwork annotation.
+func (p *AAPProvider) launchTemplateWithVars(ctx context.Context, templateName string, resource client.Object, operationVars map[string]any) (string, error) {
 	template, err := p.client.GetTemplate(ctx, templateName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get template: %w", err)
@@ -243,6 +274,15 @@ func (p *AAPProvider) launchTemplate(ctx context.Context, templateName string, r
 	extraVars, err := extractExtraVars(ctx, resource)
 	if err != nil {
 		return "", fmt.Errorf("failed to extract extra vars: %w", err)
+	}
+	if len(operationVars) > 0 {
+		jobVars, ok := extraVars["osac_job_vars"].(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("extracted extra vars missing osac_job_vars")
+		}
+		for key, value := range operationVars {
+			jobVars[key] = value
+		}
 	}
 
 	var jobID int

@@ -23,6 +23,14 @@
 #
 # This file is only ever included for the "attach" path (see add_router_pod_subnet.yaml);
 # detach intentionally does not use this mechanism -- see delete_subnet.yaml.
+#
+# Computing router_pod_networks earlier in add_router_pod_subnet.yaml only sets a Jinja
+# fact -- it does not itself touch the Pod object. The "Announce" step below is what
+# actually patches the Pod's live annotation via the API, and it must run before CUDN
+# creation, not just be computed before it.
+
+- name: Announce the subnet to the router Pod before its CUDN exists
+  ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
 
 - name: Create ClusterUserDefinedNetwork for the announced subnet
   kubernetes.core.k8s:

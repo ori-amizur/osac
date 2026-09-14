@@ -922,6 +922,56 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			Expect(updated.Annotations).NotTo(HaveKey(osacK8sImplementationStrategyAnnotation))
 		})
 
+		It("keeps the fabric-manager decision unchanged when the NetworkClass later gains a fabric manager", func() {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			k8sManagerName := "cudn_net"
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-immutable", K8SManager: &k8sManagerName}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			vnet.Spec.NetworkClass = "nc-immutable"
+			Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
+			req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{
+				Name: vnet.Name, Namespace: vnet.Namespace,
+			}}}
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			created := &osacv1alpha1.VirtualNetwork{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, created)).To(Succeed())
+			Expect(created.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("false"))
+
+			// Simulate a later NetworkClass update. The persisted decision must remain
+			// false because this VirtualNetwork was created without a fabric manager.
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-immutable", FabricManager: ptr.To("netris"), K8SManager: &k8sManagerName}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			updated := &osacv1alpha1.VirtualNetwork{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).To(Succeed())
+			Expect(updated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("false"))
+		})
+
+		It("rejects an invalid persisted fabric-manager decision", func() {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-invalid-annotation", FabricManager: ptr.To("netris")}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			vnet.Spec.NetworkClass = "nc-invalid-annotation"
+			vnet.Annotations = map[string]string{osacFabricManagerConfiguredAnnotation: "unknown"}
+			Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace},
+			}})
+			Expect(err).To(MatchError(ContainSubstring("invalid osac.openshift.io/fabric-manager-configured annotation")))
+		})
+
 		It("dispatches dual-manager VirtualNetworks to fabric and k8s provisioning targets", func() {
 			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
 			Expect(err).NotTo(HaveOccurred())

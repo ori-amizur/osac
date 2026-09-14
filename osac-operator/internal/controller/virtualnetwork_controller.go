@@ -181,13 +181,13 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		return ctrl.Result{}, nil
 	}
 
-	// Determine implementation strategy from the dispatcher-resolved manager for this
-	// VirtualNetwork's NetworkClass (fabric_manager, falling back to k8s_manager).
-	implementationStrategy, err := resolveImplementationStrategy(
-		ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass, "")
+	// Resolve the dispatch plan once. The same plan determines the implementation
+	// strategy, the fabric-manager presence snapshot, and the provisioning targets.
+	plan, err := resolveDispatchPlan(ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	implementationStrategy := implementationStrategyFromDispatchPlan(plan)
 	if implementationStrategy == "" {
 		msg := fmt.Sprintf("NetworkClass '%s' has no fabric_manager or k8s_manager configured", vnet.Spec.NetworkClass)
 		setReadyConditionBlocked(&vnet.Status.Conditions, v1alpha1.ReasonNoManagerConfigured, msg)
@@ -195,16 +195,6 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
 	}
 
-	// AC3 (Story 1.05): record whether this VirtualNetwork's NetworkClass has a fabric
-	// manager configured, so future fabric-side provisioning (Epic 4/5's bare-metal
-	// transit interface) can gate on it without re-resolving the dispatch plan.
-	// FabricTarget has a nil-receiver-safe implementation (returns nil), so this is
-	// safe even in the legacy/no-dispatcher path where plan is nil.
-	plan, err := resolveDispatchPlan(ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	fabricManagerConfigured := strconv.FormatBool(plan.FabricTarget() != nil)
 	k8sImplementationStrategy := ""
 	// A k8s-only NetworkClass keeps the existing single-target lifecycle. Persist
 	// the k8s strategy separately only when a fabric target is also present, because
@@ -214,9 +204,11 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		k8sImplementationStrategy = plan.K8sTarget().Manager.Name
 	}
 
-	// Add implementation-strategy/fabric-manager-configured annotations if not present
-	// or different. This allows AAP playbooks to select the appropriate role without
-	// doing lookups.
+	// Add the implementation-strategy annotation if it is not present or different.
+	// This allows AAP playbooks to select the appropriate role without doing lookups.
+	// The fabric-manager-configured annotation is different: it is a creation-time
+	// decision and must not change over the VirtualNetwork's lifetime. A missing
+	// annotation is backfilled for VNs created before this decision was persisted.
 	if vnet.Annotations == nil {
 		vnet.Annotations = make(map[string]string)
 	}
@@ -225,7 +217,16 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		vnet.Annotations[osacImplementationStrategyAnnotation] = implementationStrategy
 		annotationsChanged = true
 	}
-	if vnet.Annotations[osacFabricManagerConfiguredAnnotation] != fabricManagerConfigured {
+	fabricManagerConfigured := strconv.FormatBool(plan.FabricTarget() != nil)
+	if existing, exists := vnet.Annotations[osacFabricManagerConfiguredAnnotation]; exists {
+		if existing != labelValueTrue && existing != "false" {
+			return ctrl.Result{}, fmt.Errorf("VirtualNetwork %q has invalid %s annotation %q; expected true or false",
+				vnet.Name, osacFabricManagerConfiguredAnnotation, existing)
+		}
+		// Preserve the persisted creation-time decision even if the referenced
+		// NetworkClass is later changed.
+		fabricManagerConfigured = existing
+	} else {
 		vnet.Annotations[osacFabricManagerConfiguredAnnotation] = fabricManagerConfigured
 		annotationsChanged = true
 	}

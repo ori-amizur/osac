@@ -52,12 +52,11 @@ const (
 	osacNetworkingTypeAnnotation = osacPrefix + "/networking-type"
 
 	// osacFabricManagerConfiguredAnnotation records ("true"/"false") whether a
-	// VirtualNetwork's NetworkClass has a fabric manager configured, resolved once the
-	// dispatch plan is known. Story 1.05 of the secondary-virtualnetwork-router-pod
-	// enhancement: this is what future fabric-side provisioning (bare-metal transit
-	// interface) gates on, so it doesn't need to happen every time — see design.md's
-	// Open Question 7 (an existing NetworkClass with only k8sManager set already
-	// represents "no fabric manager"; no new NetworkClass field was needed).
+	// VirtualNetwork's NetworkClass had a fabric manager at VirtualNetwork creation.
+	// The value is persisted as an immutable decision for the lifetime of the
+	// VirtualNetwork and gates future fabric-side provisioning (such as the bare-metal
+	// transit interface). Story 4.01 confirms that a NetworkClass with only k8sManager
+	// set represents "no fabric manager"; no new NetworkClass field is needed.
 	osacFabricManagerConfiguredAnnotation = osacPrefix + "/fabric-manager-configured"
 
 	// defaultExternalIPPoolImplementationStrategy is the fallback strategy when none is specified.

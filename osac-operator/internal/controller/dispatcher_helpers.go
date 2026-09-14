@@ -77,8 +77,19 @@ func resolveImplementationStrategy(
 	if err != nil {
 		return "", err
 	}
+	if strategy := implementationStrategyFromDispatchPlan(plan); strategy != "" {
+		return strategy, nil
+	}
+	return legacyStrategy, nil
+}
+
+// implementationStrategyFromDispatchPlan returns the manager name used for the
+// primary provisioning path represented by plan. Fabric is preferred when
+// present; K8sFallback plans use the k8s target instead. A nil or empty plan
+// means that the caller should use its legacy strategy.
+func implementationStrategyFromDispatchPlan(plan *dispatcher.DispatchPlan) string {
 	if plan == nil {
-		return legacyStrategy, nil
+		return ""
 	}
 	target := plan.FabricTarget()
 	if target == nil {
@@ -88,9 +99,9 @@ func resolveImplementationStrategy(
 		target = plan.K8sTarget()
 	}
 	if target == nil {
-		return legacyStrategy, nil
+		return ""
 	}
-	return target.Manager.Name, nil
+	return target.Manager.Name
 }
 
 // dispatchTargetProvider decorates a shared provisioning.ProvisioningProvider so that

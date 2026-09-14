@@ -96,7 +96,7 @@ func managerConfigMapPredicate(namespace string) predicate.Predicate {
 			return false
 		}
 		labels := obj.GetLabels()
-		return labels[networkmanager.LabelFabricManager] == "true" || labels[networkmanager.LabelK8sManager] == "true"
+		return labels[networkmanager.LabelFabricManager] == labelValueTrue || labels[networkmanager.LabelK8sManager] == labelValueTrue
 	})
 }
 

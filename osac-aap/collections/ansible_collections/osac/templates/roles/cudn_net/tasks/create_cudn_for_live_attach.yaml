@@ -1,0 +1,82 @@
+---
+# Announce the subnet to the router Pod's Multus annotation *before* its CUDN exists,
+# create the CUDN, then "poke" the annotation once the CUDN's NetworkAttachmentDefinition
+# is confirmed present.
+#
+# Why this order: OVN-Kubernetes's per-network Pod controller (layer2UserDefinedNetwork
+# Controller) only recomputes a Pod's network membership from scratch when its own
+# controller starts up (i.e., when this CUDN is created) or on a Pod Add event -- never on
+# a plain Pod Update to an already-scheduled Pod (its Update handler only ever considers
+# *adding* a port when the Pod's scheduled state changes; it never re-evaluates a Pod's
+# NAD list, and there is no removal-on-Update path either). Announcing the subnet on the
+# Pod's annotation before the CUDN exists means that when the CUDN's controller starts and
+# runs its own initial sync, it discovers the Pod already references it and creates the
+# logical port immediately as part of that startup sync -- no restart needed.
+#
+# multus-dynamic-networks-controller's own attempt to add the interface races ahead of the
+# NetworkAttachmentDefinition's existence (the CUDN's own controller has not created it
+# yet) and fails harmlessly with "not found"; its retry queue exhausts in well under a
+# second, faster than CUDN provisioning normally completes, so nothing is left in flight by
+# the time the NAD appears. The "poke" below -- a deliberate second change to the same
+# annotation -- is what makes multus-dynamic-networks-controller retry the CNI ADD once the
+# NAD actually exists.
+#
+# This file is only ever included for the "attach" path (see add_router_pod_subnet.yaml);
+# detach intentionally does not use this mechanism -- see delete_subnet.yaml.
+
+- name: Create ClusterUserDefinedNetwork for the announced subnet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: present
+    definition:
+      apiVersion: k8s.ovn.org/v1
+      kind: ClusterUserDefinedNetwork
+      metadata:
+        name: "{{ subnet_name }}"
+        labels: "{{ default_subnet_labels }}"
+      spec:
+        namespaceSelector:
+          matchLabels: "{{ subnet_cudn_namespace_selector }}"
+        network:
+          topology: "Layer2"
+          layer2:
+            role: "{{ subnet_cudn_layer2_role }}"
+            ipam:
+              lifecycle: "{{ default_ipam_lifecycle }}"
+            subnets: "{{ cudn_subnets }}"
+  register: cudn_result
+
+- name: Display CUDN creation result
+  ansible.builtin.debug:
+    msg:
+      - "CUDN '{{ subnet_name }}' created successfully"
+      - "Resource UID: {{ cudn_result.result.metadata.uid | default('N/A') }}"
+
+- name: Wait for the subnet's NetworkAttachmentDefinition to be created
+  # Best-effort: if the NAD is unusually slow to appear (or never does), do not fail the
+  # whole job here -- fall through to the poke and let patch_router_pod_networks.yaml's
+  # existing live-attach timeout and recreation fallback be the single source of truth for
+  # "did this Subnet operation succeed," exactly as when this mechanism is unavailable.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.cni.cncf.io/v1
+    kind: NetworkAttachmentDefinition
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ subnet_name }}"
+  register: subnet_nad_info
+  until: subnet_nad_info.resources | length == 1
+  retries: "{{ (cudn_net_router_nad_wait_timeout_seconds / cudn_net_router_nad_wait_poll_interval_seconds) | round(0, 'ceil') | int }}"
+  delay: "{{ cudn_net_router_nad_wait_poll_interval_seconds }}"
+  ignore_errors: true
+
+- name: Compute the router Pod attachment list without the newly announced subnet
+  ansible.builtin.set_fact:
+    router_pod_networks_poke_without_subnet: "{{ router_pod_networks | rejectattr('name', 'equalto', subnet_name) | list }}"
+
+- name: Poke -- temporarily drop the new subnet from the router Pod annotation
+  vars:
+    router_pod_networks: "{{ router_pod_networks_poke_without_subnet }}"
+  ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
+
+- name: Poke -- restore the complete desired attachment list, retriggering the live attach
+  ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml

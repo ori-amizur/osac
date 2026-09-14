@@ -7,12 +7,22 @@
 #
 # For a Subnet on a Secondary-type VirtualNetwork: no dedicated namespace is created --
 # the VirtualNetwork already has one shared namespace (its router pod's namespace, from
-# create_virtual_network.yaml). Instead, creates a role:Secondary CUDN whose
+# create_virtual_network.yaml). Instead, a role:Secondary CUDN is created whose
 # namespaceSelector matches the same per-VN-UUID-keyed label the shared namespace already
-# carries, and attaches the new subnet to the running router Pod's Multus network list
-# (see design.md's "Router pod gains an interface for the new subnet", AC3). The Pod is
-# patched directly so multus-dynamic-networks-controller can inject the interface without
-# triggering a Deployment rollout.
+# carries, and the new subnet is attached to the running router Pod's Multus network list
+# (see design.md's "Router pod gains an interface for the new subnet", AC3).
+#
+# For Secondary subnets, the CUDN itself is deliberately *not* created here -- it is
+# created by add_router_pod_subnet.yaml, after the router Pod's Multus annotation already
+# announces it. OVN-Kubernetes's per-network Pod controller only recomputes a Pod's network
+# membership from scratch when its own controller starts up (i.e., when its CUDN is
+# created), never on a plain Pod Update to an already-scheduled Pod. Creating the CUDN
+# after the Pod already references it means that controller's own startup sync discovers
+# the Pod immediately and creates the logical port without a restart; creating the CUDN
+# first (the order used for Primary subnets, and Secondary's own order prior to this
+# comment) leaves the live attach permanently unable to succeed for that Subnet, always
+# falling back to Epic 1's recreation path. See add_router_pod_subnet.yaml and
+# create_cudn_for_live_attach.yaml for the rest of this sequence.
 
 - name: Include get remote cluster kubeconfig
   ansible.builtin.include_role:
@@ -102,6 +112,12 @@
     subnet_cudn_layer2_role: "{{ 'Secondary' if subnet_networking_type == 'Secondary' else default_layer2_role }}"
 
 - name: Create ClusterUserDefinedNetwork
+  # Secondary subnets whose router Pod is managed (cudn_net_manage_router_pod, the
+  # production default) create their CUDN later, in add_router_pod_subnet.yaml -- see the
+  # note above this file's Primary/Secondary comment block. When router Pod management is
+  # disabled (the CUDN-contract-only test path), there is no add_router_pod_subnet.yaml
+  # call to create it, so it is still created here.
+  when: subnet_networking_type != 'Secondary' or not (cudn_net_manage_router_pod | bool)
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: present
@@ -124,6 +140,7 @@
   register: cudn_result
 
 - name: Display CUDN creation result
+  when: subnet_networking_type != 'Secondary' or not (cudn_net_manage_router_pod | bool)
   ansible.builtin.debug:
     msg:
       - "CUDN '{{ subnet_name }}' created successfully"

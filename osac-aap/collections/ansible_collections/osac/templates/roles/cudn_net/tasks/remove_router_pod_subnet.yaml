@@ -96,7 +96,6 @@
     router_pod_config_owner_reference: "{{ subnet_virtual_network }}"
     router_pod_config_version: "{{ router_pod_networks | default([]) | to_json }}"
     router_pod_config_networks: "{{ router_pod_networks | default([]) }}"
-    router_pod_config_gateway_ips: "{{ router_pod_config_gateway_ips | default([]) }}"
     router_pod_config_routes: []
   when: router_pod_deployment_info.resources | length > 0
 

@@ -17,10 +17,14 @@ Provisions networking resources using ClusterUserDefinedNetwork (CUDN) on OpenSh
 VirtualNetworks define the top-level network isolation boundary with CIDR allocation and implementation strategy selection via NetworkClass.
 
 **Key behaviors:**
-- Creates ClusterUserDefinedNetwork CR in the cluster
-- Supports IPv4-only, IPv6-only, and dual-stack configurations
-- NetworkClass determines the implementation strategy (cudn_net)
-- One VirtualNetwork maps to one ClusterUserDefinedNetwork
+- For a Secondary VirtualNetwork, creates the VN namespace and router Pod
+- For a fabric-backed Secondary VirtualNetwork, consumes the fabric manager's
+  shared transit contract and creates one Primary EVPN CUDN plus a persistent
+  transit IPAMClaim
+- A fabric-backed transit CUDN is cluster-shared because its MAC-VRF VNI must
+  be unique across the cluster; individual subnet changes do not alter it
+- For a Primary VirtualNetwork, this entrypoint remains a logical grouping and
+  does not create a router namespace
 
 **Implementation:**
 - ClusterUserDefinedNetwork is a cluster-scoped resource
@@ -112,8 +116,14 @@ are observability metadata; Multus watches only its own network annotation.
 This role implements the `cudn_net` NetworkClass strategy using OpenShift's ClusterUserDefinedNetwork (CUDN) feature. The implementation follows these patterns:
 
 **For VirtualNetworks:**
-- Create ClusterUserDefinedNetwork CR with Layer2 topology
-- Configure CIDR ranges from VirtualNetwork spec
+- Create the Secondary VirtualNetwork router namespace and Deployment
+- When `osac.openshift.io/fabric-manager-configured=true`, consume the
+  `osac-evpn-transit` ConfigMap published by the fabric role and create the
+  shared Layer2/EVPN/MAC-VRF CUDN. The CUDN uses the fabric-owned transit CIDR
+  and VNI, with Netris-owned addresses represented in `reservedSubnets`.
+- Configure the CUDN with `ipam.lifecycle: Persistent`, create the router Pod's
+  `IPAMClaim`, and request it through the Primary UDN claim annotation.
+- When the annotation is absent or false, skip all transit resources.
 
 **For Subnets:**
 - Create namespace with CUDN attachment labels

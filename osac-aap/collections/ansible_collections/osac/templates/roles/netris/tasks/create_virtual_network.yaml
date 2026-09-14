@@ -8,6 +8,9 @@
     vn_ipv4_cidr: "{{ virtual_network.spec.ipv4Cidr | default('') }}"
     vn_region: "{{ virtual_network.spec.region }}"
     vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
+    vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
+    vn_fabric_manager_configured: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/fabric-manager-configured'] | default('false') | lower }}
 
 - name: Resolve region to Netris site ID
   ansible.builtin.set_fact:
@@ -48,6 +51,12 @@
     ipam_tenant_id: "{{ netris_tenant_id }}"
     ipam_vpc_id: "{{ vpc_id }}"
   when: vn_ipv4_cidr | length > 0
+
+- name: Publish the shared EVPN transit attachment for a fabric-backed Secondary VN
+  ansible.builtin.include_tasks: publish_evpn_transit.yaml
+  when:
+    - vn_networking_type == 'Secondary'
+    - vn_fabric_manager_configured == 'true'
 
 - name: Display IPAM allocation result
   ansible.builtin.debug:

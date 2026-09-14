@@ -1,0 +1,172 @@
+---
+# Publish the Netris-owned shared transit V-Net to the k8s manager. This is a
+# small manager-neutral contract: the k8s side consumes the CIDR, allocated
+# MAC-VRF VNI, VTEP name, and the address ranges Netris owns.
+
+- name: Require shared EVPN transit configuration
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_vnet_name | length > 0
+      - netris_evpn_transit_ipam_subnet_name | length > 0
+    fail_msg: >-
+      Secondary VirtualNetwork '{{ vn_name }}' uses a fabric manager, but the
+      shared Netris EVPN transit V-Net is not configured. Set
+      NETRIS_EVPN_TRANSIT_VNET_NAME (and, when needed,
+      NETRIS_EVPN_TRANSIT_IPAM_SUBNET_NAME) in the AAP environment.
+
+- name: Read the shared Netris transit V-Net
+  ansible.builtin.include_role:
+    name: netris.controller.vnet
+    tasks_from: read
+  vars:
+    vnet_name: "{{ netris_evpn_transit_vnet_name }}"
+
+- name: Require the shared Netris transit V-Net to exist
+  ansible.builtin.assert:
+    that:
+      - netris_vnet is defined
+      - netris_vnet is not none
+      - netris_vnet.id | int > 0
+    fail_msg: >-
+      Shared Netris transit V-Net '{{ netris_evpn_transit_vnet_name }}' was not
+      found. Create the provider-owned transit V-Net before creating Secondary
+      VirtualNetworks.
+
+- name: Wait for the shared transit V-Net to become active
+  ansible.builtin.include_role:
+    name: netris.controller.vnet
+    tasks_from: wait_active
+  vars:
+    vnet_id: "{{ netris_vnet.id }}"
+
+- name: Read detailed transit V-Net gateway data
+  ansible.builtin.include_role:
+    name: netris.controller.vnet
+    tasks_from: read_by_id
+  vars:
+    vnet_id: "{{ netris_vnet.id }}"
+
+- name: Resolve the allocated transit MAC-VRF VNI
+  ansible.builtin.set_fact:
+    netris_evpn_transit_vni: >-
+      {{
+        netris_vnet_detail.vxlanID
+        | default(netris_vnet.vxlanID, true)
+        | int
+      }}
+
+- name: Read Netris IPAM subnets
+  ansible.builtin.include_role:
+    name: netris.controller.ipam
+    tasks_from: read_subnets
+
+- name: Select the shared transit IPAM subnet
+  ansible.builtin.set_fact:
+    netris_evpn_transit_ipam_subnet: >-
+      {{
+        (netris_ipam_subnets | default([])
+          | selectattr('name', 'equalto', netris_evpn_transit_ipam_subnet_name)
+          | list | first | default(none))
+      }}
+
+- name: Require a Netris transit IPAM subnet
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_ipam_subnet is not none
+      - netris_evpn_transit_ipam_subnet.prefix | default('') | length > 0
+    fail_msg: >-
+      Netris transit V-Net '{{ netris_evpn_transit_vnet_name }}' exists, but
+      IPAM subnet '{{ netris_evpn_transit_ipam_subnet_name }}' was not found.
+      The CUDN and Netris must use the same transit CIDR.
+
+- name: Read Netris transit IPAM hosts
+  ansible.builtin.include_role:
+    name: netris.controller.ipam
+    tasks_from: read_hosts
+  vars:
+    ipam_subnet_id: "{{ netris_evpn_transit_ipam_subnet.id }}"
+
+- name: Initialize fabric-owned transit address ranges
+  ansible.builtin.set_fact:
+    netris_evpn_transit_reserved_ranges: "{{ netris_evpn_transit_reserved_subnets | default([]) }}"
+
+- name: Add each Netris transit gateway and DHCP range
+  ansible.builtin.set_fact:
+    netris_evpn_transit_reserved_ranges: >-
+      {{
+        netris_evpn_transit_reserved_ranges
+        + ([{
+          'start': item.prefix | ansible.utils.ipaddr('address'),
+          'end': item.prefix | ansible.utils.ipaddr('address')
+        }] if item.prefix | default('') | length > 0 else [])
+        + ([{
+          'start': item.dhcp.start,
+          'end': item.dhcp.end
+        }] if item.dhcp is defined and item.dhcp is not none
+          and item.dhcp.start | default('') | length > 0
+          and item.dhcp.end | default('') | length > 0 else [])
+      }}
+  loop: "{{ netris_vnet_detail.gateways | default([]) }}"
+  loop_control:
+    label: "{{ item.prefix | default('gateway') }}"
+
+- name: Add statically allocated Netris transit hosts
+  ansible.builtin.set_fact:
+    netris_evpn_transit_reserved_ranges: >-
+      {{
+        netris_evpn_transit_reserved_ranges + [{
+          'start': netris_evpn_transit_host_address | ansible.utils.ipaddr('address'),
+          'end': netris_evpn_transit_host_address | ansible.utils.ipaddr('address')
+        }]
+      }}
+  vars:
+    netris_evpn_transit_host_address: >-
+      {{ item.address | default(item.ip_address, true) | default(item.ip, true) }}
+  loop: "{{ netris_ipam_hosts | default([]) }}"
+  when: netris_evpn_transit_host_address | length > 0
+
+- name: Summarize fabric-owned transit ranges for CUDN IPAM
+  ansible.builtin.set_fact:
+    netris_evpn_transit_reserved_subnets: >-
+      {{ netris_evpn_transit_reserved_ranges | osac.templates.summarize_ip_ranges }}
+
+- name: Validate the published transit data
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_ipam_subnet.prefix | ansible.utils.ipaddr('network') | length > 0
+      - netris_evpn_transit_vni | int > 0
+      - netris_evpn_transit_vni | int < 16777216
+      - netris_evpn_transit_reserved_subnets | length <= 4
+    fail_msg: >-
+      The shared Netris transit network cannot be represented safely by the
+      installed CUDN API. CIDR={{ netris_evpn_transit_ipam_subnet.prefix }},
+      vxlanID={{ netris_evpn_transit_vni }},
+      reservedSubnets={{ netris_evpn_transit_reserved_subnets }}. The CUDN API
+      permits at most four reserved CIDRs; adjust the Netris-owned DHCP/static
+      ranges rather than allowing OVN IPAM to allocate over them.
+
+- name: Include get remote cluster kubeconfig
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: get_remote_cluster_kubeconfig
+
+- name: Publish shared EVPN transit attachment data for the k8s manager
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ netris_evpn_transit_configmap_name }}"
+        namespace: "{{ virtual_network.metadata.namespace }}"
+        labels:
+          osac.openshift.io/managed-by: osac-fulfillment
+          osac.openshift.io/network-fabric-data: "true"
+          osac.openshift.io/network-fabric-kind: evpn-transit
+      data:
+        cidr: "{{ netris_evpn_transit_ipam_subnet.prefix }}"
+        mac_vrf_vni: "{{ netris_evpn_transit_vni }}"
+        vtep: "{{ netris_evpn_transit_vtep_name }}"
+        reserved_subnets: "{{ netris_evpn_transit_reserved_subnets | to_json }}"
+        source: netris

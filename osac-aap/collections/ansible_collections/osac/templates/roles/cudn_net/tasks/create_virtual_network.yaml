@@ -26,6 +26,8 @@
     vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
     vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
     vn_uuid: "{{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] }}"
+    vn_fabric_manager_configured: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/fabric-manager-configured'] | default('false') | lower }}
 
 - name: Display VirtualNetwork information
   ansible.builtin.debug:
@@ -36,6 +38,7 @@
       - "Networking type: {{ vn_networking_type }}"
       - "Region: {{ vn_region }}"
       - "Tenant ID: {{ vn_tenant_id }}"
+      - "Fabric manager configured: {{ vn_fabric_manager_configured }}"
       - "IPv4 CIDR: {{ vn_ipv4_cidr | default('not configured') }}"
       - "IPv6 CIDR: {{ vn_ipv6_cidr | default('not configured') }}"
       - ""
@@ -60,6 +63,12 @@
               {'osac.openshift.io/tenant': vn_tenant_id} if vn_tenant_id else {}
             ) | combine(
               {'secondary-vn.osac.openshift.io/' ~ vn_uuid: 'true'}
+            ) | combine(
+              {'osac.openshift.io/evpn-transit': 'true'}
+              if vn_fabric_manager_configured == 'true' else {}
+            ) | combine(
+              {'k8s.ovn.org/primary-user-defined-network': ''}
+              if vn_fabric_manager_configured == 'true' else {}
             )
           }}
 
@@ -74,6 +83,10 @@
             name: "{{ vn_name }}"
             labels: "{{ router_pod_namespace_labels }}"
       register: router_pod_namespace_result
+
+    - name: Provision the shared EVPN transit interface
+      ansible.builtin.include_tasks: ensure_evpn_transit.yaml
+      when: vn_fabric_manager_configured == 'true'
 
     - name: Create router pod ServiceAccount
       kubernetes.core.k8s:
@@ -139,6 +152,13 @@
                 labels:
                   osac.openshift.io/router-pod: "true"
                   osac.openshift.io/virtual-network: "{{ vn_name }}"
+                annotations: >-
+                  {{
+                    {
+                      'k8s.ovn.org/primary-udn-ipamclaim': cudn_net_evpn_transit_ipam_claim_name
+                    }
+                    if router_pod_transit_enabled | default(false) | bool else {}
+                  }}
               spec:
                 serviceAccountName: "{{ router_pod_service_account_name }}"
                 # net.ipv4.ip_forward must be set here, not by the agent: /proc/sys
@@ -195,3 +215,13 @@
         msg:
           - "Namespace '{{ vn_name }}' created/updated: {{ router_pod_namespace_result.changed | default(false) }}"
           - "Router pod Deployment '{{ router_pod_name }}' created/updated: {{ router_pod_deployment_result.changed | default(false) }}"
+
+    - name: Patch OVN port security for the EVPN transit interface
+      ansible.builtin.include_tasks: patch_router_pod_port_security.yaml
+      vars:
+        subnet_vn_name: "{{ vn_name }}"
+        router_pod_networks:
+          - "{{ router_pod_transit_attachment }}"
+      when:
+        - router_pod_transit_enabled | default(false) | bool
+        - cudn_net_evpn_transit_patch_port_security | bool

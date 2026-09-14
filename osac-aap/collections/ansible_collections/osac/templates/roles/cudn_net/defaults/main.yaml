@@ -7,6 +7,20 @@ default_subnet_labels:
 default_layer2_role: Primary
 default_ipam_lifecycle: Persistent
 
+# Shared EVPN transit network. The fabric manager publishes the values below in
+# a ConfigMap before the k8s-manager job consumes them. One CUDN is shared by
+# all fabric-backed Secondary VirtualNetworks; using one CUDN is required because
+# OVN-Kubernetes requires an EVPN VNI to be unique across the cluster.
+cudn_net_evpn_transit_cudn_name: osac-evpn-transit
+cudn_net_evpn_transit_configmap_name: osac-evpn-transit
+cudn_net_evpn_transit_configmap_wait_retries: 60
+cudn_net_evpn_transit_configmap_wait_delay_seconds: 2
+cudn_net_evpn_transit_wait_ready: true
+cudn_net_evpn_transit_ready_retries: 60
+cudn_net_evpn_transit_ready_delay_seconds: 2
+cudn_net_evpn_transit_patch_port_security: true
+cudn_net_evpn_transit_ipam_claim_name: transit
+
 # Router pod defaults for Secondary VirtualNetworks.
 router_pod_name: router
 router_pod_image: ghcr.io/osac-project/osac-router-agent:latest

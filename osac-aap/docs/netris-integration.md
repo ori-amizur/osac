@@ -73,6 +73,27 @@ which orchestrates the following steps — each overridable via
 Steps 3 and 4 are where the network class takes effect — they delegate to the
 `netris.steps` collection when `network_class: netris` is set.
 
+### EVPN transit for fabric-backed Secondary VirtualNetworks
+
+When a Secondary VirtualNetwork is dispatched to the Netris fabric manager,
+the role can publish the provider-owned EVPN transit attachment for the k8s
+manager. Configure the shared Netris V-Net and its IPAM subnet in the AAP
+environment:
+
+| Variable | Meaning |
+| --- | --- |
+| `NETRIS_EVPN_TRANSIT_VNET_NAME` | Existing provider-owned Netris V-Net; its allocated `vxlanID` is used as the MAC-VRF VNI. |
+| `NETRIS_EVPN_TRANSIT_IPAM_SUBNET_NAME` | Netris IPAM subnet containing the transit CIDR; defaults to the V-Net name. |
+| `OSAC_EVPN_VTEP_NAME` | Existing cluster VTEP name; defaults to `tenant-vtep`. |
+| `NETRIS_EVPN_TRANSIT_RESERVED_SUBNETS` | Optional JSON array of additional CIDRs/ranges reserved by the fabric. |
+
+The role reads the V-Net gateways, DHCP ranges, and allocated IPAM hosts,
+collapses them into CUDN `reservedSubnets`, and publishes the CIDR, VNI, VTEP,
+and reserved ranges in the `osac-evpn-transit` ConfigMap. The k8s manager then
+creates the shared Primary EVPN CUDN and a per-VirtualNetwork persistent
+`IPAMClaim`. The Netris IPAM subnet and CUDN therefore use the same CIDR; no
+single Netris gateway is assumed.
+
 ### Cluster Create Flow
 
 ```

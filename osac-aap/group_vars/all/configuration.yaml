@@ -39,6 +39,16 @@ netris_site_id: "{{ lookup('env', 'NETRIS_SITE_ID') | default(0, true) | int }}"
 netris_tenant_id: "{{ lookup('env', 'NETRIS_TENANT_ID') | default(0, true) | int }}"
 netris_tenant_name: "{{ lookup('env', 'NETRIS_TENANT_NAME') }}"
 
+# Shared EVPN transit network used by fabric-backed Secondary VirtualNetworks.
+# The V-Net/VNI and IPAM ranges remain Netris-owned; the fabric role publishes
+# the discovered values to the k8s manager. These are deployment settings, not
+# tenant-provided VirtualNetwork fields.
+netris_evpn_transit_vnet_name: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_VNET_NAME') | default('', true) }}"
+netris_evpn_transit_ipam_subnet_name: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_IPAM_SUBNET_NAME') | default(netris_evpn_transit_vnet_name, true) }}"
+netris_evpn_transit_vtep_name: "{{ lookup('env', 'OSAC_EVPN_VTEP_NAME') | default('tenant-vtep', true) }}"
+netris_evpn_transit_reserved_subnets: >-
+  {{ lookup('env', 'NETRIS_EVPN_TRANSIT_RESERVED_SUBNETS') | default('[]', true) | from_json }}
+
 # Management VPC
 netris_mgmt_vpc_id: "{{ lookup('env', 'NETRIS_MGMT_VPC_ID') | default(0, true) | int }}"
 netris_mgmt_vpc_name: "{{ lookup('env', 'NETRIS_MGMT_VPC_NAME') }}"

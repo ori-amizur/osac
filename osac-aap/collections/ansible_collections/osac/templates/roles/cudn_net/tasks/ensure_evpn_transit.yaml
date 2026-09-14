@@ -1,0 +1,143 @@
+---
+# Ensure the cluster-wide EVPN transit CUDN and this VirtualNetwork's
+# persistent transit IPAMClaim exist. The fabric manager publishes the source
+# of truth in a ConfigMap; the k8s manager never invents a CIDR or VNI.
+
+- name: Read the fabric-published EVPN transit attachment
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ vn_namespace }}"
+    name: "{{ cudn_net_evpn_transit_configmap_name }}"
+  register: evpn_transit_configmap_info
+  until:
+    - evpn_transit_configmap_info.resources | length == 1
+    - evpn_transit_configmap_info.resources[0].data.cidr | default('') | length > 0
+    - evpn_transit_configmap_info.resources[0].data.mac_vrf_vni | default('') | length > 0
+    - evpn_transit_configmap_info.resources[0].data.vtep | default('') | length > 0
+  retries: "{{ cudn_net_evpn_transit_configmap_wait_retries }}"
+  delay: "{{ cudn_net_evpn_transit_configmap_wait_delay_seconds }}"
+  when: cudn_net_evpn_transit_data is not defined
+
+- name: Select the fabric-published EVPN transit attachment
+  ansible.builtin.set_fact:
+    evpn_transit_data: >-
+      {{
+        cudn_net_evpn_transit_data
+        if cudn_net_evpn_transit_data is defined
+        else evpn_transit_configmap_info.resources[0].data
+      }}
+
+- name: Decode EVPN transit CUDN values
+  ansible.builtin.set_fact:
+    evpn_transit_cidr: "{{ evpn_transit_data.cidr }}"
+    evpn_transit_mac_vrf_vni: "{{ evpn_transit_data.mac_vrf_vni | int }}"
+    evpn_transit_vtep: "{{ evpn_transit_data.vtep }}"
+    evpn_transit_reserved_subnets: >-
+      {{
+        evpn_transit_data.reserved_subnets
+        if evpn_transit_data.reserved_subnets is sequence and evpn_transit_data.reserved_subnets is not string
+        else (evpn_transit_data.reserved_subnets | from_json)
+      }}
+
+- name: Validate the EVPN transit attachment contract
+  ansible.builtin.assert:
+    that:
+      - evpn_transit_cidr | ansible.utils.ipaddr('network') | length > 0
+      - evpn_transit_mac_vrf_vni | int > 0
+      - evpn_transit_mac_vrf_vni | int < 16777216
+      - evpn_transit_vtep | length > 0
+      - evpn_transit_reserved_subnets is sequence
+      - evpn_transit_reserved_subnets | length <= 4
+    fail_msg: >-
+      The fabric EVPN transit attachment is invalid. Expected an IPv4 CIDR,
+      a VXLAN MAC-VRF VNI, a VTEP name, and at most four reserved CIDRs;
+      received {{ evpn_transit_data }}.
+
+- name: Create the shared EVPN transit CUDN
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: present
+    definition:
+      apiVersion: k8s.ovn.org/v1
+      kind: ClusterUserDefinedNetwork
+      metadata:
+        name: "{{ cudn_net_evpn_transit_cudn_name }}"
+        labels: "{{ default_subnet_labels | combine({'osac.openshift.io/evpn-transit': 'true'}) }}"
+      spec:
+        namespaceSelector:
+          matchLabels:
+            osac.openshift.io/evpn-transit: "true"
+        network:
+          topology: Layer2
+          transport: EVPN
+          layer2:
+            role: Primary
+            ipam:
+              lifecycle: "{{ default_ipam_lifecycle }}"
+            subnets:
+              - "{{ evpn_transit_cidr }}"
+            reservedSubnets: "{{ evpn_transit_reserved_subnets }}"
+          evpn:
+            vtep: "{{ evpn_transit_vtep }}"
+            macVRF:
+              vni: "{{ evpn_transit_mac_vrf_vni | int }}"
+  register: evpn_transit_cudn_result
+
+- name: Wait for the EVPN transit CUDN to become ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.ovn.org/v1
+    kind: ClusterUserDefinedNetwork
+    name: "{{ cudn_net_evpn_transit_cudn_name }}"
+  register: evpn_transit_cudn_info
+  until:
+    - evpn_transit_cudn_info.resources | length == 1
+    - >-
+      evpn_transit_cudn_info.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'NetworkCreated')
+      | selectattr('status', 'equalto', 'True') | list | length > 0
+    - >-
+      evpn_transit_cudn_info.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'NetworkAllocationSucceeded')
+      | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: "{{ cudn_net_evpn_transit_ready_retries }}"
+  delay: "{{ cudn_net_evpn_transit_ready_delay_seconds }}"
+  when: cudn_net_evpn_transit_wait_ready | bool
+
+- name: Create the persistent transit IPAMClaim
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: present
+    definition:
+      apiVersion: k8s.cni.cncf.io/v1alpha1
+      kind: IPAMClaim
+      metadata:
+        name: "{{ cudn_net_evpn_transit_ipam_claim_name }}"
+        namespace: "{{ vn_name }}"
+        labels: "{{ default_subnet_labels }}"
+        annotations:
+          osac.openshift.io/tenant: "{{ vn_tenant_id }}"
+          osac.openshift.io/owner-reference: "{{ vn_uuid }}"
+      spec:
+        network: "{{ cudn_net_evpn_transit_cudn_name }}"
+        interface: transit
+
+- name: Record the transit attachment for the router Deployment
+  ansible.builtin.set_fact:
+    router_pod_transit_enabled: true
+    router_pod_transit_attachment:
+      name: "{{ cudn_net_evpn_transit_cudn_name }}"
+      interface: transit
+      ipam-claim-reference: "{{ cudn_net_evpn_transit_ipam_claim_name }}"
+
+- name: Display EVPN transit provisioning result
+  ansible.builtin.debug:
+    msg:
+      - "Shared EVPN transit CUDN: {{ cudn_net_evpn_transit_cudn_name }}"
+      - "Transit CIDR: {{ evpn_transit_cidr }}"
+      - "Transit MAC-VRF VNI: {{ evpn_transit_mac_vrf_vni }}"
+      - "Transit VTEP: {{ evpn_transit_vtep }}"
+      - "Reserved fabric ranges: {{ evpn_transit_reserved_subnets }}"
+      - "Persistent IPAMClaim: {{ cudn_net_evpn_transit_ipam_claim_name }}"

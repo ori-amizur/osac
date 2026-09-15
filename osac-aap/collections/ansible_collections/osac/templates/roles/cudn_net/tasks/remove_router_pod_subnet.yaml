@@ -99,14 +99,100 @@
     router_pod_config_routes: []
   when: router_pod_deployment_info.resources | length > 0
 
-- name: Detach the subnet, falling back to router Pod recreation on timeout
-  ansible.builtin.include_tasks: patch_router_pod_networks.yaml
-  vars:
-    router_pod_attachment_action: detach
-    router_pod_live_attach_network_name: "{{ subnet_name }}"
+- name: Issue a normal delete on the ClusterUserDefinedNetwork before checking references
+  # Safe to do first, unconditionally: a blocked delete (finalizer present) causes no
+  # disruption to an already-stable interface -- confirmed directly against a real
+  # cluster this session. This also mirrors ordinary Kubernetes finalizer semantics: the
+  # CUDN correctly shows Terminating from here on if it turns out something else still
+  # needs it (see check_subnet_still_referenced.yaml below).
+  when: router_pod_deployment_info.resources | length > 0
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    api_version: k8s.ovn.org/v1
+    kind: ClusterUserDefinedNetwork
+    name: "{{ subnet_name }}"
+    wait: false
+  failed_when: false
+
+- name: Check whether the subnet is still referenced before attempting a live detach
+  ansible.builtin.include_tasks: check_subnet_still_referenced.yaml
   when: router_pod_deployment_info.resources | length > 0
 
+- name: Detach the subnet and reclaim its network resources
+  when:
+    - router_pod_deployment_info.resources | length > 0
+    - not (subnet_still_referenced | default(false))
+  block:
+    - name: Perform the direct CNI DEL for the subnet's interface
+      ansible.builtin.include_tasks: live_detach_cni_del.yaml
+
+    - name: Patch the router Pod's Multus networks annotation to drop the subnet
+      ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
+      vars:
+        router_pod_attachment_action: detach
+        router_pod_live_attach_network_name: "{{ subnet_name }}"
+
+    - name: Patch the router Pod's network-status to drop the subnet
+      ansible.builtin.include_tasks: patch_router_pod_network_status_removal.yaml
+
+    - name: Mark the router Pod operation as live
+      ansible.builtin.set_fact:
+        router_pod_attachment_mode: live
+
+    - name: Record the successful live detach on the router Pod
+      ansible.builtin.include_tasks: mark_router_pod_attachment_mode.yaml
+      vars:
+        router_pod_status_name: "{{ live_detach_router_pod_name }}"
+        router_pod_live_attach_network_name: "{{ subnet_name }}"
+  rescue:
+    - name: Report live detach failure
+      ansible.builtin.debug:
+        msg: >-
+          Live detach of '{{ subnet_name }}' from the router Pod failed; falling back to
+          Deployment-driven recreation.
+
+    - name: Recreate the router Pod with the complete desired attachment set
+      ansible.builtin.include_tasks: recreate_router_pod_networks.yaml
+      vars:
+        router_pod_live_attach_network_name: "{{ subnet_name }}"
+  always:
+    - name: Re-check whether the subnet is still referenced before reclaiming it
+      ansible.builtin.include_tasks: check_subnet_still_referenced.yaml
+      when: router_pod_deployment_info.resources | length > 0
+
+    - name: Force-clear the CUDN and NAD finalizers now that the detach is confirmed
+      when:
+        - router_pod_deployment_info.resources | length > 0
+        - not (subnet_still_referenced | default(false))
+      block:
+        - name: Force-clear the ClusterUserDefinedNetwork finalizer
+          kubernetes.core.k8s_json_patch:
+            kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+            api_version: k8s.ovn.org/v1
+            kind: ClusterUserDefinedNetwork
+            name: "{{ subnet_name }}"
+            patch:
+              - op: replace
+                path: /metadata/finalizers
+                value: []
+          failed_when: false
+
+        - name: Force-clear the NetworkAttachmentDefinition finalizer
+          kubernetes.core.k8s_json_patch:
+            kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+            api_version: k8s.cni.cncf.io/v1
+            kind: NetworkAttachmentDefinition
+            namespace: "{{ subnet_vn_name }}"
+            name: "{{ subnet_name }}"
+            patch:
+              - op: replace
+                path: /metadata/finalizers
+                value: []
+          failed_when: false
+
 - name: Release the subnet's persistent gateway address
+  when: not (subnet_still_referenced | default(false))
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: absent
@@ -117,4 +203,6 @@
 
 - name: Patch OVN port security for the remaining subnet attachments
   ansible.builtin.include_tasks: patch_router_pod_port_security.yaml
-  when: (router_pod_networks | default([])) | length > 0
+  when:
+    - (router_pod_networks | default([])) | length > 0
+    - not (subnet_still_referenced | default(false))

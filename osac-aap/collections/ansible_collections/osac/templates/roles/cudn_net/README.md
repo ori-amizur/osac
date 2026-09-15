@@ -43,16 +43,20 @@ Subnets subdivide VirtualNetworks into logical segments with isolated namespaces
 
 Secondary Subnet add/remove operations use a per-VirtualNetwork Lease as a mutex
 while they read and update the aggregate router Pod network annotation and
-router-agent ConfigMap. The live path patches the running Pod and waits for the
-requested interface change in `k8s.v1.cni.cncf.io/network-status`. The initial
-timeout is 60 seconds, configured by
+router-agent ConfigMap. Attach's live path patches the running Pod and waits
+for the requested interface change in `k8s.v1.cni.cncf.io/network-status`. The
+initial timeout is 60 seconds, configured by
 `cudn_net_router_live_attach_timeout_seconds`; each operation has its own
-deadline.
+deadline. Detach's live path instead confirms success directly from the
+interface-removal call itself (see below) and patches `network-status` without
+waiting, since there is nothing to wait for once the interface is already
+confirmed gone.
 
-If the live patch fails or the expected network-status change is not observed
-before the deadline, the role patches the Deployment template with the complete
-desired attachment list and waits for the replacement Pod. This is the Epic 1
-recreation fallback.
+If the live attach patch fails, the expected network-status change is not
+observed before the deadline, or the live detach's direct CNI DEL fails, the
+role patches the Deployment template with the complete desired attachment list
+and waits for the replacement Pod. This is the Epic 1 recreation fallback,
+shared by both directions.
 
 **Attach ordering (create_cudn_for_live_attach.yaml):** the subnet's CUDN is
 created *after* the router Pod's annotation already announces it, not before.
@@ -65,13 +69,33 @@ port without a restart. `multus-dynamic-networks-controller`'s first attempt
 races ahead of the NetworkAttachmentDefinition's existence and fails
 harmlessly with "not found"; a deliberate second annotation change (the
 "poke", after the NAD is confirmed present) is what makes it retry
-successfully. This ordering is attach-only -- removal keeps CUDN deletion
-after detaching (see below), because OVN-Kubernetes has no equivalent
-mechanism to reliably detach a live interface from an already-running Pod
-without recreating it.
+successfully.
 
-Removal uses the same live-first/fallback sequence and detaches before
-deleting the IPAMClaim and CUDN.
+**Detach (remove_router_pod_subnet.yaml, live_detach_cni_del.yaml,
+check_subnet_still_referenced.yaml):** removing a subnet from the running Pod's
+own `k8s.v1.cni.cncf.io/networks` annotation cannot trigger OVN-Kubernetes's own
+CNI DEL handling -- it resolves which NAD a DEL belongs to by re-reading that
+same annotation, which by construction has already lost the entry being
+removed. Instead, the role calls Multus's own `/delegate` socket directly, from
+a short-lived, node-scoped helper Pod, with the DEL request built from the
+NAD's own config *before* the running Pod's annotation is touched. This closes
+the ordering gap and detaches the interface without any Pod recreation in the
+common case, falling back to the same Deployment recreation as attach only if
+the direct DEL itself fails or times out.
+
+Because the CUDN delete only *blocks* on a live, still-referenced subnet (never
+disrupts an already-stable interface), the role issues a normal
+(non-forcing) CUDN delete *first*, before touching the router Pod at all, then
+resolves who else references it by reading the CUDN's own `namespaceSelector`
+live (it can match more than one namespace) and checking every pod found
+there against the subnet's NAD -- explicitly excluding the router Pod's own
+`k8s.ovn.org/pod-networks` entry, which never clears on a live Pod (no
+OVN-Kubernetes code path does it, and the `network-node-identity` admission
+webhook blocks anyone else from patching it directly). Only once nothing else
+references the subnet does the role perform the direct CNI DEL, patch the
+running Pod's own annotation and network-status to drop the entry, and
+force-clear the CUDN's and NAD's finalizers to let the delete started earlier
+complete.
 
 The current router Pod records the result in
 `osac.openshift.io/router-attachment-mode` (`live` or `recreated`) and the
@@ -104,7 +128,12 @@ This role implements the `cudn_net` NetworkClass strategy using OpenShift's Clus
 - `tasks/delete_subnet.yaml` - Removes namespace or detaches a Secondary Subnet
 - `tasks/reconcile_router_pod_subnet.yaml` - Mutex-protected aggregate router state update
 - `tasks/create_cudn_for_live_attach.yaml` - Attach-only: creates the Subnet's CUDN after announcing it to the router Pod, then retriggers the live attach
-- `tasks/patch_router_pod_networks.yaml` - Live mutation with recreation fallback
+- `tasks/patch_router_pod_networks.yaml` - Live mutation with recreation fallback (used directly by attach)
+- `tasks/remove_router_pod_subnet.yaml` - Detach-only: CUDN delete, reference check, live CNI DEL, and finalizer force-clear, all under the per-VirtualNetwork Lease
+- `tasks/live_detach_cni_del.yaml` - Direct CNI DEL against Multus's `/delegate` socket from an ephemeral, node-scoped helper Pod
+- `tasks/check_subnet_still_referenced.yaml` - Resolves the CUDN's live `namespaceSelector` to determine whether anything besides the router Pod still references the subnet
+- `tasks/patch_router_pod_network_status_removal.yaml` - Drops the subnet's entry from the router Pod's `network-status` annotation after a successful direct CNI DEL
+- `tasks/recreate_router_pod_networks.yaml` - Shared recreation fallback for both attach and detach
 - `tasks/create_security_group.yaml` - Delegates to `osac.templates.network_policy` (`create_security_group`)
 - `tasks/delete_security_group.yaml` - Delegates to `osac.templates.network_policy` (`delete_security_group`)
 

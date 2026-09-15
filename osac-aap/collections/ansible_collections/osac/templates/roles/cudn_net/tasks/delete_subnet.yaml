@@ -4,10 +4,14 @@
 # For a Primary-type VirtualNetwork's Subnet (the default): deletes the CUDN first (must
 # be removed before namespace), then the Subnet's own dedicated Namespace.
 #
-# For a Secondary-type VirtualNetwork's Subnet: first detaches the subnet from the
-# running router Pod (or recreates it from the complete desired Deployment template if
-# live detachment times out), then deletes the persistent IPAMClaim and CUDN. There is
-# no per-subnet namespace to delete.
+# For a Secondary-type VirtualNetwork's Subnet: reconcile_router_pod_subnet.yaml (remove)
+# owns the entire sequence -- issuing the CUDN delete, the live detach itself (or
+# recreation fallback), and force-clearing the CUDN/NAD finalizers once confirmed safe --
+# all under the same per-VirtualNetwork Lease. See remove_router_pod_subnet.yaml and
+# check_subnet_still_referenced.yaml for why the CUDN delete must be issued before, not
+# after, the live detach, and why the finalizer force-clear must exclude the router Pod's
+# own permanently-stale k8s.ovn.org/pod-networks entry. There is no per-subnet namespace
+# to delete for Secondary subnets.
 #
 # Handles "not found" errors gracefully for both resources.
 
@@ -41,6 +45,11 @@
     router_pod_mutation_action: remove
 
 - name: Delete ClusterUserDefinedNetwork
+  # Secondary subnets: remove_router_pod_subnet.yaml (called above, under the per-
+  # VirtualNetwork Lease) already issued this delete before checking references, and
+  # force-clears the finalizer itself once confirmed safe. Issuing it again here would
+  # race that sequence outside the Lease that protects it.
+  when: subnet_networking_type != 'Secondary'
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: absent
@@ -55,6 +64,7 @@
     - "'NotFound' not in (cudn_delete_result.msg | default(''))"
 
 - name: Display CUDN deletion result
+  when: subnet_networking_type != 'Secondary'
   ansible.builtin.debug:
     msg:
       - "CUDN '{{ subnet_name }}' deletion completed"

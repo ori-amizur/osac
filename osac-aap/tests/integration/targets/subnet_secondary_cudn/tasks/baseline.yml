@@ -637,3 +637,59 @@
             wait: true
             wait_timeout: 60
           failed_when: false
+
+# ── Test 6: direct CNI DEL sandbox/netns extraction from crictl JSON (in isolation) ──
+# Validates the exact JSON-extraction expressions used in live_detach_cni_del.yaml's
+# "Extract the router Pod's sandbox ID" and "Set the sandbox network namespace path"
+# tasks, against real crictl output captured from a live OVN-Kubernetes/CRI-O cluster
+# (see tests/integration/fixtures/crictl-pods-fixture.json and
+# crictl-inspectp-fixture.json). Guards against the exact class of Jinja bug found and
+# fixed this session: `(dict).items` resolves to Python's dict.items method rather than
+# the JSON key "items", since dict.items is a real attribute -- this only surfaces at
+# runtime against a real cluster, not via ansible-lint or --syntax-check.
+- name: "Subnet Secondary CUDN - Test direct CNI DEL crictl JSON extraction"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    test_crictl_pods_json: "{{ lookup('file', '../../../fixtures/crictl-pods-fixture.json') | from_json }}"
+    test_crictl_inspectp_json: "{{ lookup('file', '../../../fixtures/crictl-inspectp-fixture.json') | from_json }}"
+    test_target_pod_uid: "c2bce4ed-62d7-49e1-b61f-9b30569b2588"
+
+  tasks:
+    - name: Extract the sandbox ID using the same expression as live_detach_cni_del.yaml
+      ansible.builtin.set_fact:
+        test_extracted_sandbox_id: >-
+          {{
+            (
+              test_crictl_pods_json['items']
+              | selectattr('metadata.uid', 'equalto', test_target_pod_uid)
+              | list
+            )[0].id
+          }}
+
+    - name: Assert the sandbox ID matches the fixture's known entry
+      ansible.builtin.assert:
+        that:
+          - test_extracted_sandbox_id == '0946cd3618f6e248445a2b71d5777d9e2691a4423801f840e3ad9c195431a75a'
+        fail_msg: "Sandbox ID extraction from crictl pods JSON did not match the expected fixture value"
+        success_msg: "crictl pods sandbox ID extraction: passed"
+
+    - name: Extract the network namespace path using the same expression as live_detach_cni_del.yaml
+      ansible.builtin.set_fact:
+        test_extracted_netns: >-
+          {{
+            (
+              test_crictl_inspectp_json.info.runtimeSpec.linux.namespaces
+              | selectattr('type', 'equalto', 'network')
+              | list
+            )[0].path
+          }}
+
+    - name: Assert the network namespace path matches the fixture's known entry
+      ansible.builtin.assert:
+        that:
+          - test_extracted_netns == '/var/run/netns/2f3db042-95c0-416c-873d-684a12f8b3d3'
+        fail_msg: "Network namespace path extraction from crictl inspectp JSON did not match the expected fixture value"
+        success_msg: "crictl inspectp netns extraction: passed"

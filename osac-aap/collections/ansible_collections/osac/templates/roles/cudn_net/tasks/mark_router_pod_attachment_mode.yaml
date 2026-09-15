@@ -3,6 +3,15 @@
 # separate from the Multus annotation: the dynamic network controller watches
 # only k8s.v1.cni.cncf.io/networks. The OSAC annotation lets operators and tests
 # distinguish a successful live operation from a recreation fallback.
+#
+# router_pod_live_attach_network_name defaults to subnet_name -- a caller that
+# is a sibling of (not nested within) whichever include first set it via
+# task-level vars cannot see it otherwise, since include vars only propagate
+# down a single include's own call chain, not across sibling tasks.
+
+- name: Set the attachment mode subnet name default
+  ansible.builtin.set_fact:
+    router_pod_live_attach_network_name: "{{ router_pod_live_attach_network_name | default(subnet_name) }}"
 
 - name: Mark the router Pod attachment mode
   kubernetes.core.k8s_json_patch:

@@ -1,0 +1,66 @@
+---
+# After a successful direct CNI DEL (live_detach_cni_del.yaml), the router Pod's
+# k8s.v1.cni.cncf.io/network-status annotation is never updated automatically --
+# nothing else runs the removal for us, since it was bypassed entirely. Unlike the
+# attach path (where verify_router_pod_networks.yaml can wait for
+# multus-dynamic-networks-controller to report success), there is nothing to wait for
+# here: the interface is already confirmed gone, so this patches network-status
+# directly instead of polling for something that will never change on its own.
+
+- name: Get the running router Pod for the network-status patch
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: network_status_removal_pod_info
+
+- name: Compute network-status with the subnet's entry removed
+  ansible.builtin.set_fact:
+    network_status_removal_value: >-
+      {{
+        (
+          (network_status_removal_pod_info.resources[0].metadata.annotations | default({}))
+            .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+        )
+        | rejectattr('name', 'equalto', subnet_vn_name ~ '/' ~ subnet_name)
+        | rejectattr('name', 'equalto', subnet_name)
+        | list
+        | to_json
+      }}
+
+- name: Patch the router Pod's network-status to drop the subnet
+  # kubernetes.core cannot write the status subresource in the pinned collection, so
+  # kubectl is used here -- same reasoning and merge-patch style as the IPAMClaim status
+  # patch in add_router_pod_subnet.yaml.
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - pod
+      - "{{ network_status_removal_pod_info.resources[0].metadata.name }}"
+      - -n
+      - "{{ subnet_vn_name }}"
+      - --type=merge
+      - --subresource=status
+      - -p
+      - >-
+        {{
+          {
+            'metadata': {
+              'annotations': {
+                'k8s.v1.cni.cncf.io/network-status': network_status_removal_value
+              }
+            }
+          } | to_json
+        }}
+  environment: >-
+    {{
+      {'KUBECONFIG': remote_cluster_kubeconfig}
+      if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
+      else {}
+    }}
+  changed_when: true

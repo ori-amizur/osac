@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "id": "0946cd3618f6e248445a2b71d5777d9e2691a4423801f840e3ad9c195431a75a",
+      "metadata": {
+        "name": "router-8658547567-kxvnv",
+        "uid": "c2bce4ed-62d7-49e1-b61f-9b30569b2588",
+        "namespace": "virtualnetwork-5cpl5",
+        "attempt": 0
+      },
+      "state": "SANDBOX_READY"
+    },
+    {
+      "id": "ee7fa882e41b2521a9e6336299d36feba7a6e7fd9ef534b5d4f55da69185a0b2",
+      "metadata": {
+        "name": "osac-live-detach-subnet-detfix4",
+        "uid": "42a4a2ae-f450-44bb-9b45-2fe1b8187c55",
+        "namespace": "openshift-ovn-kubernetes",
+        "attempt": 0
+      },
+      "state": "SANDBOX_READY"
+    }
+  ]
+}

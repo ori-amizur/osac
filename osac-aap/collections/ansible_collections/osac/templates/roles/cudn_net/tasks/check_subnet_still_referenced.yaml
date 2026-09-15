@@ -1,0 +1,101 @@
+---
+# Resolve who currently references this Subnet's CUDN, other than the router Pod's own
+# permanently-stale entry. Sets subnet_still_referenced (bool) and subnet_referencing_pods
+# (list of "namespace/name" strings, for logging) as facts consumed by the caller. Used
+# both before attempting the live detach at all, and again right before force-clearing the
+# CUDN/NAD finalizers, since state may have shifted between the two.
+#
+# Deliberately does not trust the CUDN's own "network in use by pods" status condition
+# message -- that is free-form text for human consumption, not a stable API, and it
+# cannot distinguish the router Pod's own permanently-stale k8s.ovn.org/pod-networks entry
+# (see live_detach_cni_del.yaml: nothing can ever clear it on a live Pod) from a genuine
+# other consumer. This reads the same underlying fact directly instead.
+#
+# The CUDN's namespaceSelector is resolved live, every time -- it can match more than one
+# namespace (OVN-Kubernetes's own CUDN controller tracks it as a set), and must never be
+# assumed to be exactly the one shared per-VirtualNetwork namespace this design otherwise
+# expects.
+
+- name: Get the current ClusterUserDefinedNetwork for the reference check
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.ovn.org/v1
+    kind: ClusterUserDefinedNetwork
+    name: "{{ subnet_name }}"
+  register: subnet_cudn_check_info
+
+- name: Get the current router Pod for the reference check
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: subnet_check_router_pod_info
+
+- name: Initialize the reference check result
+  ansible.builtin.set_fact:
+    subnet_referencing_pods: []
+    subnet_check_router_pod_name: >-
+      {{
+        subnet_check_router_pod_info.resources[0].metadata.name
+        if subnet_check_router_pod_info.resources | length > 0
+        else ''
+      }}
+
+- name: Resolve namespaces currently matching the CUDN's namespaceSelector
+  when: subnet_cudn_check_info.resources | length == 1
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Namespace
+    label_selectors:
+      - >-
+        {{
+          subnet_cudn_check_info.resources[0].spec.namespaceSelector.matchLabels
+          | dict2items | map('join', '=') | join(',')
+        }}
+  register: subnet_cudn_namespaces_info
+
+- name: List every pod in each namespace the CUDN currently selects
+  when: subnet_cudn_check_info.resources | length == 1
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ item.metadata.name }}"
+  register: subnet_cudn_namespace_pods_info
+  loop: "{{ subnet_cudn_namespaces_info.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Flatten every pod found across the CUDN's currently-selected namespaces
+  when: subnet_cudn_check_info.resources | length == 1
+  ansible.builtin.set_fact:
+    subnet_cudn_all_pods: >-
+      {{ subnet_cudn_namespace_pods_info.results | default([]) | map(attribute='resources') | flatten }}
+
+- name: Record any pod other than the router Pod still referencing this subnet's NAD
+  when:
+    - subnet_cudn_check_info.resources | length == 1
+    - item.metadata.name != subnet_check_router_pod_name
+    - >-
+      (item.metadata.namespace ~ '/' ~ subnet_name) in
+      ((item.metadata.annotations | default({})).get('k8s.ovn.org/pod-networks', '{}') | from_json)
+  ansible.builtin.set_fact:
+    subnet_referencing_pods: "{{ subnet_referencing_pods + [item.metadata.namespace ~ '/' ~ item.metadata.name] }}"
+  loop: "{{ subnet_cudn_all_pods | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+
+- name: Set the still-referenced fact
+  ansible.builtin.set_fact:
+    subnet_still_referenced: "{{ (subnet_referencing_pods | length) > 0 }}"
+
+- name: Display the reference check result
+  ansible.builtin.debug:
+    msg: >-
+      Subnet '{{ subnet_name }}' still referenced: {{ subnet_still_referenced }}
+      {{ ('by ' ~ (subnet_referencing_pods | join(', '))) if subnet_still_referenced else '' }}

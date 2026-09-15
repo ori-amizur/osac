@@ -2,9 +2,23 @@
 # Recreate the router Pod from the complete desired attachment set.
 #
 # This is the fallback for a live Multus mutation that was accepted by the API
-# but was not reflected in network-status before the per-operation deadline.
-# The Deployment template is changed only here, so successful live operations
-# remain restart-free while the fallback restores a durable desired state.
+# but was not reflected in network-status before the per-operation deadline, or
+# for an operation that failed before ever reaching the live Pod-annotation
+# patch (e.g. a failed direct CNI DEL during a live detach). The Deployment
+# template is changed only here, so successful live operations remain
+# restart-free while the fallback restores a durable desired state.
+#
+# A live-only mutation never touches the Deployment template -- so a subnet
+# that was purely live-attached, then live-detached, computes a desired
+# router_pod_networks that already equals the template's existing (untouched)
+# value. Patching in that case is a no-op: metadata.generation never bumps,
+# and the current running Pod (which may still carry a stale, partially-live-
+# mutated annotation of its own) is never replaced by the Deployment
+# controller on its own. Recreation must therefore not rely on a generation
+# bump to detect a new rollout -- it explicitly deletes the current running
+# Pod after the template patch to guarantee a genuinely fresh one, verified
+# below by requiring a different Pod UID rather than a template generation
+# change.
 
 - name: Get the router Pod Deployment before fallback recreation
   kubernetes.core.k8s_info:
@@ -23,10 +37,33 @@
       Cannot fall back to router Pod recreation: Deployment
       {{ subnet_vn_name }}/{{ router_pod_name }} was not found.
 
+- name: Get the current router Pod before fallback recreation
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: router_pod_fallback_current_pod_info
+
+- name: Set the pre-recreation router Pod identity
+  # Preserve an already-set router_pod_live_attach_uid (attach's own live patch
+  # attempt may have captured it before falling back here); otherwise this is
+  # the first identity captured for this operation.
+  ansible.builtin.set_fact:
+    router_pod_live_attach_uid: >-
+      {{
+        router_pod_live_attach_uid | default(
+          router_pod_fallback_current_pod_info.resources[0].metadata.uid
+          if router_pod_fallback_current_pod_info.resources | length > 0
+          else ''
+        )
+      }}
+
 - name: Read the Deployment template annotations
   ansible.builtin.set_fact:
-    router_pod_fallback_previous_generation: >-
-      {{ router_pod_fallback_deployment_info.resources[0].metadata.generation | default(0) | int }}
     router_pod_fallback_template_annotations: >-
       {{
         router_pod_fallback_deployment_info.resources[0].spec.template.metadata.annotations
@@ -60,6 +97,22 @@
         path: /spec/template/metadata/annotations/k8s.v1.cni.cncf.io~1networks
         value: "{{ router_pod_networks | to_json }}"
 
+- name: Delete the current router Pod to force a fresh recreation
+  # Unconditional: even when the template patch above did trigger a natural
+  # rollout, deleting the pre-existing Pod ourselves is harmless (the
+  # Deployment would replace it anyway) and is the only reliable way to
+  # guarantee replacement when the patch was a no-op.
+  when: router_pod_fallback_current_pod_info.resources | length > 0
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_fallback_current_pod_info.resources[0].metadata.name }}"
+    wait: true
+    wait_timeout: 60
+
 - name: Wait for the fallback router Pod rollout
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -70,9 +123,6 @@
   register: router_pod_fallback_rollout_info
   until:
     - router_pod_fallback_rollout_info.resources | length == 1
-    - >-
-      (router_pod_fallback_rollout_info.resources[0].status.observedGeneration | default(0)) >=
-      (router_pod_fallback_previous_generation + 1)
     - >-
       (router_pod_fallback_rollout_info.resources[0].status.updatedReplicas | default(0)) ==
       (router_pod_fallback_rollout_info.resources[0].spec.replicas | default(1))

@@ -1,0 +1,79 @@
+# Grants osac-sa (see osac-sa.yaml) the minimum permissions the cudn_net role's
+# live_detach_cni_del.yaml task needs: creating, waiting on, exec'ing into, and deleting a
+# short-lived privileged helper Pod on the router Pod's own node, used to reach Multus's
+# "/delegate" socket and the CRI socket directly for a live Secondary Subnet detach. There
+# is no existing pod on the cluster with both sockets mounted (checked directly), so a
+# dedicated ephemeral Pod is created for exactly this operation and deleted immediately
+# after, success or failure.
+#
+# This grant is currently redundant: osac-sa already has cluster-admin via the
+# ClusterRoleBinding in osac-sa.yaml, which already includes everything below. It is added
+# explicitly anyway so this specific capability is documented and minimally scoped on its
+# own terms, and keeps working unchanged the day osac-sa's cluster-admin binding is
+# narrowed (a separate, out-of-scope follow-up). Same rationale as
+# osac-sa-ovn-port-security.yaml.
+#
+# Multi-cluster (remote VMaaS cluster) deployments: this is NOT redundant there, exactly as
+# for osac-sa-ovn-port-security.yaml. The equivalent Role/RoleBindings must be applied to
+# the remote cluster, scoped to whichever ServiceAccount backs the deployer-supplied
+# remote-cluster kubeconfig -- that kubeconfig has no OSAC-defined RBAC, so without this
+# the live detach step fails outright there (falling back to Deployment recreation
+# instead, which needs no elevated permissions of its own).
+#
+# The namespace below must match cudn_net_live_detach_helper_namespace's default
+# (ovn_kubernetes_namespace, "openshift-ovn-kubernetes") -- update both together if either
+# default ever changes.
+#
+# Creating a Pod with securityContext.privileged: true additionally requires SCC
+# admission, not just RBAC verbs on pods -- the second RoleBinding below grants osac-sa
+# "use" access to the built-in privileged SCC via OpenShift's own
+# system:openshift:scc:privileged ClusterRole, scoped to this one namespace only (the same
+# mechanism `oc adm policy add-scc-to-user privileged -z osac-sa -n openshift-ovn-kubernetes`
+# would set up).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: osac-live-detach-helper
+  namespace: openshift-ovn-kubernetes
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    # watch is required alongside get/list: kubectl and kubernetes.core.k8s's
+    # own wait:true/state:absent completion polling use a server-side watch,
+    # not repeated list calls -- confirmed empirically against a scoped,
+    # non-cluster-admin ServiceAccount bound to only this Role (get/list/
+    # create/delete alone left the delete's wait-for-completion polling
+    # throwing "cannot watch resource" errors on every retry, even though the
+    # delete itself still succeeded).
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: osac-sa-live-detach-helper
+  namespace: openshift-ovn-kubernetes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: osac-live-detach-helper
+subjects:
+  - kind: ServiceAccount
+    name: osac-sa
+    namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: osac-sa-live-detach-helper-scc
+  namespace: openshift-ovn-kubernetes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+  - kind: ServiceAccount
+    name: osac-sa
+    namespace: default

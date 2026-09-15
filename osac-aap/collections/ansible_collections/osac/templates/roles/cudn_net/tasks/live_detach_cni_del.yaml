@@ -1,0 +1,337 @@
+---
+# Detach one Secondary Subnet's interface from the router Pod by calling Multus's own
+# "/delegate" socket directly, instead of relying on multus-dynamic-networks-controller's
+# annotation-diff mechanism.
+#
+# Why this exists: OVN-Kubernetes's CNI DEL handler (GetCNINADKey, go-controller/pkg/cni/
+# utils.go) resolves which NAD a DEL request belongs to by re-parsing the Pod's *current*
+# k8s.v1.cni.cncf.io/networks annotation. Removing the subnet from that annotation is what
+# would normally trigger the DEL -- so by the time it runs, the annotation has already lost
+# the very entry the lookup needs, and it fails deterministically every time, regardless of
+# timeout. Calling DEL ourselves, before the annotation is touched, sidesteps this entirely:
+# confirmed working, repeatedly, against a real router Pod.
+#
+# This must run before the Pod's own k8s.v1.cni.cncf.io/networks and network-status
+# annotations are patched (that happens in the caller, right after this file returns) -- the
+# request built below needs the entry to still be present on the Pod object for the
+# underlying CNI plugin to resolve correctly, matching the exact ordering validated
+# manually this session.
+#
+# Reaching Multus's socket and a CRI socket requires a privileged, node-scoped helper: no
+# existing pod on the cluster (ovnkube-node's own containers included -- checked directly)
+# has both mounted. A short-lived Pod is created on the router Pod's own node for exactly
+# this operation and deleted immediately after, success or failure.
+#
+# crictl itself is not bundled in generic debug/support-tools images (confirmed against
+# cudn_net_live_detach_helper_image directly this session) but is always present on the
+# node at /usr/bin/crictl (RHCOS ships it for kubelet/CRI-O troubleshooting) -- so it is
+# hostPath-mounted straight into the helper Pod instead of depending on the chosen image
+# to provide it.
+
+- name: Get the running router Pod for the live detach
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ subnet_vn_name }}"
+  register: live_detach_router_pod_info
+
+- name: Require exactly one running router Pod for the live detach
+  ansible.builtin.assert:
+    that:
+      - live_detach_router_pod_info.resources | length == 1
+    fail_msg: >-
+      Expected exactly one router Pod in {{ subnet_vn_name }} to perform the live detach
+      of '{{ subnet_name }}' (found {{ live_detach_router_pod_info.resources | length }}).
+
+- name: Set router Pod facts for the live detach
+  ansible.builtin.set_fact:
+    live_detach_router_pod_name: "{{ live_detach_router_pod_info.resources[0].metadata.name }}"
+    live_detach_router_pod_uid: "{{ live_detach_router_pod_info.resources[0].metadata.uid }}"
+    live_detach_router_pod_node: "{{ live_detach_router_pod_info.resources[0].spec.nodeName }}"
+
+- name: Get the subnet's NetworkAttachmentDefinition config for the live detach
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.cni.cncf.io/v1
+    kind: NetworkAttachmentDefinition
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ subnet_name }}"
+  register: live_detach_nad_info
+
+- name: Skip the direct CNI DEL if the NetworkAttachmentDefinition is already gone
+  ansible.builtin.set_fact:
+    live_detach_nad_present: "{{ live_detach_nad_info.resources | length == 1 }}"
+
+- name: Build the environment for kubectl exec against the target cluster
+  ansible.builtin.set_fact:
+    live_detach_exec_environment: >-
+      {{
+        {'KUBECONFIG': remote_cluster_kubeconfig}
+        if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
+        else {}
+      }}
+
+- name: Perform the direct CNI DEL
+  when: live_detach_nad_present | bool
+  block:
+    - name: Delete any leftover live-detach helper Pod from a previous attempt
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+        name: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+        wait: true
+        wait_timeout: 60
+
+    - name: Create the live-detach helper Pod on the router Pod's node
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+            namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+            labels: "{{ default_subnet_labels }}"
+          spec:
+            nodeName: "{{ live_detach_router_pod_node }}"
+            restartPolicy: Never
+            # Bounds how long this Pod can run if the caller (e.g. the AAP job
+            # itself) is killed before reaching the always: cleanup below --
+            # the kubelet enforces this deadline independently of Ansible ever
+            # running again. Matches the container's own sleep duration: this
+            # is a backstop, not the normal exit path.
+            activeDeadlineSeconds: 600
+            tolerations:
+              - operator: Exists
+            containers:
+              - name: helper
+                image: "{{ cudn_net_live_detach_helper_image }}"
+                command: ["sleep", "600"]
+                securityContext:
+                  privileged: true
+                volumeMounts:
+                  - name: multus-socket
+                    mountPath: /run/multus/socket
+                  - name: cri-socket
+                    mountPath: /var/run/crio
+                  - name: crictl-bin
+                    mountPath: /usr/local/bin/crictl
+            volumes:
+              - name: multus-socket
+                hostPath:
+                  path: /run/multus/socket
+              - name: cri-socket
+                hostPath:
+                  path: /var/run/crio
+              - name: crictl-bin
+                hostPath:
+                  path: /usr/bin/crictl
+                  type: File
+
+    - name: Wait for the live-detach helper Pod to be running
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: v1
+        kind: Pod
+        namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+        name: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+      register: live_detach_helper_pod_info
+      until:
+        - live_detach_helper_pod_info.resources | length == 1
+        - live_detach_helper_pod_info.resources[0].status.phase | default('') == 'Running'
+      retries: "{{ (cudn_net_live_detach_helper_wait_timeout_seconds / cudn_net_live_detach_helper_wait_poll_interval_seconds) | round(0, 'ceil') | int }}"
+      delay: "{{ cudn_net_live_detach_helper_wait_poll_interval_seconds }}"
+
+    - name: Resolve the router Pod's sandbox via crictl
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ cudn_net_live_detach_helper_namespace }}"
+          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+          - --
+          - /usr/local/bin/crictl
+          - --runtime-endpoint=unix:///var/run/crio/crio.sock
+          - pods
+          - -o
+          - json
+      environment: "{{ live_detach_exec_environment }}"
+      register: live_detach_crictl_pods_result
+      changed_when: false
+
+    - name: Extract the router Pod's sandbox ID
+      ansible.builtin.set_fact:
+        live_detach_sandbox_id: >-
+          {{
+            (
+              (live_detach_crictl_pods_result.stdout | from_json)['items']
+              | selectattr('metadata.uid', 'equalto', live_detach_router_pod_uid)
+              | list
+            )[0].id
+          }}
+
+    - name: Inspect the sandbox to find its network namespace
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ cudn_net_live_detach_helper_namespace }}"
+          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+          - --
+          - /usr/local/bin/crictl
+          - --runtime-endpoint=unix:///var/run/crio/crio.sock
+          - inspectp
+          - -o
+          - json
+          - "{{ live_detach_sandbox_id }}"
+      environment: "{{ live_detach_exec_environment }}"
+      register: live_detach_crictl_inspectp_result
+      changed_when: false
+
+    - name: Set the sandbox network namespace path
+      # crictl inspectp does not expose the sandbox's PID -- the network namespace
+      # path CRI-O itself created for it (a host-level bind mount under
+      # /var/run/netns) is read directly from the sandbox's own runtime spec
+      # instead. This path only needs to be resolvable by Multus's own daemon
+      # (which receives it as a plain string in the DEL request below and opens
+      # it itself), not by this helper Pod, so no extra mount is needed here.
+      ansible.builtin.set_fact:
+        live_detach_netns: >-
+          {{
+            (
+              (live_detach_crictl_inspectp_result.stdout | from_json).info.runtimeSpec.linux.namespaces
+              | selectattr('type', 'equalto', 'network')
+              | list
+            )[0].path
+          }}
+
+    - name: Build the direct CNI DEL request
+      ansible.builtin.set_fact:
+        live_detach_request: >-
+          {{
+            {
+              'env': {
+                'CNI_COMMAND': 'DEL',
+                'CNI_CONTAINERID': live_detach_sandbox_id,
+                'CNI_NETNS': live_detach_netns,
+                'CNI_IFNAME': subnet_name,
+                'CNI_ARGS': 'K8S_POD_NAMESPACE=' ~ subnet_vn_name ~ ';K8S_POD_NAME=' ~ live_detach_router_pod_name ~ ';K8S_POD_UID=' ~ live_detach_router_pod_uid,
+                'CNI_PATH': '/var/lib/cni/bin'
+              },
+              'config': live_detach_nad_info.resources[0].spec.config | b64encode
+            } | to_json
+          }}
+
+    - name: Write the direct CNI DEL request into the helper Pod
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -i
+          - -n
+          - "{{ cudn_net_live_detach_helper_namespace }}"
+          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+          - --
+          - sh
+          - -c
+          - "cat > /tmp/del-request.json"
+      environment: "{{ live_detach_exec_environment }}"
+      args:
+        stdin: "{{ live_detach_request }}"
+      changed_when: true
+
+    - name: Send the direct CNI DEL request to Multus
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ cudn_net_live_detach_helper_namespace }}"
+          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+          - --
+          - curl
+          - -s
+          - -X
+          - POST
+          - --unix-socket
+          - /run/multus/socket/multus.sock
+          - -H
+          - "Content-Type: application/json"
+          - -d
+          - "@/tmp/del-request.json"
+          - -w
+          - "\nHTTP_STATUS:%{http_code}\n"
+          - http://dummy/delegate
+      environment: "{{ live_detach_exec_environment }}"
+      register: live_detach_curl_result
+      changed_when: true
+
+    - name: Determine whether the direct CNI DEL succeeded via HTTP status
+      ansible.builtin.set_fact:
+        live_detach_del_http_success: "{{ 'HTTP_STATUS:200' in live_detach_curl_result.stdout }}"
+
+    - name: Determine whether the direct CNI DEL succeeded via the idempotency fallback
+      # Only consulted when the HTTP status itself was not a clean 200. A "not
+      # found" for the sandbox/netns/NAD means someone already removed it (a
+      # previous attempt succeeded before this job could record it, or a
+      # concurrent retry raced this one) -- CNI DEL is idempotent by
+      # convention, so this is also treated as success. This is a narrower,
+      # secondary signal precisely because it depends on Multus's current
+      # error-message wording rather than a structured status; reliance on it
+      # is logged explicitly below so a future Multus version that rephrases
+      # its error text doesn't silently change behavior unnoticed.
+      ansible.builtin.set_fact:
+        live_detach_del_idempotent_fallback: >-
+          {{
+            (not (live_detach_del_http_success | bool))
+            and (
+              ('no such file or directory' in live_detach_curl_result.stdout)
+              or ('not found' in live_detach_curl_result.stdout)
+            )
+          }}
+
+    - name: Report reliance on the idempotency fallback for the direct CNI DEL
+      when: live_detach_del_idempotent_fallback | bool
+      ansible.builtin.debug:
+        msg: >-
+          Direct CNI DEL for '{{ subnet_name }}' on router Pod
+          '{{ live_detach_router_pod_name }}' did not return HTTP 200, but its
+          response matched the "already gone" idempotency fallback text --
+          treating as success. If Multus's error phrasing has changed, this
+          fallback may need updating. Full response:
+          {{ live_detach_curl_result.stdout }}
+
+    - name: Determine overall direct CNI DEL success
+      ansible.builtin.set_fact:
+        live_detach_del_succeeded: >-
+          {{ (live_detach_del_http_success | bool) or (live_detach_del_idempotent_fallback | bool) }}
+
+    - name: Fail if the direct CNI DEL did not succeed
+      ansible.builtin.assert:
+        that:
+          - live_detach_del_succeeded | bool
+        fail_msg: >-
+          Direct CNI DEL for '{{ subnet_name }}' on router Pod
+          '{{ live_detach_router_pod_name }}' did not succeed:
+          {{ live_detach_curl_result.stdout }}
+  always:
+    - name: Delete the live-detach helper Pod
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+        name: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+        wait: true
+        wait_timeout: 60

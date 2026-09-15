@@ -1,0 +1,28 @@
+{
+  "info": {
+    "runtimeSpec": {
+      "linux": {
+        "namespaces": [
+          {
+            "type": "pid"
+          },
+          {
+            "path": "/var/run/netns/2f3db042-95c0-416c-873d-684a12f8b3d3",
+            "type": "network"
+          },
+          {
+            "path": "/var/run/ipcns/2f3db042-95c0-416c-873d-684a12f8b3d3",
+            "type": "ipc"
+          },
+          {
+            "path": "/var/run/utsns/2f3db042-95c0-416c-873d-684a12f8b3d3",
+            "type": "uts"
+          },
+          {
+            "type": "mount"
+          }
+        ]
+      }
+    }
+  }
+}

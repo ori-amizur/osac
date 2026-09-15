@@ -44,7 +44,15 @@
 
     - name: Set lease facts
       ansible.builtin.set_fact:
-        _vnet_lock_resource_version: "{{ _vnet_lock_read.resources[0].metadata.resourceVersion }}"
+        # | string is required: Jinja2 native mode (this repo's default) returns the
+        # native Python type for a template that is a single bare variable reference, and
+        # resourceVersion's value looks like a plain integer -- sending it as a JSON number
+        # instead of a string in the CAS update below is rejected by the API server with
+        # "cannot unmarshal number into Go struct field ObjectMeta.metadata.resourceVersion
+        # of type string" (confirmed against a real cluster: this path was never actually
+        # exercised before the include_role calls that reach it were fixed to pass
+        # tasks_from, so this native-mode coercion bug was never previously triggered).
+        _vnet_lock_resource_version: "{{ _vnet_lock_read.resources[0].metadata.resourceVersion | string }}"
         _vnet_lock_holder_current: "{{ _vnet_lock_read.resources[0].spec.holderIdentity | default('', true) }}"
         _vnet_lock_renew_time: "{{ _vnet_lock_read.resources[0].spec.renewTime | default('', true) }}"
         _vnet_lock_duration: "{{ _vnet_lock_read.resources[0].spec.leaseDurationSeconds | default(120) }}"

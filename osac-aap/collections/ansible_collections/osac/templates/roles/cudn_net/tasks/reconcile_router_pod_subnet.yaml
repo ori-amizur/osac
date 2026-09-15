@@ -14,6 +14,7 @@
 - name: Acquire the per-VirtualNetwork router mutation lock
   ansible.builtin.include_role:
     name: osac.service.vnet_lock
+    tasks_from: acquire
   vars:
     vnet_lock_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
     vnet_lock_namespace: "{{ subnet_vn_name }}"
@@ -43,6 +44,7 @@
     - name: Release the per-VirtualNetwork router mutation lock
       ansible.builtin.include_role:
         name: osac.service.vnet_lock
+        tasks_from: release
       vars:
         vnet_lock_name: "osac-router-{{ (subnet_vn_name | hash('sha1'))[:32] }}"
         vnet_lock_namespace: "{{ subnet_vn_name }}"

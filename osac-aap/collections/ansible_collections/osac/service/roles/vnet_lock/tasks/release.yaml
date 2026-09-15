@@ -30,7 +30,13 @@
               metadata:
                 name: "{{ vnet_lock_name }}"
                 namespace: "{{ vnet_lock_namespace }}"
-                resourceVersion: "{{ _vnet_lock_release_read.resources[0].metadata.resourceVersion }}"
+                # | string is required: see acquire.yaml's "Set lease facts" comment --
+                # sending resourceVersion as a native Jinja number is rejected by the API
+                # server. This release-path copy of the same bug was masked by
+                # ignore_errors: true below (a real 422 here was silently swallowed and
+                # logged only as an informational "Release conflict" debug message,
+                # leaving the Lease permanently held until its 600s duration expired).
+                resourceVersion: "{{ _vnet_lock_release_read.resources[0].metadata.resourceVersion | string }}"
               spec:
                 holderIdentity: null
                 leaseDurationSeconds: "{{ _vnet_lock_release_read.resources[0].spec.leaseDurationSeconds | default(120) | int }}"

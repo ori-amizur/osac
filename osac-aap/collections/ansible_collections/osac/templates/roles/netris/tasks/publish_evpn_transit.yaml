@@ -1,172 +1,590 @@
 ---
-# Publish the Netris-owned shared transit V-Net to the k8s manager. This is a
-# small manager-neutral contract: the k8s side consumes the CIDR, allocated
-# MAC-VRF VNI, VTEP name, and the address ranges Netris owns.
+# Reconcile one OSAC-owned EVPN transit network for this VirtualNetwork.
+#
+# The VirtualNetwork's ordinary Netris VPC is the dedicated VRF boundary. The
+# transit V-Net, IPAM subnet, and ConfigMap all use deterministic names derived
+# from the VN UUID, so retries adopt only the matching VN-scoped resources and
+# can never accidentally adopt the old shared transit network.
 
-- name: Require shared EVPN transit configuration
-  ansible.builtin.assert:
-    that:
-      - netris_evpn_transit_vnet_name | length > 0
-      - netris_evpn_transit_ipam_subnet_name | length > 0
-    fail_msg: >-
-      Secondary VirtualNetwork '{{ vn_name }}' uses a fabric manager, but the
-      shared Netris EVPN transit V-Net is not configured. Set
-      NETRIS_EVPN_TRANSIT_VNET_NAME (and, when needed,
-      NETRIS_EVPN_TRANSIT_IPAM_SUBNET_NAME) in the AAP environment.
-
-- name: Read the shared Netris transit V-Net
-  ansible.builtin.include_role:
-    name: netris.controller.vnet
-    tasks_from: read
-  vars:
-    vnet_name: "{{ netris_evpn_transit_vnet_name }}"
-
-- name: Require the shared Netris transit V-Net to exist
-  ansible.builtin.assert:
-    that:
-      - netris_vnet is defined
-      - netris_vnet is not none
-      - netris_vnet.id | int > 0
-    fail_msg: >-
-      Shared Netris transit V-Net '{{ netris_evpn_transit_vnet_name }}' was not
-      found. Create the provider-owned transit V-Net before creating Secondary
-      VirtualNetworks.
-
-- name: Wait for the shared transit V-Net to become active
-  ansible.builtin.include_role:
-    name: netris.controller.vnet
-    tasks_from: wait_active
-  vars:
-    vnet_id: "{{ netris_vnet.id }}"
-
-- name: Read detailed transit V-Net gateway data
-  ansible.builtin.include_role:
-    name: netris.controller.vnet
-    tasks_from: read_by_id
-  vars:
-    vnet_id: "{{ netris_vnet.id }}"
-
-- name: Resolve the allocated transit MAC-VRF VNI
-  ansible.builtin.set_fact:
-    netris_evpn_transit_vni: >-
-      {{
-        netris_vnet_detail.vxlanID
-        | default(netris_vnet.vxlanID, true)
-        | int
-      }}
-
-- name: Read Netris IPAM subnets
-  ansible.builtin.include_role:
-    name: netris.controller.ipam
-    tasks_from: read_subnets
-
-- name: Select the shared transit IPAM subnet
-  ansible.builtin.set_fact:
-    netris_evpn_transit_ipam_subnet: >-
-      {{
-        (netris_ipam_subnets | default([])
-          | selectattr('name', 'equalto', netris_evpn_transit_ipam_subnet_name)
-          | list | first | default(none))
-      }}
-
-- name: Require a Netris transit IPAM subnet
-  ansible.builtin.assert:
-    that:
-      - netris_evpn_transit_ipam_subnet is not none
-      - netris_evpn_transit_ipam_subnet.prefix | default('') | length > 0
-    fail_msg: >-
-      Netris transit V-Net '{{ netris_evpn_transit_vnet_name }}' exists, but
-      IPAM subnet '{{ netris_evpn_transit_ipam_subnet_name }}' was not found.
-      The CUDN and Netris must use the same transit CIDR.
-
-- name: Read Netris transit IPAM hosts
-  ansible.builtin.include_role:
-    name: netris.controller.ipam
-    tasks_from: read_hosts
-  vars:
-    ipam_subnet_id: "{{ netris_evpn_transit_ipam_subnet.id }}"
-
-- name: Initialize fabric-owned transit address ranges
-  ansible.builtin.set_fact:
-    netris_evpn_transit_reserved_ranges: "{{ netris_evpn_transit_reserved_subnets | default([]) }}"
-
-- name: Add each Netris transit gateway and DHCP range
-  ansible.builtin.set_fact:
-    netris_evpn_transit_reserved_ranges: >-
-      {{
-        netris_evpn_transit_reserved_ranges
-        + ([{
-          'start': item.prefix | ansible.utils.ipaddr('address'),
-          'end': item.prefix | ansible.utils.ipaddr('address')
-        }] if item.prefix | default('') | length > 0 else [])
-        + ([{
-          'start': item.dhcp.start,
-          'end': item.dhcp.end
-        }] if item.dhcp is defined and item.dhcp is not none
-          and item.dhcp.start | default('') | length > 0
-          and item.dhcp.end | default('') | length > 0 else [])
-      }}
-  loop: "{{ netris_vnet_detail.gateways | default([]) }}"
-  loop_control:
-    label: "{{ item.prefix | default('gateway') }}"
-
-- name: Add statically allocated Netris transit hosts
-  ansible.builtin.set_fact:
-    netris_evpn_transit_reserved_ranges: >-
-      {{
-        netris_evpn_transit_reserved_ranges + [{
-          'start': netris_evpn_transit_host_address | ansible.utils.ipaddr('address'),
-          'end': netris_evpn_transit_host_address | ansible.utils.ipaddr('address')
-        }]
-      }}
-  vars:
-    netris_evpn_transit_host_address: >-
-      {{ item.address | default(item.ip_address, true) | default(item.ip, true) }}
-  loop: "{{ netris_ipam_hosts | default([]) }}"
-  when: netris_evpn_transit_host_address | length > 0
-
-- name: Summarize fabric-owned transit ranges for CUDN IPAM
-  ansible.builtin.set_fact:
-    netris_evpn_transit_reserved_subnets: >-
-      {{ netris_evpn_transit_reserved_ranges | osac.templates.summarize_ip_ranges }}
-
-- name: Validate the published transit data
-  ansible.builtin.assert:
-    that:
-      - netris_evpn_transit_ipam_subnet.prefix | ansible.utils.ipaddr('network') | length > 0
-      - netris_evpn_transit_vni | int > 0
-      - netris_evpn_transit_vni | int < 16777216
-      - netris_evpn_transit_reserved_subnets | length <= 4
-    fail_msg: >-
-      The shared Netris transit network cannot be represented safely by the
-      installed CUDN API. CIDR={{ netris_evpn_transit_ipam_subnet.prefix }},
-      vxlanID={{ netris_evpn_transit_vni }},
-      reservedSubnets={{ netris_evpn_transit_reserved_subnets }}. The CUDN API
-      permits at most four reserved CIDRs; adjust the Netris-owned DHCP/static
-      ranges rather than allowing OVN IPAM to allocate over them.
-
-- name: Include get remote cluster kubeconfig
+- name: Include remote cluster kubeconfig for the transit Lease and ConfigMap
   ansible.builtin.include_role:
     name: osac.service.common
     tasks_from: get_remote_cluster_kubeconfig
 
-- name: Publish shared EVPN transit attachment data for the k8s manager
-  kubernetes.core.k8s:
-    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "{{ netris_evpn_transit_configmap_name }}"
-        namespace: "{{ virtual_network.metadata.namespace }}"
-        labels:
-          osac.openshift.io/managed-by: osac-fulfillment
-          osac.openshift.io/network-fabric-data: "true"
-          osac.openshift.io/network-fabric-kind: evpn-transit
-      data:
-        cidr: "{{ netris_evpn_transit_ipam_subnet.prefix }}"
-        mac_vrf_vni: "{{ netris_evpn_transit_vni }}"
-        vtep: "{{ netris_evpn_transit_vtep_name }}"
-        reserved_subnets: "{{ netris_evpn_transit_reserved_subnets | to_json }}"
-        source: netris
+- name: Derive deterministic VN-scoped transit resource names
+  ansible.builtin.set_fact:
+    netris_evpn_transit_suffix: "{{ (vn_uuid | hash('sha1'))[:12] }}"
+    netris_evpn_transit_vnet_name: "osac-transit-vnet-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    netris_evpn_transit_ipam_allocation_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-alloc"
+    netris_evpn_transit_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-netris"
+    netris_evpn_transit_osac_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-osac"
+    netris_evpn_transit_reserved_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-reserved"
+    netris_evpn_transit_legacy_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    netris_evpn_transit_configmap_name: "osac-transit-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    cudn_net_evpn_transit_cudn_name: "osac-transit-cudn-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    cudn_net_evpn_transit_ipam_claim_name: "osac-transit-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    netris_evpn_transit_namespace_selector_key: "secondary-vn.osac.openshift.io/{{ vn_uuid }}"
+    netris_evpn_transit_namespace_selector_value: "true"
+    netris_evpn_transit_lock_name: "osac-transit-{{ (vn_uuid | hash('sha1'))[:32] }}"
+    netris_evpn_transit_lock_holder: >-
+      {{ lookup('env', 'JOB_ID') | default('aap', true) }}-{{ lookup('pipe', 'uuidgen') }}
+
+- name: Select the provider-configured transit prefix
+  ansible.builtin.set_fact:
+    netris_evpn_transit_selected_prefix_mode: >-
+      {{ 'private' if netris_evpn_transit_prefix_mode == 'private' else 'link-local' }}
+    netris_evpn_transit_prefix: >-
+      {{ netris_evpn_transit_private_prefix
+         if netris_evpn_transit_prefix_mode == 'private'
+         else netris_evpn_transit_link_local_prefix }}
+
+- name: Validate the provider transit prefix policy
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_prefix_mode in ['auto', 'link-local', 'private']
+      - netris_evpn_transit_prefix | ansible.utils.ipaddr('network') | length > 0
+      - netris_evpn_transit_prefix | ansible.utils.ipaddr('version') == 4
+      - netris_evpn_transit_prefix | ansible.utils.ipaddr('prefix') | int == 24
+      - netris_evpn_transit_prefix | osac.templates.cidr_overlaps(vn_ipv4_cidr) == false
+      - netris_evpn_transit_prefix_mode != 'private' or netris_evpn_transit_private_prefix | length > 0
+    fail_msg: >-
+      Invalid provider transit prefix policy for VirtualNetwork '{{ vn_name }}'.
+      Selected={{ netris_evpn_transit_prefix }}, mode={{ netris_evpn_transit_prefix_mode }},
+      VirtualNetwork CIDR={{ vn_ipv4_cidr }}. The transit prefix must be an
+      IPv4 /24, must not overlap the VirtualNetwork CIDR, and private mode must
+      have NETRIS_EVPN_TRANSIT_PRIVATE_PREFIX configured.
+
+- name: Validate provider-reserved transit ranges
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_prefix | osac.templates.cidr_contains(item)
+    fail_msg: >-
+      Provider-reserved transit range '{{ item }}' is outside selected transit
+      prefix '{{ netris_evpn_transit_prefix }}'.
+  loop: "{{ netris_evpn_transit_reserved_subnets | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Derive the fixed disjoint transit address pools
+  ansible.builtin.set_fact:
+    netris_evpn_transit_netris_pool: >-
+      {{ netris_evpn_transit_prefix
+         | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, netris_evpn_transit_netris_pool_index) }}
+    netris_evpn_transit_osac_pool: >-
+      {{ netris_evpn_transit_prefix
+         | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, netris_evpn_transit_osac_pool_index) }}
+    netris_evpn_transit_unused_pools:
+      - "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 2) }}"
+      - "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 3) }}"
+
+- name: Validate the disjoint transit address pools
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_pool_prefix_length | int == 26
+      - netris_evpn_transit_netris_pool | ansible.utils.ipaddr('prefix') | int == 26
+      - netris_evpn_transit_osac_pool | ansible.utils.ipaddr('prefix') | int == 26
+      - netris_evpn_transit_prefix | osac.templates.cidr_contains(netris_evpn_transit_netris_pool)
+      - netris_evpn_transit_prefix | osac.templates.cidr_contains(netris_evpn_transit_osac_pool)
+      - netris_evpn_transit_netris_pool | osac.templates.cidr_overlaps(netris_evpn_transit_osac_pool) == false
+      - netris_evpn_transit_osac_pool | osac.templates.cidr_overlaps(item) == false
+      - netris_evpn_transit_prefix | osac.templates.cidr_contains(item)
+    fail_msg: >-
+      Invalid disjoint transit address pools for '{{ vn_name }}':
+      Netris={{ netris_evpn_transit_netris_pool }},
+      OSAC={{ netris_evpn_transit_osac_pool }},
+      unused={{ netris_evpn_transit_unused_pools }}.
+  loop: "{{ netris_evpn_transit_unused_pools }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Validate provider-reserved ranges do not consume the OSAC pool
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_osac_pool | osac.templates.cidr_overlaps(item) == false
+    fail_msg: >-
+      Provider-reserved transit range '{{ item }}' overlaps the OSAC pool
+      '{{ netris_evpn_transit_osac_pool }}'.
+  loop: "{{ netris_evpn_transit_reserved_subnets | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Require provider-configured Netris transit endpoints
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_port_endpoints | length > 0
+    fail_msg: >-
+      Netris/EVPN transit provisioning requires at least one provider-configured
+      endpoint in NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS. Each entry must identify
+      a registered Netris server and its connected data-plane interface.
+
+- name: Initialize the resolved Netris transit port list
+  ansible.builtin.set_fact:
+    netris_evpn_transit_ports: []
+
+- name: Resolve configured Netris transit endpoints to port IDs
+  ansible.builtin.include_tasks: resolve_transit_port_endpoint.yaml
+  loop: "{{ netris_evpn_transit_port_endpoints }}"
+  loop_control:
+    label: "{{ item.host_name | default('unknown') }}/{{ item.logical_interface_name | default('unknown') }}"
+
+- name: Validate resolved Netris transit endpoints are unique
+  ansible.builtin.assert:
+    that:
+      - netris_evpn_transit_ports | map(attribute='id') | map('int') | list | unique | length == netris_evpn_transit_ports | length
+    fail_msg: >-
+      NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS resolved to duplicate Netris port IDs:
+      {{ netris_evpn_transit_ports | map(attribute='id') | list }}.
+
+- name: Acquire the durable VN transit Lease
+  ansible.builtin.include_role:
+    name: osac.service.vnet_lock
+    tasks_from: acquire.yaml
+  vars:
+    vnet_lock_name: "{{ netris_evpn_transit_lock_name }}"
+    vnet_lock_namespace: "{{ vn_namespace }}"
+    vnet_lock_holder: "{{ netris_evpn_transit_lock_holder }}"
+    vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    vnet_lock_tenant: "{{ vn_tenant_id }}"
+    vnet_lock_owner_reference: "{{ vn_uuid }}"
+    vnet_lock_max_retries: "{{ netris_evpn_transit_lock_retries }}"
+    vnet_lock_retry_delay: "{{ netris_evpn_transit_lock_delay_seconds }}"
+    vnet_lock_duration_seconds: "{{ netris_evpn_transit_lock_duration_seconds }}"
+
+- name: Reconcile VN-scoped Netris transit resources
+  block:
+    - name: Read existing Netris IPAM subnets before changing the fabric
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: read_subnets
+
+    - name: Detect the legacy unsplit VN transit IPAM subnet
+      ansible.builtin.set_fact:
+        netris_evpn_transit_legacy_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_legacy_ipam_subnet_name)
+             | list | first | default(none) }}
+
+    - name: Refuse to overlap an existing unsplit VN transit subnet
+      ansible.builtin.assert:
+        that:
+          - netris_evpn_transit_legacy_ipam_subnet is none
+        fail_msg: >-
+          Legacy unsplit Netris transit IPAM subnet
+          '{{ netris_evpn_transit_legacy_ipam_subnet_name }}' already exists for
+          VirtualNetwork '{{ vn_name }}'. Remove or migrate that legacy /24
+          subnet before enabling the disjoint Netris/OSAC transit pools.
+
+    - name: Create or adopt the VN-scoped transit V-Net in the VN VPC/VRF
+      ansible.builtin.include_role:
+        name: netris.controller.vnet
+        tasks_from: create
+      vars:
+        vnet_name: "{{ netris_evpn_transit_vnet_name }}"
+        vnet_vpc_id: "{{ vpc_id }}"
+        vnet_site_id: "{{ vn_site_id }}"
+        vnet_tenant_id: "{{ netris_tenant_id }}"
+        vnet_vlan_id: auto
+        vnet_l3vpn: "{{ netris_evpn_transit_l3vpn }}"
+        vnet_vlan_aware: "{{ netris_evpn_transit_vlan_aware }}"
+        vnet_ports: "{{ netris_evpn_transit_ports }}"
+
+    - name: Read the detailed VN-scoped transit V-Net before reconciliation
+      ansible.builtin.include_role:
+        name: netris.controller.vnet
+        tasks_from: read_by_id
+
+    - name: Refuse to adopt a transit V-Net in another VPC/VRF
+      ansible.builtin.assert:
+        that:
+          - >-
+            (netris_vnet_detail.vpc.id | default(netris_vnet_detail.vpcId, true) | default(netris_vnet_detail.vpc, true) | string)
+            == (vpc_id | string)
+        fail_msg: >-
+          Netris transit V-Net '{{ netris_evpn_transit_vnet_name }}' exists but
+          belongs to VPC/VRF '{{ netris_vnet_detail.vpc.id |
+          default(netris_vnet_detail.vpcId, true) | default(netris_vnet_detail.vpc, true) }}', expected '{{ vpc_id }}'.
+          Refusing to adopt an unrelated resource.
+
+    - name: Refuse to modify unexpected ports on an adopted transit V-Net
+      ansible.builtin.assert:
+        that:
+          - >-
+            (netris_vnet_detail.ports | default([]) | map(attribute='id') | map('int') | list
+            | difference(netris_evpn_transit_ports | map(attribute='id') | map('int') | list) | length) == 0
+        fail_msg: >-
+          Netris transit V-Net '{{ netris_evpn_transit_vnet_name }}' contains
+          ports outside the provider-configured endpoint set. Refusing to
+          remove or take ownership of unexpected ports:
+          {{ netris_vnet_detail.ports | default([]) }}.
+      when: vnet_already_existed | default(false) | bool
+
+    - name: Determine whether the transit V-Net needs mode or port reconciliation
+      ansible.builtin.set_fact:
+        netris_evpn_transit_current_port_ids: >-
+          {{ netris_vnet_detail.ports | default([]) | map(attribute='id') | map('int') | list | sort }}
+        netris_evpn_transit_desired_port_ids: >-
+          {{ netris_evpn_transit_ports | map(attribute='id') | map('int') | list | sort }}
+        netris_evpn_transit_port_mode_mismatch: >-
+          {{ (netris_vnet_detail.ports | default([])
+              | selectattr('accessMode', 'defined')
+              | selectattr('accessMode', 'equalto', true) | list | length) > 0
+             or (netris_vnet_detail.ports | default([])
+                 | selectattr('accessMode', 'defined') | list | length
+                 != netris_vnet_detail.ports | default([]) | length) }}
+
+    - name: Reconcile the VN-scoped transit V-Net mode and endpoint ports
+      ansible.builtin.include_role:
+        name: netris.controller.vnet
+        tasks_from: update
+      vars:
+        vnet_id: "{{ netris_vnet_detail.id }}"
+        vnet_body: >-
+          {{ netris_vnet_detail | combine({
+            'l3vpn': netris_evpn_transit_l3vpn | bool,
+            'vlanAware': netris_evpn_transit_vlan_aware | bool,
+            'ports': netris_evpn_transit_ports
+          }) }}
+      when:
+        - netris_vnet_detail.l3vpn | default(false) | bool != netris_evpn_transit_l3vpn | bool
+          or netris_vnet_detail.vlanAware | default(false) | bool != netris_evpn_transit_vlan_aware | bool
+          or netris_evpn_transit_current_port_ids != netris_evpn_transit_desired_port_ids
+          or netris_evpn_transit_port_mode_mismatch | bool
+
+    - name: Wait for the VN-scoped transit V-Net to become active
+      ansible.builtin.include_role:
+        name: netris.controller.vnet
+        tasks_from: wait_active
+
+    - name: Read the detailed VN-scoped transit V-Net after reconciliation
+      ansible.builtin.include_role:
+        name: netris.controller.vnet
+        tasks_from: read_by_id
+
+    - name: Resolve the Netris-assigned transit MAC-VRF VNI
+      ansible.builtin.set_fact:
+        netris_evpn_transit_vni: >-
+          {{ netris_vnet_detail.vxlanID | default(netris_vnet.vxlanID, true) | int }}
+
+    - name: Validate the Netris-assigned transit VNI
+      ansible.builtin.assert:
+        that:
+          - netris_evpn_transit_vni | int > 0
+          - netris_evpn_transit_vni | int < 16777216
+        fail_msg: >-
+          Netris did not assign a valid MAC-VRF VNI to
+          '{{ netris_evpn_transit_vnet_name }}': {{ netris_evpn_transit_vni }}.
+
+    - name: Build the VN-scoped disjoint Netris IPAM split
+      ansible.builtin.set_fact:
+        netris_evpn_transit_ipam_subnet_specs:
+          - name: "{{ netris_evpn_transit_ipam_subnet_name }}"
+            prefix: "{{ netris_evpn_transit_netris_pool }}"
+            purpose: common
+          - name: "{{ netris_evpn_transit_osac_ipam_subnet_name }}"
+            prefix: "{{ netris_evpn_transit_osac_pool }}"
+            purpose: inactive
+          - name: "{{ netris_evpn_transit_reserved_ipam_subnet_name }}"
+            prefix: "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 2) }}"
+            purpose: inactive
+          - name: "{{ netris_evpn_transit_reserved_ipam_subnet_name }}-last"
+            prefix: "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 3) }}"
+            purpose: inactive
+
+    - name: Create or adopt the matching VN-scoped Netris IPAM allocation and pools
+      block:
+        - name: Create or adopt the selected-prefix IPAM allocation
+          ansible.builtin.include_role:
+            name: netris.controller.ipam
+            tasks_from: create_allocation
+          vars:
+            ipam_name: "{{ netris_evpn_transit_ipam_allocation_name }}"
+            ipam_cidr: "{{ netris_evpn_transit_prefix }}"
+            ipam_tenant_id: "{{ netris_tenant_id }}"
+            ipam_vpc_id: "{{ vpc_id }}"
+
+        - name: Create or adopt the selected-prefix IPAM subnets
+          ansible.builtin.include_role:
+            name: netris.controller.ipam
+            tasks_from: create_subnet
+          vars:
+            ipam_name: "{{ item.name }}"
+            ipam_cidr: "{{ item.prefix }}"
+            ipam_purpose: "{{ item.purpose }}"
+            ipam_site_id: "{{ vn_site_id }}"
+            ipam_tenant_id: "{{ netris_tenant_id }}"
+            ipam_vpc_id: "{{ vpc_id }}"
+          loop: "{{ netris_evpn_transit_ipam_subnet_specs }}"
+          loop_control:
+            label: "{{ item.name }} ({{ item.prefix }}, {{ item.purpose }})"
+      rescue:
+        - name: Require a private prefix for automatic link-local fallback
+          ansible.builtin.assert:
+            that:
+              - netris_evpn_transit_prefix_mode == 'auto'
+              - netris_evpn_transit_private_prefix | length > 0
+            fail_msg: >-
+              Netris rejected the preferred link-local transit prefix for
+              '{{ vn_name }}'. Configure NETRIS_EVPN_TRANSIT_PRIVATE_PREFIX
+              to enable automatic provider fallback, or set
+              NETRIS_EVPN_TRANSIT_PREFIX_MODE=private explicitly.
+
+        - name: Switch the VN transit contract to the private fallback prefix
+          ansible.builtin.set_fact:
+            netris_evpn_transit_selected_prefix_mode: private
+            netris_evpn_transit_prefix: "{{ netris_evpn_transit_private_prefix }}"
+
+        - name: Validate the private fallback transit prefix
+          ansible.builtin.assert:
+            that:
+              - netris_evpn_transit_prefix | ansible.utils.ipaddr('network') | length > 0
+              - netris_evpn_transit_prefix | ansible.utils.ipaddr('version') == 4
+              - netris_evpn_transit_prefix | ansible.utils.ipaddr('prefix') | int == 24
+              - netris_evpn_transit_prefix | osac.templates.cidr_overlaps(vn_ipv4_cidr) == false
+            fail_msg: >-
+              The configured private transit fallback '{{ netris_evpn_transit_prefix }}'
+              is not a non-overlapping IPv4 /24.
+
+        - name: Validate reserved ranges against the private fallback
+          ansible.builtin.assert:
+            that:
+              - netris_evpn_transit_prefix | osac.templates.cidr_contains(item)
+            fail_msg: >-
+              Provider-reserved transit range '{{ item }}' is outside private
+              fallback '{{ netris_evpn_transit_prefix }}'.
+          loop: "{{ netris_evpn_transit_reserved_subnets | default([]) }}"
+          loop_control:
+            label: "{{ item }}"
+
+        - name: Recalculate the disjoint pools for the private fallback
+          ansible.builtin.set_fact:
+            netris_evpn_transit_netris_pool: >-
+              {{ netris_evpn_transit_prefix
+                 | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, netris_evpn_transit_netris_pool_index) }}
+            netris_evpn_transit_osac_pool: >-
+              {{ netris_evpn_transit_prefix
+                 | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, netris_evpn_transit_osac_pool_index) }}
+            netris_evpn_transit_unused_pools:
+              - "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 2) }}"
+              - "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 3) }}"
+
+        - name: Rebuild the private fallback IPAM split
+          ansible.builtin.set_fact:
+            netris_evpn_transit_ipam_subnet_specs:
+              - name: "{{ netris_evpn_transit_ipam_subnet_name }}"
+                prefix: "{{ netris_evpn_transit_netris_pool }}"
+                purpose: common
+              - name: "{{ netris_evpn_transit_osac_ipam_subnet_name }}"
+                prefix: "{{ netris_evpn_transit_osac_pool }}"
+                purpose: inactive
+              - name: "{{ netris_evpn_transit_reserved_ipam_subnet_name }}"
+                prefix: "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 2) }}"
+                purpose: inactive
+              - name: "{{ netris_evpn_transit_reserved_ipam_subnet_name }}-last"
+                prefix: "{{ netris_evpn_transit_prefix | ansible.utils.ipsubnet(netris_evpn_transit_pool_prefix_length, 3) }}"
+                purpose: inactive
+
+        - name: Create or adopt the private fallback IPAM allocation
+          ansible.builtin.include_role:
+            name: netris.controller.ipam
+            tasks_from: create_allocation
+          vars:
+            ipam_name: "{{ netris_evpn_transit_ipam_allocation_name }}"
+            ipam_cidr: "{{ netris_evpn_transit_prefix }}"
+            ipam_tenant_id: "{{ netris_tenant_id }}"
+            ipam_vpc_id: "{{ vpc_id }}"
+
+        - name: Create or adopt the private fallback IPAM subnets
+          ansible.builtin.include_role:
+            name: netris.controller.ipam
+            tasks_from: create_subnet
+          vars:
+            ipam_name: "{{ item.name }}"
+            ipam_cidr: "{{ item.prefix }}"
+            ipam_purpose: "{{ item.purpose }}"
+            ipam_site_id: "{{ vn_site_id }}"
+            ipam_tenant_id: "{{ netris_tenant_id }}"
+            ipam_vpc_id: "{{ vpc_id }}"
+          loop: "{{ netris_evpn_transit_ipam_subnet_specs }}"
+          loop_control:
+            label: "{{ item.name }} ({{ item.prefix }}, {{ item.purpose }})"
+
+    - name: Read all Netris IPAM subnets for ownership validation
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: read_subnets
+
+    - name: Select the VN-scoped transit IPAM subnets
+      ansible.builtin.set_fact:
+        netris_evpn_transit_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_ipam_subnet_name)
+             | list | first | default(none) }}
+        netris_evpn_transit_osac_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_osac_ipam_subnet_name)
+             | list | first | default(none) }}
+        netris_evpn_transit_reserved_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_reserved_ipam_subnet_name)
+             | list | first | default(none) }}
+
+    - name: Validate every VN-scoped transit IPAM pool
+      ansible.builtin.assert:
+        that:
+          - _actual_transit_subnet is not none
+          - (_actual_transit_subnet.prefix | ansible.utils.ipaddr('network') | string) == (item.prefix | ansible.utils.ipaddr('network') | string)
+          - (_actual_transit_subnet.prefix | ansible.utils.ipaddr('prefix') | int) == (item.prefix | ansible.utils.ipaddr('prefix') | int)
+          - (_actual_transit_subnet.vpc.id | default(_actual_transit_subnet.vpcId, true) | default(_actual_transit_subnet.vpc, true) | string) == (vpc_id | string)
+        fail_msg: >-
+          Netris IPAM subnet '{{ item.name }}' is missing or does not match
+          prefix '{{ item.prefix }}' and VPC/VRF '{{ vpc_id }}'; refusing unsafe
+          adoption.
+      vars:
+        _actual_transit_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', item.name)
+             | list | first | default(none) }}
+      loop: "{{ netris_evpn_transit_ipam_subnet_specs }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.prefix }}, {{ item.purpose }})"
+
+    - name: Read the VN-scoped Netris-owned transit hosts
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: read_hosts
+      vars:
+        ipam_subnet_id: "{{ netris_evpn_transit_ipam_subnet.id }}"
+
+    - name: Validate Netris hosts remain inside the Netris-owned pool
+      ansible.builtin.assert:
+        that:
+          - netris_evpn_transit_netris_pool | osac.templates.cidr_contains(item.address | default(item.ip_address, true) | default(item.ip, true))
+        fail_msg: >-
+          Netris allocated transit host '{{ item.address | default(item.ip_address, true) | default(item.ip, true) }}'
+          outside the enforced Netris pool '{{ netris_evpn_transit_netris_pool }}'.
+      loop: "{{ netris_ipam_hosts | default([]) }}"
+      loop_control:
+        label: "{{ item.address | default(item.ip_address, true) | default(item.ip, true) }}"
+      when: (item.address | default(item.ip_address, true) | default(item.ip, true)) | length > 0
+
+    - name: Read the VN-scoped transit IPAM allocation
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: read_tree
+      vars:
+        # Netris' unfiltered IPAM tree can return a stale/partial top-level
+        # result after creating an allocation. Scope the read to this VN's
+        # dedicated VPC so the freshly created allocation is visible.
+        ipam_vpc_id: "{{ vpc_id }}"
+
+    - name: Select the VN-scoped transit IPAM allocation
+      ansible.builtin.set_fact:
+        netris_evpn_transit_ipam_allocation: >-
+          {{ netris_ipam_tree | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_ipam_allocation_name)
+             | list | first | default(none) }}
+
+    - name: Validate the VN-scoped transit IPAM allocation
+      ansible.builtin.assert:
+        that:
+          - netris_evpn_transit_ipam_allocation is not none
+          - (netris_evpn_transit_ipam_allocation.prefix | ansible.utils.ipaddr('network') | string) == (netris_evpn_transit_prefix | ansible.utils.ipaddr('network') | string)
+          - (netris_evpn_transit_ipam_allocation.vpc.id | default(netris_evpn_transit_ipam_allocation.vpcId, true) | default(netris_evpn_transit_ipam_allocation.vpc, true) | string) == (vpc_id | string)
+        fail_msg: >-
+          Netris IPAM allocation '{{ netris_evpn_transit_ipam_allocation_name }}'
+          is missing or does not match transit prefix '{{ netris_evpn_transit_prefix }}'
+          and VPC/VRF '{{ vpc_id }}'; refusing unsafe adoption.
+
+    - name: Initialize disjoint transit address reservations for CUDN IPAM
+      ansible.builtin.set_fact:
+        netris_evpn_transit_reserved_ranges: >-
+          {{ (netris_evpn_transit_reserved_subnets | default([]))
+             + [netris_evpn_transit_netris_pool]
+             + netris_evpn_transit_unused_pools }}
+
+    - name: Summarize fabric-owned transit address ranges for CUDN IPAM
+      ansible.builtin.set_fact:
+        netris_evpn_transit_reserved_subnets: >-
+          {{ netris_evpn_transit_reserved_ranges | osac.templates.summarize_ip_ranges }}
+
+    - name: Validate the published VN-scoped transit contract
+      ansible.builtin.assert:
+        that:
+          - netris_evpn_transit_reserved_subnets | length <= 4
+        fail_msg: >-
+          Transit resources for '{{ vn_name }}' cannot be represented safely by
+          CUDN reservedSubnets (at most four ranges):
+          {{ netris_evpn_transit_reserved_subnets }}.
+
+    - name: Publish the VN-scoped EVPN transit contract
+      kubernetes.core.k8s:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        state: present
+        definition: >-
+          {{
+            {
+              'apiVersion': 'v1',
+              'kind': 'ConfigMap',
+              'metadata': {
+                'name': netris_evpn_transit_configmap_name,
+                'namespace': virtual_network.metadata.namespace,
+                'labels': {
+                  'osac.openshift.io/managed-by': 'osac-fulfillment',
+                  'osac.openshift.io/network-fabric-data': 'true',
+                  'osac.openshift.io/network-fabric-kind': 'evpn-transit',
+                  'osac.openshift.io/virtualnetwork-uuid': vn_uuid
+                },
+                'annotations': {
+                  'osac.openshift.io/tenant': vn_tenant_id,
+                  'osac.openshift.io/owner-reference': vn_uuid
+                }
+              },
+              'data': {
+                'cidr': netris_evpn_transit_prefix | string,
+                'prefix_mode': netris_evpn_transit_selected_prefix_mode | string,
+                'mac_vrf_vni': netris_evpn_transit_vni | string,
+                'vtep': netris_evpn_transit_vtep_name | string,
+                'netris_pool': netris_evpn_transit_netris_pool | string,
+                'osac_pool': netris_evpn_transit_osac_pool | string,
+                'reserved_subnets': netris_evpn_transit_reserved_subnets | to_json,
+                'cudn_name': cudn_net_evpn_transit_cudn_name | string,
+                'ipam_claim_name': cudn_net_evpn_transit_ipam_claim_name | string,
+                'namespace_selector_key': netris_evpn_transit_namespace_selector_key | string,
+                'namespace_selector_value': netris_evpn_transit_namespace_selector_value | string,
+                'transit_vnet_name': netris_evpn_transit_vnet_name | string,
+                'transit_vnet_id': vnet_id | string,
+                'transit_ipam_allocation_name': netris_evpn_transit_ipam_allocation_name | string,
+                'transit_ipam_allocation_id': netris_evpn_transit_ipam_allocation.id | string,
+                'transit_ipam_subnet_name': netris_evpn_transit_ipam_subnet_name | string,
+                'transit_ipam_subnet_id': netris_evpn_transit_ipam_subnet.id | string,
+                'transit_osac_ipam_subnet_name': netris_evpn_transit_osac_ipam_subnet_name | string,
+                'transit_osac_ipam_subnet_id': netris_evpn_transit_osac_ipam_subnet.id | string,
+                'transit_reserved_ipam_subnet_name': netris_evpn_transit_reserved_ipam_subnet_name | string,
+                'transit_reserved_ipam_subnet_id': netris_evpn_transit_reserved_ipam_subnet.id | string,
+                'vpc_id': vpc_id | string,
+                'source': 'netris'
+              }
+            } | to_nice_yaml
+          }}
+
+    - name: Display VN-scoped EVPN transit provisioning result
+      ansible.builtin.debug:
+        msg:
+          - "Transit VPC/VRF: {{ vpc_id }}"
+          - "Transit V-Net: {{ netris_evpn_transit_vnet_name }} ({{ vnet_id }})"
+          - "Transit IPAM allocation: {{ netris_evpn_transit_ipam_allocation_name }}"
+          - "Netris IPAM pool: {{ netris_evpn_transit_netris_pool }}"
+          - "OSAC IPAM pool: {{ netris_evpn_transit_osac_pool }}"
+          - "Transit CUDN: {{ cudn_net_evpn_transit_cudn_name }}"
+          - "Transit CIDR: {{ netris_evpn_transit_prefix }}"
+          - "Transit MAC-VRF VNI: {{ netris_evpn_transit_vni }}"
+  always:
+    - name: Release the VN transit Lease
+      ansible.builtin.include_role:
+        name: osac.service.vnet_lock
+        tasks_from: release.yaml
+      vars:
+        vnet_lock_name: "{{ netris_evpn_transit_lock_name }}"
+        vnet_lock_namespace: "{{ vn_namespace }}"
+        vnet_lock_holder: "{{ netris_evpn_transit_lock_holder }}"
+        vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"

@@ -1,0 +1,65 @@
+---
+# Resolve one provider-configured server interface to its current Netris port
+# ID. The port ID is inventory state, not stable deployment configuration.
+# Netris V-Net attachments use the connected fabric switch port, not the
+# server-side inventory port. The server-side port is used only to resolve the
+# link from the configured host/interface to its leaf-side switch port.
+# Required loop item fields:
+#   host_name
+#   logical_interface_name
+# Appends a Netris V-Net port object to netris_evpn_transit_ports.
+
+- name: Validate the transit endpoint declaration
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.host_name | default('') | length > 0
+      - item.logical_interface_name | default('') | length > 0
+    fail_msg: >-
+      Each NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS entry must contain non-empty
+      host_name and logical_interface_name fields; received {{ item }}.
+
+- name: Find the transit endpoint server in Netris inventory
+  ansible.builtin.include_role:
+    name: netris.controller.inventory
+    tasks_from: read_servers
+  vars:
+    server_name: "{{ item.host_name }}"
+
+- name: Require the transit endpoint server to exist in Netris
+  ansible.builtin.assert:
+    that:
+      - netris_server is not none
+    fail_msg: >-
+      Netris transit endpoint server '{{ item.host_name }}' was not found.
+      Check NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS and Netris inventory.
+
+- name: Find the transit endpoint interface in Netris inventory
+  ansible.builtin.include_role:
+    name: netris.controller.inventory
+    tasks_from: read_server_ports
+  vars:
+    server_id: "{{ netris_server.id }}"
+    port_name: "{{ item.logical_interface_name }}"
+
+- name: Require the transit endpoint interface to exist and be connected
+  ansible.builtin.assert:
+    that:
+      - netris_server_port is not none
+      - netris_server_port.id | int > 0
+      - netris_server_port.connectedTo is defined
+      - netris_server_port.connectedTo is not none
+      - netris_server_port.connectedTo.portId | default(0) | int > 0
+    fail_msg: >-
+      Netris transit endpoint '{{ item.host_name }}/{{ item.logical_interface_name }}'
+      is missing, has no server/leaf port mapping, or is not connected to a
+      fabric switch.
+
+- name: Add the resolved leaf-side endpoint
+  ansible.builtin.set_fact:
+    netris_evpn_transit_ports: >-
+      {{ netris_evpn_transit_ports + [{
+        'id': netris_server_port.connectedTo.portId | int,
+        'state': 'active',
+        'accessMode': netris_evpn_transit_port_access_mode | bool
+      }] }}

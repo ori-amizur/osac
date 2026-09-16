@@ -11,7 +11,10 @@
 - name: Get IPAM tree
   ansible.builtin.uri:
     force: true
-    url: "{{ netris_controller_url }}/api/v2/ipam"
+    url: >-
+      {{ netris_controller_url }}/api/v2/ipam{{
+        ('?filterByVpc=' + (ipam_vpc_id | string)) if ipam_vpc_id is defined else ''
+      }}
     method: GET
     headers:
       Cookie: "connect.sid={{ netris_session_cookie }}"

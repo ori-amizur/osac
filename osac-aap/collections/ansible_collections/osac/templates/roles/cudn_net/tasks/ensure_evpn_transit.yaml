@@ -1,9 +1,14 @@
 ---
-# Ensure the cluster-wide EVPN transit CUDN and this VirtualNetwork's
-# persistent transit IPAMClaim exist. The fabric manager publishes the source
-# of truth in a ConfigMap; the k8s manager never invents a CIDR or VNI.
+# Ensure this VirtualNetwork's isolated EVPN transit CUDN and persistent
+# IPAMClaim exist. The fabric manager publishes the source of truth in a
+# VN-scoped ConfigMap; the k8s manager never invents a CIDR or VNI.
 
-- name: Read the fabric-published EVPN transit attachment
+- name: Derive the VN-scoped transit ConfigMap name
+  ansible.builtin.set_fact:
+    cudn_net_evpn_transit_configmap_name: "osac-transit-{{ (vn_uuid | hash('sha1'))[:12] }}"
+  when: cudn_net_evpn_transit_data is not defined
+
+- name: Read the VN-scoped fabric transit contract
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     api_version: v1
@@ -23,39 +28,70 @@
 - name: Select the fabric-published EVPN transit attachment
   ansible.builtin.set_fact:
     evpn_transit_data: >-
-      {{
-        cudn_net_evpn_transit_data
-        if cudn_net_evpn_transit_data is defined
-        else evpn_transit_configmap_info.resources[0].data
-      }}
+      {{ cudn_net_evpn_transit_data
+         if cudn_net_evpn_transit_data is defined
+         else evpn_transit_configmap_info.resources[0].data }}
 
-- name: Decode EVPN transit CUDN values
+- name: Decode the VN-scoped EVPN transit values
   ansible.builtin.set_fact:
     evpn_transit_cidr: "{{ evpn_transit_data.cidr }}"
+    evpn_transit_netris_pool: "{{ evpn_transit_data.netris_pool }}"
+    evpn_transit_osac_pool: "{{ evpn_transit_data.osac_pool }}"
     evpn_transit_mac_vrf_vni: "{{ evpn_transit_data.mac_vrf_vni | int }}"
     evpn_transit_vtep: "{{ evpn_transit_data.vtep }}"
     evpn_transit_reserved_subnets: >-
-      {{
-        evpn_transit_data.reserved_subnets
-        if evpn_transit_data.reserved_subnets is sequence and evpn_transit_data.reserved_subnets is not string
-        else (evpn_transit_data.reserved_subnets | from_json)
-      }}
+      {{ evpn_transit_data.reserved_subnets
+         if evpn_transit_data.reserved_subnets is sequence
+            and evpn_transit_data.reserved_subnets is not string
+         else (evpn_transit_data.reserved_subnets | default('[]') | from_json) }}
+    cudn_net_evpn_transit_cudn_name: >-
+      {{ evpn_transit_data.cudn_name | default(cudn_net_evpn_transit_cudn_name) }}
+    cudn_net_evpn_transit_ipam_claim_name: >-
+      {{ evpn_transit_data.ipam_claim_name | default(cudn_net_evpn_transit_ipam_claim_name) }}
+    evpn_transit_namespace_selector_key: >-
+      {{ evpn_transit_data.namespace_selector_key
+         | default('secondary-vn.osac.openshift.io/' ~ vn_uuid) }}
+    evpn_transit_namespace_selector_value: >-
+      {{ evpn_transit_data.namespace_selector_value | default('true') }}
 
-- name: Validate the EVPN transit attachment contract
+- name: Validate the VN-scoped EVPN transit attachment contract
   ansible.builtin.assert:
     that:
       - evpn_transit_cidr | ansible.utils.ipaddr('network') | length > 0
+      - evpn_transit_cidr | ansible.utils.ipaddr('version') == 4
+      - evpn_transit_cidr | ansible.utils.ipaddr('prefix') | int == 24
+      - evpn_transit_netris_pool | ansible.utils.ipaddr('network') | length > 0
+      - evpn_transit_osac_pool | ansible.utils.ipaddr('network') | length > 0
+      - evpn_transit_netris_pool | ansible.utils.ipaddr('prefix') | int == 26
+      - evpn_transit_osac_pool | ansible.utils.ipaddr('prefix') | int == 26
+      - evpn_transit_cidr | osac.templates.cidr_contains(evpn_transit_netris_pool)
+      - evpn_transit_cidr | osac.templates.cidr_contains(evpn_transit_osac_pool)
+      - evpn_transit_netris_pool | osac.templates.cidr_overlaps(evpn_transit_osac_pool) == false
       - evpn_transit_mac_vrf_vni | int > 0
       - evpn_transit_mac_vrf_vni | int < 16777216
       - evpn_transit_vtep | length > 0
       - evpn_transit_reserved_subnets is sequence
       - evpn_transit_reserved_subnets | length <= 4
+      - cudn_net_evpn_transit_cudn_name | length > 0
     fail_msg: >-
-      The fabric EVPN transit attachment is invalid. Expected an IPv4 CIDR,
-      a VXLAN MAC-VRF VNI, a VTEP name, and at most four reserved CIDRs;
-      received {{ evpn_transit_data }}.
+      The fabric EVPN transit attachment for VirtualNetwork '{{ vn_name }}' is
+      invalid. Expected one IPv4 /24, disjoint Netris and OSAC /26 pools, a
+      VXLAN MAC-VRF VNI, a VTEP name, and at most four reserved CIDRs; received
+      {{ evpn_transit_data }}.
 
-- name: Create the shared EVPN transit CUDN
+- name: Validate every CUDN-reserved transit range excludes the OSAC pool
+  ansible.builtin.assert:
+    that:
+      - evpn_transit_cidr | osac.templates.cidr_contains(item)
+      - evpn_transit_osac_pool | osac.templates.cidr_overlaps(item) == false
+    fail_msg: >-
+      Transit reserved range '{{ item }}' is outside '{{ evpn_transit_cidr }}'
+      or overlaps the OSAC pool '{{ evpn_transit_osac_pool }}'.
+  loop: "{{ evpn_transit_reserved_subnets }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Create the VN-scoped EVPN transit CUDN
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: present
@@ -64,11 +100,20 @@
       kind: ClusterUserDefinedNetwork
       metadata:
         name: "{{ cudn_net_evpn_transit_cudn_name }}"
-        labels: "{{ default_subnet_labels | combine({'osac.openshift.io/evpn-transit': 'true'}) }}"
+        labels: >-
+          {{ default_subnet_labels | combine({
+            'evpn': 'true',
+            'osac.openshift.io/evpn-transit': 'true',
+            'osac.openshift.io/virtualnetwork-uuid': vn_uuid
+          }) }}
+        annotations:
+          osac.openshift.io/tenant: "{{ vn_tenant_id }}"
+          osac.openshift.io/owner-reference: "{{ vn_uuid }}"
       spec:
         namespaceSelector:
-          matchLabels:
-            osac.openshift.io/evpn-transit: "true"
+          matchLabels: >-
+            {{ dict([(evpn_transit_namespace_selector_key,
+                      evpn_transit_namespace_selector_value)]) }}
         network:
           topology: Layer2
           transport: EVPN
@@ -85,7 +130,7 @@
               vni: "{{ evpn_transit_mac_vrf_vni | int }}"
   register: evpn_transit_cudn_result
 
-- name: Wait for the EVPN transit CUDN to become ready
+- name: Wait for the VN-scoped EVPN transit CUDN to become ready
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     api_version: k8s.ovn.org/v1
@@ -106,7 +151,7 @@
   delay: "{{ cudn_net_evpn_transit_ready_delay_seconds }}"
   when: cudn_net_evpn_transit_wait_ready | bool
 
-- name: Create the persistent transit IPAMClaim
+- name: Create the VN-scoped persistent transit IPAMClaim
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: present
@@ -116,7 +161,7 @@
       metadata:
         name: "{{ cudn_net_evpn_transit_ipam_claim_name }}"
         namespace: "{{ vn_name }}"
-        labels: "{{ default_subnet_labels }}"
+        labels: "{{ default_subnet_labels | combine({'osac.openshift.io/virtualnetwork-uuid': vn_uuid}) }}"
         annotations:
           osac.openshift.io/tenant: "{{ vn_tenant_id }}"
           osac.openshift.io/owner-reference: "{{ vn_uuid }}"
@@ -124,7 +169,7 @@
         network: "{{ cudn_net_evpn_transit_cudn_name }}"
         interface: transit
 
-- name: Record the transit attachment for the router Deployment
+- name: Record the VN-scoped transit attachment for the router Deployment
   ansible.builtin.set_fact:
     router_pod_transit_enabled: true
     router_pod_transit_attachment:
@@ -132,12 +177,11 @@
       interface: transit
       ipam-claim-reference: "{{ cudn_net_evpn_transit_ipam_claim_name }}"
 
-- name: Display EVPN transit provisioning result
+- name: Display VN-scoped EVPN transit provisioning result
   ansible.builtin.debug:
     msg:
-      - "Shared EVPN transit CUDN: {{ cudn_net_evpn_transit_cudn_name }}"
+      - "Transit CUDN: {{ cudn_net_evpn_transit_cudn_name }}"
       - "Transit CIDR: {{ evpn_transit_cidr }}"
       - "Transit MAC-VRF VNI: {{ evpn_transit_mac_vrf_vni }}"
       - "Transit VTEP: {{ evpn_transit_vtep }}"
-      - "Reserved fabric ranges: {{ evpn_transit_reserved_subnets }}"
       - "Persistent IPAMClaim: {{ cudn_net_evpn_transit_ipam_claim_name }}"

@@ -123,6 +123,13 @@
               lifecycle: "{{ default_ipam_lifecycle }}"
             subnets:
               - "{{ evpn_transit_cidr }}"
+            # Keep OVN's internal gateway/infrastructure addresses inside the
+            # OSAC-owned pool. The Netris pool is intentionally represented in
+            # reservedSubnets; without an explicit infrastructure range OVN
+            # selects 10.250.0.1 from that pool and rejects the allocation as
+            # already reserved.
+            infrastructureSubnets:
+              - "{{ evpn_transit_osac_pool | ansible.utils.ipsubnet(30, 0) }}"
             reservedSubnets: "{{ evpn_transit_reserved_subnets }}"
           evpn:
             vtep: "{{ evpn_transit_vtep }}"

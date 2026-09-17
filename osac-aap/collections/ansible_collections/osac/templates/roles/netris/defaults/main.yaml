@@ -2,12 +2,39 @@
 default_vnet_vlan_id: auto
 default_ipam_purpose_public: nat
 
-# The shared EVPN transit V-Net is infrastructure-owned. Netris allocates its
-# VNI; the role publishes the resulting attachment data for the k8s manager.
-# The values are deployment configuration, not tenant input.
-netris_evpn_transit_vnet_name: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_VNET_NAME') | default('', true) }}"
-netris_evpn_transit_ipam_subnet_name: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_IPAM_SUBNET_NAME') | default(netris_evpn_transit_vnet_name, true) }}"
+# EVPN transit resources are OSAC-managed and scoped to one VirtualNetwork.
+# The existing VN VPC is the Netris VRF/isolation boundary; these names are
+# derived from the VN UUID in publish_evpn_transit.yaml. Prefix selection is
+# provider configuration, never tenant input. Link-local /24 is preferred;
+# operators can select the private fallback explicitly while compatibility
+# validation is being established in a deployment.
+netris_evpn_transit_prefix_mode: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_PREFIX_MODE') | default('auto', true) }}"
+netris_evpn_transit_link_local_prefix: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LINK_LOCAL_PREFIX') | default('169.254.240.0/24', true) }}"
+netris_evpn_transit_private_prefix: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_PRIVATE_PREFIX') | default('', true) }}"
 netris_evpn_transit_vtep_name: "{{ lookup('env', 'OSAC_EVPN_VTEP_NAME') | default('tenant-vtep', true) }}"
-netris_evpn_transit_configmap_name: osac-evpn-transit
+# The selected /24 is split into a Netris /26, an OSAC/CUDN /26, and a
+# reserved /25. These remain provider-controlled until a user-facing pool API
+# is introduced.
+netris_evpn_transit_pool_prefix_length: 26
+netris_evpn_transit_netris_pool_index: 0
+netris_evpn_transit_osac_pool_index: 1
 netris_evpn_transit_reserved_subnets: >-
   {{ lookup('env', 'NETRIS_EVPN_TRANSIT_RESERVED_SUBNETS') | default('[]', true) | from_json }}
+# Provider-owned fabric endpoints for the VN-scoped transit V-Net. Each entry
+# names an OpenShift/Netris server and its connected data-plane interface. The
+# role resolves the current Netris port ID from the inventory API at reconcile
+# time; port IDs must not be persisted in deployment configuration because they
+# can change when Netris inventory is rebuilt.
+netris_evpn_transit_port_endpoints: >-
+  {{ lookup('env', 'NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS') | default('[]', true) | from_json }}
+# Netris L2 V-Nets must carry the EVPN CUDN's tagged traffic. accessMode=true
+# would make each endpoint an untagged access port and is not suitable when
+# multiple VN-scoped transit V-Nets share the host uplinks.
+netris_evpn_transit_l3vpn: false
+netris_evpn_transit_vlan_aware: false
+netris_evpn_transit_port_access_mode: false
+netris_evpn_transit_lock_retries: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LOCK_RETRIES') | default('180', true) | int }}"
+netris_evpn_transit_lock_delay_seconds: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LOCK_DELAY_SECONDS') | default('1', true) | int }}"
+netris_evpn_transit_lock_duration_seconds: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LOCK_DURATION_SECONDS') | default('600', true) | int }}"
+netris_evpn_transit_delete_wait_retries: 60
+netris_evpn_transit_delete_wait_delay_seconds: 5

@@ -2,8 +2,9 @@
 # For networkingType: Primary (the default), VirtualNetwork deletion is a stub -
 # no resources were created during provisioning (see create_virtual_network.yaml).
 #
-# For networkingType: Secondary, deletes the VirtualNetwork's namespace, which
-# cascades and removes the router pod Deployment/Pod with it.
+# For networkingType: Secondary, removes the VN-scoped transit claim/CUDN first
+# when fabric-backed, then deletes the namespace, which cascades the router pod
+# Deployment/Pod and remaining router resources.
 
 - name: Include get remote cluster kubeconfig
   ansible.builtin.include_role:
@@ -13,7 +14,83 @@
 - name: Extract VirtualNetwork name and networking type
   ansible.builtin.set_fact:
     vn_name: "{{ virtual_network.metadata.name }}"
+    vn_parent_namespace: "{{ virtual_network.metadata.namespace }}"
+    vn_uuid: "{{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] }}"
+    vn_fabric_manager_configured: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/fabric-manager-configured'] | default('false') | lower }}
+    vn_transit_capability: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/transit-capability'] | default('none', true) | lower }}
+    vn_transit_capability_annotation: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/transit-capability'] | default('', true) | lower }}
+
+- name: Enable legacy transit cleanup for pre-capability VirtualNetworks
+  ansible.builtin.set_fact:
+    vn_transit_enabled: >-
+      {{ vn_transit_capability == 'netris-evpn'
+         or (vn_transit_capability_annotation | length == 0
+             and vn_fabric_manager_configured == 'true') }}
     vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
+
+- name: Derive VN-scoped transit resource names
+  ansible.builtin.set_fact:
+    cudn_net_evpn_transit_cudn_name: "osac-transit-cudn-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    cudn_net_evpn_transit_ipam_claim_name: "osac-transit-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    cudn_net_evpn_transit_configmap_name: "osac-transit-{{ (vn_uuid | hash('sha1'))[:12] }}"
+
+- name: Remove the router Deployment before deleting its transit claim
+  when: vn_networking_type == 'Secondary'
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ vn_name }}"
+    name: "{{ router_pod_name }}"
+    wait: true
+    wait_timeout: 300
+
+- name: Delete the VN-scoped transit IPAMClaim
+  when:
+    - vn_networking_type == 'Secondary'
+    - vn_transit_enabled | bool
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    api_version: k8s.cni.cncf.io/v1alpha1
+    kind: IPAMClaim
+    namespace: "{{ vn_name }}"
+    name: "{{ cudn_net_evpn_transit_ipam_claim_name }}"
+    wait: true
+    wait_timeout: 300
+
+- name: Delete the VN-scoped transit CUDN
+  when:
+    - vn_networking_type == 'Secondary'
+    - vn_transit_enabled | bool
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    api_version: k8s.ovn.org/v1
+    kind: ClusterUserDefinedNetwork
+    name: "{{ cudn_net_evpn_transit_cudn_name }}"
+    wait: true
+    wait_timeout: 300
+  register: evpn_transit_cudn_delete_result
+  failed_when:
+    - evpn_transit_cudn_delete_result.failed | default(false)
+    - "'NotFound' not in (evpn_transit_cudn_delete_result.msg | default(''))"
+
+- name: Delete the VN-scoped fabric transit ConfigMap
+  when:
+    - vn_networking_type == 'Secondary'
+    - vn_transit_enabled | bool
+  kubernetes.core.k8s:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ vn_parent_namespace }}"
+    name: "{{ cudn_net_evpn_transit_configmap_name }}"
 
 - name: Delete router pod SCC ClusterRoleBinding for Secondary VirtualNetworks
   when: vn_networking_type == 'Secondary'

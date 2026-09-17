@@ -1,41 +1,227 @@
 ---
-# VirtualNetwork deletion - removes IPAM allocation first, then VPC
+# Delete a VirtualNetwork in dependency order. For a fabric-backed Secondary
+# VN, the k8s manager removes the transit claim/CUDN first; this target waits
+# for that cluster-scoped CUDN to disappear before deleting the Netris V-Net
+# and IPAM subnet. The existing VN VPC/VRF is removed last.
 
-- name: Extract VirtualNetwork name
+- name: Include remote cluster kubeconfig for transit teardown coordination
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: get_remote_cluster_kubeconfig
+
+- name: Extract VirtualNetwork deletion configuration
   ansible.builtin.set_fact:
     vn_name: "{{ virtual_network.metadata.name }}"
+    vn_namespace: "{{ virtual_network.metadata.namespace }}"
+    vn_uuid: "{{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] }}"
+    vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
+    vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
+    vn_transit_capability: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/transit-capability'] | default('none', true) | lower }}
+    vn_transit_capability_annotation: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/transit-capability'] | default('', true) | lower }}
 
-- name: Display VirtualNetwork deletion info
-  ansible.builtin.debug:
-    msg: "Deleting Netris VPC + IPAM allocation for VirtualNetwork '{{ vn_name }}'"
-
-- name: Look up VPC by name
-  ansible.builtin.include_role:
-    name: netris.controller.vpc
-    tasks_from: read
-  vars:
-    vpc_name: "{{ vn_name }}"
-
-- name: Set VPC ID
+- name: Enable legacy transit cleanup for pre-capability VirtualNetworks
   ansible.builtin.set_fact:
-    _vn_vpc_id: "{{ netris_vpc.id | default('') }}"
+    vn_transit_enabled: >-
+      {{ vn_transit_capability == 'netris-evpn'
+         or (vn_transit_capability_annotation | length == 0
+             and vn_fabric_manager_configured == 'true') }}
 
-- name: Delete IPAM allocation from Netris controller
+- name: Derive deterministic VN-scoped transit resource names
+  ansible.builtin.set_fact:
+    netris_evpn_transit_vnet_name: "osac-transit-vnet-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    netris_evpn_transit_ipam_allocation_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-alloc"
+    netris_evpn_transit_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-netris"
+    netris_evpn_transit_osac_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-osac"
+    netris_evpn_transit_reserved_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-reserved"
+    netris_evpn_transit_legacy_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    cudn_net_evpn_transit_cudn_name: "osac-transit-cudn-{{ (vn_uuid | hash('sha1'))[:12] }}"
+    netris_evpn_transit_lock_name: "osac-transit-{{ (vn_uuid | hash('sha1'))[:32] }}"
+    netris_evpn_transit_lock_holder: >-
+      {{ lookup('env', 'JOB_ID') | default('aap', true) }}-{{ lookup('pipe', 'uuidgen') }}
+
+- name: Acquire the durable VN transit Lease for teardown
   ansible.builtin.include_role:
-    name: netris.controller.ipam
-    tasks_from: delete_allocation
+    name: osac.service.vnet_lock
+    tasks_from: acquire.yaml
   vars:
-    ipam_name: "{{ vn_name }}"
-    ipam_vpc_id: "{{ _vn_vpc_id }}"
-  when: _vn_vpc_id | string | length > 0
+    vnet_lock_name: "{{ netris_evpn_transit_lock_name }}"
+    vnet_lock_namespace: "{{ vn_namespace }}"
+    vnet_lock_holder: "{{ netris_evpn_transit_lock_holder }}"
+    vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    vnet_lock_tenant: "{{ vn_tenant_id }}"
+    vnet_lock_owner_reference: "{{ vn_uuid }}"
+    vnet_lock_max_retries: "{{ netris_evpn_transit_lock_retries }}"
+    vnet_lock_retry_delay: "{{ netris_evpn_transit_lock_delay_seconds }}"
+    vnet_lock_duration_seconds: "{{ netris_evpn_transit_lock_duration_seconds }}"
 
-- name: Delete VPC from Netris controller
-  ansible.builtin.include_role:
-    name: netris.controller.vpc
-    tasks_from: delete
-  vars:
-    vpc_name: "{{ vn_name }}"
+- name: Delete VN-scoped fabric resources and the VN VPC/VRF
+  block:
+    - name: Wait for the VN-scoped transit CUDN to be removed by the k8s manager
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        api_version: k8s.ovn.org/v1
+        kind: ClusterUserDefinedNetwork
+        name: "{{ cudn_net_evpn_transit_cudn_name }}"
+      register: evpn_transit_cudn_info
+      until: evpn_transit_cudn_info.resources | length == 0
+      retries: "{{ netris_evpn_transit_delete_wait_retries }}"
+      delay: "{{ netris_evpn_transit_delete_wait_delay_seconds }}"
+      when:
+        - vn_networking_type == 'Secondary'
+        - vn_transit_enabled | bool
 
-- name: Display deletion result
-  ansible.builtin.debug:
-    msg: "VPC + IPAM allocation '{{ vn_name }}' deletion completed"
+    - name: Look up the VN VPC/VRF by name
+      ansible.builtin.include_role:
+        name: netris.controller.vpc
+        tasks_from: read
+      vars:
+        vpc_name: "{{ vn_name }}"
+
+    - name: Set the VN VPC/VRF ID
+      ansible.builtin.set_fact:
+        _vn_vpc_id: "{{ netris_vpc.id | default('') }}"
+
+    - name: Initialize optional VN transit IPAM resources
+      ansible.builtin.set_fact:
+        netris_evpn_transit_ipam_subnet: "{{ none }}"
+        netris_evpn_transit_osac_ipam_subnet: "{{ none }}"
+        netris_evpn_transit_reserved_ipam_subnet: "{{ none }}"
+        netris_evpn_transit_reserved_last_ipam_subnet: "{{ none }}"
+        netris_evpn_transit_legacy_ipam_subnet: "{{ none }}"
+
+    - name: Read Netris IPAM subnets before deleting the VN transit subnet
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: read_subnets
+      when:
+        - _vn_vpc_id | string | length > 0
+        - vn_networking_type == 'Secondary'
+        - vn_transit_enabled | bool
+
+    - name: Select the VN-scoped transit IPAM resources
+      ansible.builtin.set_fact:
+        netris_evpn_transit_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_ipam_subnet_name)
+             | list | first | default(none) }}
+        netris_evpn_transit_osac_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_osac_ipam_subnet_name)
+             | list | first | default(none) }}
+        netris_evpn_transit_reserved_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_reserved_ipam_subnet_name)
+             | list | first | default(none) }}
+        netris_evpn_transit_reserved_last_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_reserved_ipam_subnet_name ~ '-last')
+             | list | first | default(none) }}
+        netris_evpn_transit_legacy_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_legacy_ipam_subnet_name)
+             | list | first | default(none) }}
+      when:
+        - _vn_vpc_id | string | length > 0
+        - vn_networking_type == 'Secondary'
+        - vn_transit_enabled | bool
+
+    - name: Refuse to delete transit subnets from another VPC/VRF
+      ansible.builtin.assert:
+        that:
+          - >-
+            (item.vpc.id | default(item.vpcId, true) | default(item.vpc, true) | string)
+            == (_vn_vpc_id | string)
+        fail_msg: >-
+          Refusing to delete Netris IPAM subnet '{{ item.name }}': it is not
+          owned by VN VPC/VRF '{{ _vn_vpc_id }}'.
+      loop:
+        - "{{ netris_evpn_transit_ipam_subnet }}"
+        - "{{ netris_evpn_transit_osac_ipam_subnet }}"
+        - "{{ netris_evpn_transit_reserved_ipam_subnet }}"
+        - "{{ netris_evpn_transit_reserved_last_ipam_subnet }}"
+        - "{{ netris_evpn_transit_legacy_ipam_subnet }}"
+      loop_control:
+        label: "{{ item.name | default('missing') }}"
+      when:
+        - item is not none
+
+    - name: Delete the VN-scoped transit IPAM subnets
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: delete_subnet
+      vars:
+        ipam_name: "{{ item }}"
+      loop:
+        - "{{ netris_evpn_transit_ipam_subnet_name }}"
+        - "{{ netris_evpn_transit_osac_ipam_subnet_name }}"
+        - "{{ netris_evpn_transit_reserved_ipam_subnet_name }}"
+        - "{{ netris_evpn_transit_reserved_ipam_subnet_name }}-last"
+        - "{{ netris_evpn_transit_legacy_ipam_subnet_name }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - netris_ipam_subnets | default([]) | selectattr('name', 'equalto', item) | list | length > 0
+
+    - name: Delete the VN-scoped transit IPAM allocation
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: delete_allocation
+      vars:
+        ipam_name: "{{ netris_evpn_transit_ipam_allocation_name }}"
+        ipam_vpc_id: "{{ _vn_vpc_id }}"
+      when:
+        - vn_networking_type == 'Secondary'
+        - vn_transit_enabled | bool
+
+    - name: Delete the VN-scoped transit V-Net
+      ansible.builtin.include_role:
+        name: netris.controller.vnet
+        tasks_from: delete
+      vars:
+        vnet_name: "{{ netris_evpn_transit_vnet_name }}"
+      when:
+        - vn_networking_type == 'Secondary'
+        - vn_transit_enabled | bool
+
+    - name: Delete the VN IPAM allocation from Netris
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: delete_allocation
+      vars:
+        ipam_name: "{{ vn_name }}"
+        ipam_vpc_id: "{{ _vn_vpc_id }}"
+      when: _vn_vpc_id | string | length > 0
+
+    - name: Delete the VN VPC/VRF from Netris
+      ansible.builtin.include_role:
+        name: netris.controller.vpc
+        tasks_from: delete
+      vars:
+        vpc_name: "{{ vn_name }}"
+
+    - name: Display VN-scoped transit deletion result
+      ansible.builtin.debug:
+        msg:
+          - "Transit CUDN removed before fabric teardown: {{ cudn_net_evpn_transit_cudn_name }}"
+          - "Transit V-Net removed: {{ netris_evpn_transit_vnet_name }}"
+          - "Transit IPAM subnet removed: {{ netris_evpn_transit_ipam_subnet_name }}"
+          - "VN VPC/VRF removed: {{ vn_name }}"
+  rescue:
+    - name: Mark a failed VN-scoped transit teardown for the operator
+      ansible.builtin.fail:
+        msg: >-
+          {{ 'TRANSIT_TEARDOWN_STUCK: ' if vn_networking_type == 'Secondary'
+             and vn_transit_enabled | bool else '' }}
+          {{ ansible_failed_result.msg | default('Netris VirtualNetwork deletion failed') }}
+  always:
+    - name: Release the VN transit Lease after teardown
+      ansible.builtin.include_role:
+        name: osac.service.vnet_lock
+        tasks_from: release.yaml
+      vars:
+        vnet_lock_name: "{{ netris_evpn_transit_lock_name }}"
+        vnet_lock_namespace: "{{ vn_namespace }}"
+        vnet_lock_holder: "{{ netris_evpn_transit_lock_holder }}"
+        vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"

@@ -97,6 +97,11 @@
   ansible.builtin.set_fact:
     router_pod_actual_name: "{{ router_pod_running_list[0].metadata.name }}"
     router_pod_node_name: "{{ router_pod_running_list[0].spec.nodeName }}"
+    router_pod_primary_udn_ipamclaim: >-
+      {{
+        (router_pod_running_list[0].metadata.annotations | default({}))
+          .get('k8s.ovn.org/primary-udn-ipamclaim', '')
+      }}
     router_pod_network_status: >-
       {{
         (router_pod_running_list[0].metadata.annotations | default({}))

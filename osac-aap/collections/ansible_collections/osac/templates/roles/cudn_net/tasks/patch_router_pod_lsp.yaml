@@ -36,6 +36,18 @@
           router_pod_network_status
           | selectattr('name', 'equalto', subnet_vn_name ~ '/' ~ router_pod_attachment.name)
           | list
+        ) + (
+          (
+            router_pod_network_status
+            | selectattr('default', 'defined')
+            | selectattr('default', 'equalto', true)
+            | list
+          )
+          if (
+            router_pod_primary_udn_ipamclaim | default('') | length > 0
+            and router_pod_attachment['ipam-claim-reference'] | default('')
+              == router_pod_primary_udn_ipamclaim
+          ) else []
         )
       }}
 

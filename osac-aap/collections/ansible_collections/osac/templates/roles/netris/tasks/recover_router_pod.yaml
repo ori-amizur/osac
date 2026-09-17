@@ -1,0 +1,9 @@
+---
+# Netris-backed Secondary VirtualNetworks use the same router-pod recovery
+# workflow as cudn_net. The Netris role owns fabric provisioning, while the
+# Kubernetes-side pod recovery and port-security reconciliation are shared.
+
+- name: Delegate Netris router Pod recovery to cudn_net
+  ansible.builtin.include_role:
+    name: osac.templates.cudn_net
+    tasks_from: recover_router_pod

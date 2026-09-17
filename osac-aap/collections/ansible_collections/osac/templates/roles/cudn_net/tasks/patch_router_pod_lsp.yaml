@@ -3,7 +3,8 @@
 # logical switch port among router_pod_lsp_candidates, using the computed UDN-prefix as the
 # primary hint and the pod's own Multus network-status annotation as a second, independent
 # signal, then patches OVN port security for it. See patch_router_pod_port_security.yaml for
-# why neither signal is trusted alone. Included in a loop from that file.
+# why neither signal is trusted alone. The candidate list intentionally excludes the
+# router Pod's default and transit ports. Included in a loop from that file.
 
 - name: Compute the candidate logical switch port name for this attachment
   ansible.builtin.set_fact:

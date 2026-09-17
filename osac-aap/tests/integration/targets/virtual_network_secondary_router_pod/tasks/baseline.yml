@@ -201,3 +201,41 @@
           - primary_namespace_result.resources | length == 0
         fail_msg: "A namespace was unexpectedly created for a Primary VirtualNetwork"
         success_msg: "Primary VirtualNetwork unaffected: passed"
+
+# ── Test 4: the default and transit ports do not confuse subnet port security ──
+# OVN creates one logical switch port for each of the Pod's primary, transit,
+# and subnet interfaces. All three share the namespace/Pod suffix. The port
+# security flow must select only the subnet attachment requested by OSAC.
+- name: "VirtualNetwork Secondary router pod - Test subnet LSP selection"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    subnet_vn_name: virtualnetwork-gxh8b
+    router_pod_actual_name: router-679959fb79-6r97q
+    router_pod_lsp_suffix: "_{{ subnet_vn_name }}_{{ router_pod_actual_name }}"
+    router_pod_networks:
+      - name: subnet-cgk5f
+        interface: enp2s0
+    router_pod_expected_lsp_names: []
+    router_pod_lsp_list_result:
+      stdout_lines:
+        - virtualnetwork.gxh8b.subnet.cgk5f_virtualnetwork-gxh8b_router-679959fb79-6r97q
+        - virtualnetwork-gxh8b_router-679959fb79-6r97q
+        - virtualnetwork.gxh8b.osac.transit.cudn.ec1d39f20987_virtualnetwork-gxh8b_router-679959fb79-6r97q
+
+  tasks:
+    - name: Run the subnet LSP candidate selection
+      ansible.builtin.include_tasks: ../../../../../collections/ansible_collections/osac/templates/roles/cudn_net/tasks/select_router_pod_lsp_candidates.yaml
+
+    - name: Assert only the subnet LSP was selected
+      ansible.builtin.assert:
+        that:
+          - router_pod_lsp_candidates == [
+              'virtualnetwork.gxh8b.subnet.cgk5f_virtualnetwork-gxh8b_router-679959fb79-6r97q'
+            ]
+        fail_msg: >-
+          Primary or transit logical switch ports were selected for subnet port security:
+          {{ router_pod_lsp_candidates | join(', ') }}
+        success_msg: "Subnet LSP selection ignores primary and transit ports: passed"

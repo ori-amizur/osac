@@ -1,0 +1,45 @@
+---
+# Select only the logical switch ports belonging to the current subnet
+# attachments. The default primary-network port and the VN-scoped transit port
+# also end in the router Pod's stable namespace/pod suffix and must not be
+# mistaken for subnet ports.
+
+- name: Build the expected logical switch port name for each current attachment
+  ansible.builtin.set_fact:
+    router_pod_expected_lsp_names: >-
+      {{
+        (router_pod_expected_lsp_names | default([]))
+        + [
+            (subnet_vn_name | replace('-', '.'))
+            ~ '.'
+            ~ (router_pod_expected_attachment.name | replace('-', '.') | replace('/', '.'))
+            ~ router_pod_lsp_suffix
+          ]
+      }}
+  loop: "{{ router_pod_networks }}"
+  loop_control:
+    loop_var: router_pod_expected_attachment
+    label: "{{ router_pod_expected_attachment.name }}"
+
+- name: Filter the discovered ports to expected subnet attachments
+  ansible.builtin.set_fact:
+    router_pod_lsp_candidates: >-
+      {{
+        router_pod_lsp_list_result.stdout_lines
+        | select('match', '^.*' ~ router_pod_lsp_suffix ~ '$')
+        | intersect(router_pod_expected_lsp_names)
+        | list
+      }}
+
+- name: Require every expected subnet logical switch port to be present
+  ansible.builtin.assert:
+    that:
+      - router_pod_expected_lsp_names | unique | length == router_pod_expected_lsp_names | length
+      - router_pod_lsp_candidates | length == router_pod_expected_lsp_names | length
+      - router_pod_expected_lsp_names | difference(router_pod_lsp_candidates) | length == 0
+    fail_msg: >-
+      Could not uniquely match all current subnet attachments to logical switch ports.
+      Expected: {{ router_pod_expected_lsp_names | join(', ') }};
+      discovered matching subnet ports: {{ router_pod_lsp_candidates | join(', ') }}.
+      Other ports with suffix '{{ router_pod_lsp_suffix }}' are ignored because they
+      belong to the primary or transit network.

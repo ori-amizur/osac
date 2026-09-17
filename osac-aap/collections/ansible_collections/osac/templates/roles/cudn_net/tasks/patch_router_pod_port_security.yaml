@@ -26,11 +26,12 @@
 # Never trusts a computed logical switch port name outright: OVN-Kubernetes's UDN naming
 # formula (GetUserDefinedNetworkPrefix + composePortName, go-controller/pkg/util) is an
 # internal, unexported implementation detail with no compatibility guarantee. Instead this
-# queries for ports by the long-standing, stable `<namespace>_<podname>` suffix only, cross-
-# checks the count against router_pod_networks, and uses the computed per-subnet prefix
-# together with the pod's own Multus network-status annotation (a stable, publicly
-# documented, cross-project format) purely to MATCH each discovered port to its subnet --
-# never to synthesize a name to blindly act on. Anything that doesn't cleanly match is a
+# queries for ports by the long-standing, stable `<namespace>_<podname>` suffix only, then
+# checks that every expected attachment port is present. The default primary-network port
+# and the VN-scoped transit port have the same stable pod-name suffix, so they are
+# deliberately ignored. The computed per-subnet prefix and the pod's own Multus
+# network-status annotation (a stable, publicly documented, cross-project format) are used
+# to MATCH each discovered port to its subnet. Anything that doesn't cleanly match is a
 # hard failure, not a best-effort guess: nothing gets patched unless it's confidently
 # identified.
 
@@ -174,29 +175,12 @@
         | select('match', '^.*' ~ router_pod_lsp_suffix ~ '$')
         | list
         | length
-      ) == (router_pod_networks | length)
+      ) >= (router_pod_networks | length)
   retries: 30
   delay: 2
 
-- name: Filter to this router pod's own logical switch ports
-  ansible.builtin.set_fact:
-    router_pod_lsp_candidates: >-
-      {{
-        router_pod_lsp_list_result.stdout_lines
-        | select('match', '^.*' ~ router_pod_lsp_suffix ~ '$')
-        | list
-      }}
-
-- name: Require the number of discovered ports to match the number of current attachments
-  ansible.builtin.assert:
-    that:
-      - router_pod_lsp_candidates | length == router_pod_networks | length
-    fail_msg: >-
-      Found {{ router_pod_lsp_candidates | length }} logical switch port(s) ending in
-      '{{ router_pod_lsp_suffix }}' but expected {{ router_pod_networks | length }}
-      (one per current router pod attachment:
-      {{ router_pod_networks | map(attribute='name') | join(', ') }}).
-      Refusing to guess -- not patching any port.
+- name: Select the expected subnet logical switch ports
+  ansible.builtin.include_tasks: select_router_pod_lsp_candidates.yaml
 
 - name: Match and patch OVN port security for each current attachment
   ansible.builtin.include_tasks: patch_router_pod_lsp.yaml

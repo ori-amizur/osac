@@ -39,6 +39,14 @@ type SubnetSpec struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="ipv6Cidr is immutable"
 	IPv6CIDR string `json:"ipv6Cidr,omitempty"`
+
+	// ImplementationStrategy selects the single backend that owns this Subnet.
+	// It is only applicable to Subnets whose parent VirtualNetwork has Secondary
+	// networking type. When omitted, the deployment default is used.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="implementationStrategy is immutable"
+	ImplementationStrategy string `json:"implementationStrategy,omitempty"`
 }
 
 // SubnetPhaseType is a valid value for .status.phase

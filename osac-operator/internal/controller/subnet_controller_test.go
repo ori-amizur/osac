@@ -746,6 +746,78 @@ var _ = Describe("SubnetReconciler", func() {
 			Expect(provisioning.FindLatestJobByTypeAndTarget(final.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision, string(dispatcher.ManagerRoleK8s))).NotTo(BeNil())
 		})
 
+		It("provisions a Secondary Subnet through only the explicitly selected backend", func() {
+			scheme := runtime.NewScheme()
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			dualDiscoveryClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+				newFabricManagerConfigMap("fm-netris", "osac", "netris"),
+				newK8sManagerConfigMap("km-cudn", "osac", "cudn_net", "ipv4"),
+			).Build()
+			disc, err := networkmanager.NewDiscovery(dualDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			k8sManagerName := "cudn_net"
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-secondary", FabricManager: ptr.To("netris"), K8SManager: &k8sManagerName}},
+				&[]*privatev1.NetworkClass{},
+			)), disc)
+
+			secondaryVnet := &osacv1alpha1.VirtualNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "secondary-selected-vnet",
+					Namespace: "default",
+					Labels:    map[string]string{osacVirtualNetworkIDLabel: "secondary-selected-vnet-uuid"},
+				},
+				Spec: osacv1alpha1.VirtualNetworkSpec{
+					Region:         "us-west-1",
+					IPv4CIDR:       "10.5.0.0/16",
+					NetworkClass:   "nc-secondary",
+					NetworkingType: osacv1alpha1.VirtualNetworkNetworkingTypeSecondary,
+				},
+			}
+			Expect(k8sClient.Create(ctx, secondaryVnet)).To(Succeed())
+			DeferCleanup(deleteObjectWithClearedFinalizers, ctx, secondaryVnet)
+
+			secondarySubnet := &osacv1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: "secondary-selected-subnet", Namespace: "default"},
+				Spec: osacv1alpha1.SubnetSpec{
+					VirtualNetwork:         "secondary-selected-vnet-uuid",
+					IPv4CIDR:               "10.5.1.0/24",
+					ImplementationStrategy: "cudn_net",
+				},
+			}
+			Expect(k8sClient.Create(ctx, secondarySubnet)).To(Succeed())
+			DeferCleanup(deleteObjectWithClearedFinalizers, ctx, secondarySubnet)
+
+			triggerCount := 0
+			var seenAnnotations []string
+			mockProvider.triggerProvisionFunc = func(_ context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
+				triggerCount++
+				seenAnnotations = append(seenAnnotations, resource.GetAnnotations()[osacImplementationStrategyAnnotation])
+				return &provisioning.ProvisionResult{JobID: "secondary-job", InitialState: osacv1alpha1.JobStatePending}, nil
+			}
+
+			key := types.NamespacedName{Name: secondarySubnet.Name, Namespace: secondarySubnet.Namespace}
+			req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: key}}
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			annotated := &osacv1alpha1.Subnet{}
+			Expect(k8sClient.Get(ctx, key, annotated)).To(Succeed())
+			Expect(annotated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("cudn_net"))
+			Expect(annotated.Annotations[osacSubnetImplementationRoleAnnotation]).To(Equal(string(dispatcher.ManagerRoleK8s)))
+			Expect(triggerCount).To(Equal(0))
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(triggerCount).To(Equal(1))
+			Expect(seenAnnotations).To(ConsistOf("cudn_net"))
+
+			final := &osacv1alpha1.Subnet{}
+			Expect(k8sClient.Get(ctx, key, final)).To(Succeed())
+			Expect(provisioning.FindLatestJobByTypeAndTarget(final.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision, string(dispatcher.ManagerRoleK8s))).NotTo(BeNil())
+			Expect(provisioning.FindLatestJobByTypeAndTarget(final.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision, string(dispatcher.ManagerRoleFabric))).To(BeNil())
+		})
+
 		It("clears the stale k8s implementation-strategy annotation when the NetworkClass later drops its k8sManager", func() {
 			scheme := runtime.NewScheme()
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())

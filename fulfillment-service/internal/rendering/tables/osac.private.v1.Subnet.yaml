@@ -32,6 +32,9 @@ columns:
 - header: IPV6-CIDR
   value: "has(this.spec.ipv6_cidr)? this.spec.ipv6_cidr: '-'"
 
+- header: IMPLEMENTATION-STRATEGY
+  value: "has(this.spec.implementation_strategy)? this.spec.implementation_strategy: '-'"
+
 - header: STATE
   value: this.status.state
   type: osac.private.v1.SubnetState

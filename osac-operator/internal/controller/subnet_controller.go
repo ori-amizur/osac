@@ -294,13 +294,52 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
+	networkingType := vnet.Spec.NetworkingType
+	if networkingType == "" {
+		// No CRD-level default exists for this field (defaulting happens upstream, in
+		// fulfillment-service's Create validation) - a VirtualNetwork CR created
+		// directly against the K8s API can still leave it empty.
+		networkingType = v1alpha1.VirtualNetworkNetworkingTypePrimary
+	}
+	if networkingType != v1alpha1.VirtualNetworkNetworkingTypeSecondary && subnet.Spec.ImplementationStrategy != "" {
+		return ctrl.Result{}, fmt.Errorf("subnet implementationStrategy is only valid for Secondary VirtualNetworks")
+	}
+
+	// Secondary Subnets have one explicit backend owner. The NetworkClass may
+	// resolve both a fabric and a k8s manager because the parent Secondary
+	// VirtualNetwork itself can require both kinds of resources, but those two
+	// managers must never provision the same Subnet. An omitted strategy selects
+	// the fabric target as the deployment default, preserving the current Netris
+	// behavior.
+	effectivePlan := plan
+	ownerRole := ""
 	implementationStrategy := vnet.Annotations[osacImplementationStrategyAnnotation]
-	// plan may be nil here (no-dispatcher legacy path); FabricTarget/K8sTarget have
-	// nil-receiver-safe implementations that return nil in that case, so this — unlike
-	// sibling controllers' resolveImplementationStrategy — deliberately calls the
-	// DispatchPlan accessors directly rather than guarding with a nil check.
-	if fabricTarget := plan.FabricTarget(); fabricTarget != nil {
-		implementationStrategy = fabricTarget.Manager.Name
+	k8sStrategy := ""
+	hasK8sTarget := false
+	if networkingType == v1alpha1.VirtualNetworkNetworkingTypeSecondary {
+		var ownerTarget *dispatcher.DispatchTarget
+		var selectErr error
+		effectivePlan, ownerTarget, selectErr = selectSecondarySubnetDispatchPlan(plan, subnet.Spec.ImplementationStrategy)
+		if selectErr != nil {
+			return ctrl.Result{}, selectErr
+		}
+		if ownerTarget != nil {
+			implementationStrategy = ownerTarget.Manager.Name
+			ownerRole = string(ownerTarget.Role)
+		}
+	} else {
+		// Primary Subnets retain the existing dispatcher behavior. In particular,
+		// a NetworkClass that intentionally uses dual dispatch for Primary resources
+		// continues to produce both targets.
+		// plan may be nil on the legacy path; the accessors are nil-safe.
+		if fabricTarget := plan.FabricTarget(); fabricTarget != nil {
+			implementationStrategy = fabricTarget.Manager.Name
+		}
+		if k8sTarget := plan.K8sTarget(); k8sTarget != nil {
+			k8sStrategy = k8sTarget.Manager.Name
+			hasK8sTarget = true
+		}
 	}
 	if implementationStrategy == "" {
 		log.Info("implementation strategy not set on parent VirtualNetwork, requeueing", "virtualNetwork", vnet.Name)
@@ -319,38 +358,18 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 		}
 	}
 
-	// Stamp annotations for AAP playbooks (implementation strategy + VIP CIDR).
-	// osacImplementationStrategyAnnotation always holds the fabric manager's name; when
-	// the plan also resolves a k8s target (dual-dispatch), osacK8sImplementationStrategyAnnotation
-	// persists the k8s manager's name so handleDeprovisioning can build its
-	// DeprovisionTarget without re-resolving the plan against a parent VirtualNetwork
-	// that may already be gone at delete time. The k8s annotation is compared and, when
-	// absent from the plan, removed unconditionally (not just when present) so a Subnet
-	// that transitions from dual-dispatch to fabric-only (NetworkClass drops its
-	// k8sManager) doesn't leave a stale k8s target for handleDeprovisioning to act on.
-	k8sTarget := plan.K8sTarget()
-	k8sStrategy := ""
-	if k8sTarget != nil {
-		k8sStrategy = k8sTarget.Manager.Name
+	if networkingType != v1alpha1.VirtualNetworkNetworkingTypeSecondary {
+		// Reverse migration is only part of the historical Primary dual-dispatch
+		// path. Secondary Subnets always have one selected owner.
+		if requeue, deprovErr := r.deprovisionStaleK8sTarget(ctx, subnet, plan.K8sTarget()); deprovErr != nil {
+			return ctrl.Result{}, deprovErr
+		} else if requeue != nil {
+			return *requeue, nil
+		}
 	}
 
-	// Reverse migration: deprovision a k8s target the NetworkClass has since dropped,
-	// before dropping its annotation. See deprovisionStaleK8sTarget's doc comment.
-	if requeue, deprovErr := r.deprovisionStaleK8sTarget(ctx, subnet, k8sTarget); deprovErr != nil {
-		return ctrl.Result{}, deprovErr
-	} else if requeue != nil {
-		return *requeue, nil
-	}
-
-	networkingType := vnet.Spec.NetworkingType
-	if networkingType == "" {
-		// No CRD-level default exists for this field (defaulting happens upstream, in
-		// fulfillment-service's Create validation) - a VirtualNetwork CR created
-		// directly against the K8s API can still leave it empty.
-		networkingType = v1alpha1.VirtualNetworkNetworkingTypePrimary
-	}
 	updated, err := r.updateSubnetStrategyAnnotations(ctx, subnet, implementationStrategy, k8sStrategy, vipCIDR,
-		string(networkingType), vnet.Name, k8sTarget != nil)
+		string(networkingType), vnet.Name, hasK8sTarget, ownerRole)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -366,7 +385,8 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 		Spec                      v1alpha1.SubnetSpec
 		ImplementationStrategy    string
 		K8sImplementationStrategy string
-	}{subnet.Spec, implementationStrategy, k8sStrategy})
+		OwnerRole                 string
+	}{subnet.Spec, implementationStrategy, k8sStrategy, ownerRole})
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to compute desired config version: %w", err)
 	}
@@ -375,19 +395,19 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	// Set phase to Progressing only on first provision (empty phase) or when spec changed
 	// after a previous success. Don't override Failed during backoff.
 	if subnet.Status.Phase == "" ||
-		(subnet.Status.Phase == v1alpha1.SubnetPhaseReady && !isSubnetConfigApplied(subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion, plan)) {
+		(subnet.Status.Phase == v1alpha1.SubnetPhaseReady && !isSubnetConfigApplied(subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion, effectivePlan, ownerRole)) {
 		subnet.Status.Phase = v1alpha1.SubnetPhaseProgressing
 	}
 
 	// Handle provisioning
-	result, err = r.handleProvisioning(ctx, subnet, plan)
+	result, err = r.handleProvisioning(ctx, subnet, effectivePlan)
 	if err != nil {
 		return result, err
 	}
 
 	// A Secondary Subnet cannot be Ready while its parent router Pod is being
 	// recovered. This is independent of the Subnet's own config-version job.
-	readinessResult := r.reconcileParentRouterReadiness(subnet, vnet, plan)
+	readinessResult := r.reconcileParentRouterReadiness(subnet, vnet, effectivePlan)
 	if readinessResult.RequeueAfter > 0 &&
 		(result.RequeueAfter == 0 || readinessResult.RequeueAfter < result.RequeueAfter) {
 		result.RequeueAfter = readinessResult.RequeueAfter
@@ -430,7 +450,7 @@ func (r *SubnetReconciler) ensureVNetLockLease(ctx context.Context, subnet *v1al
 }
 
 // updateSubnetStrategyAnnotations stamps the implementation-strategy, k8s
-// implementation-strategy, VIP CIDR, networking-type, and parent-VirtualNetwork-name
+// implementation-strategy, selected Subnet dispatch role, VIP CIDR, networking-type, and parent-VirtualNetwork-name
 // annotations AAP playbooks rely on, persisting subnet if anything changed. The k8s
 // annotation is compared and, when hasK8sTarget is false, removed unconditionally (not
 // just when previously present) so a Subnet transitioning from dual-dispatch to
@@ -440,7 +460,7 @@ func (r *SubnetReconciler) ensureVNetLockLease(ctx context.Context, subnet *v1al
 // parent VN by the time this runs. Returns true when it persisted a change — the caller
 // should return immediately in that case, since the change itself triggers a fresh
 // reconcile that resumes with up-to-date annotations.
-func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, vipCIDR, networkingType, virtualNetworkName string, hasK8sTarget bool) (bool, error) {
+func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, vipCIDR, networkingType, virtualNetworkName string, hasK8sTarget bool, ownerRole string) (bool, error) {
 	if subnet.Annotations == nil {
 		subnet.Annotations = make(map[string]string)
 	}
@@ -455,6 +475,13 @@ func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, 
 		} else {
 			delete(subnet.Annotations, osacK8sImplementationStrategyAnnotation)
 		}
+		changed = true
+	}
+	if ownerRole != "" && subnet.Annotations[osacSubnetImplementationRoleAnnotation] != ownerRole {
+		subnet.Annotations[osacSubnetImplementationRoleAnnotation] = ownerRole
+		changed = true
+	} else if ownerRole == "" && subnet.Annotations[osacSubnetImplementationRoleAnnotation] != "" {
+		delete(subnet.Annotations, osacSubnetImplementationRoleAnnotation)
 		changed = true
 	}
 	if vipCIDR != "" && subnet.Annotations[osacVIPCIDRAnnotation] != vipCIDR {
@@ -625,8 +652,9 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 
 	var result ctrl.Result
 	var err error
-	fabricTarget := plan.FabricTarget()
-	if fabricTarget == nil {
+	if subnet.Annotations[osacSubnetImplementationRoleAnnotation] != "" {
+		result, err = r.handleSingleOwnerProvisioning(ctx, subnet, plan)
+	} else if plan.FabricTarget() == nil {
 		// No-dispatcher legacy path: implementationStrategy came from the parent
 		// VirtualNetwork spec's annotation rather than a resolved DispatchPlan. Job
 		// history for these Subnets has always been untargeted, so keep using the
@@ -652,6 +680,7 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 			},
 		)
 	} else {
+		fabricTarget := plan.FabricTarget()
 		k8sTarget := plan.K8sTarget()
 		fabricName := string(dispatcher.ManagerRoleFabric)
 		k8sName := string(dispatcher.ManagerRoleK8s)
@@ -724,6 +753,63 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 	return result, nil
 }
 
+// handleSingleOwnerProvisioning manages a Secondary Subnet whose owner was
+// selected from SubnetSpec. The dispatch plan has already been reduced to one
+// target, and the job is tagged with that target role so status and deletion
+// continue to identify the same owner even after the parent VirtualNetwork is
+// gone.
+func (r *SubnetReconciler) handleSingleOwnerProvisioning(
+	ctx context.Context,
+	subnet *v1alpha1.Subnet,
+	plan *dispatcher.DispatchPlan,
+) (ctrl.Result, error) {
+	if plan == nil || len(plan.Targets) != 1 {
+		return ctrl.Result{}, fmt.Errorf("Secondary Subnet owner selection must resolve exactly one dispatch target")
+	}
+	target := plan.Targets[0]
+	targetName := string(target.Role)
+	if targetName == "" {
+		return ctrl.Result{}, fmt.Errorf("Secondary Subnet owner selection resolved an empty dispatch role")
+	}
+
+	onFailed := func(message string) {
+		subnet.Status.Phase = v1alpha1.SubnetPhaseFailed
+		setReadyConditionFailed(&subnet.Status.Conditions, fmt.Sprintf("%s target: %s", targetName, message))
+	}
+	onSuccess := func(_ provisioning.ProvisionStatus) {
+		if allProvisionTargetsSucceeded(subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion, targetName) {
+			subnet.Status.Phase = v1alpha1.SubnetPhaseReady
+			setReadyConditionTrue(&subnet.Status.Conditions)
+		}
+	}
+
+	result, err := provisioning.RunMultiTargetProvisioningLifecycle(ctx,
+		[]provisioning.JobTarget{{
+			Name:      targetName,
+			Provider:  newDispatchTargetProvider(r.ProvisioningProvider, target.Manager.Name),
+			Callbacks: &provisioning.PollCallbacks{OnFailed: onFailed, OnSuccess: onSuccess},
+			CheckAPIServer: func() bool {
+				return provisioning.CheckAPIServerForNonTerminalProvisionJobAndTarget(
+					ctx, r.APIReader, client.ObjectKeyFromObject(subnet), &v1alpha1.Subnet{}, subnetProvisioningJobsExtractor, targetName)
+			},
+			// A fabric-owned Secondary Subnet can inherit pre-dispatcher history.
+			AbsorbsLegacyHistory: target.Role == dispatcher.ManagerRoleFabric,
+		}},
+		subnet,
+		&provisioning.State{Jobs: &subnet.Status.ProvisioningJobs, DesiredConfigVersion: subnet.Status.DesiredConfigVersion},
+		r.MaxJobHistory,
+		r.StatusPollInterval,
+		func() error {
+			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(subnet), subnet.Status)
+		},
+	)
+	if err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
 // isSubnetConfigApplied reports whether the current desired config version has been
 // successfully applied to every target the plan resolves. On the dispatcher path,
 // provision jobs are tagged by target ("fabric"/"k8s") rather than left untagged, so
@@ -732,7 +818,10 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 // and would regress Ready back to Progressing on every reconcile. Falls back to
 // provisioning.IsConfigApplied for the no-dispatcher legacy path (plan has no fabric
 // target), whose job history has always been untargeted.
-func isSubnetConfigApplied(jobs []v1alpha1.JobStatus, desiredVersion string, plan *dispatcher.DispatchPlan) bool {
+func isSubnetConfigApplied(jobs []v1alpha1.JobStatus, desiredVersion string, plan *dispatcher.DispatchPlan, ownerRole string) bool {
+	if ownerRole != "" {
+		return allProvisionTargetsSucceeded(jobs, desiredVersion, ownerRole)
+	}
 	fabricTarget := plan.FabricTarget()
 	if fabricTarget == nil {
 		return provisioning.IsConfigApplied(&jobs, desiredVersion)
@@ -785,6 +874,28 @@ func allProvisionTargetsSucceeded(jobs []v1alpha1.JobStatus, desiredVersion stri
 func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1alpha1.Subnet) (ctrl.Result, error) {
 	if r.ProvisioningProvider == nil {
 		ctrllog.FromContext(ctx).Info("no provisioning provider configured, skipping deprovisioning")
+		return ctrl.Result{}, nil
+	}
+
+	// Secondary Subnets persist their single selected dispatch role because the
+	// parent VirtualNetwork may already be gone. Deprovision exactly that target;
+	// never reconstruct a dual-dispatch operation during deletion.
+	if ownerRole := subnet.Annotations[osacSubnetImplementationRoleAnnotation]; ownerRole != "" {
+		strategy := subnet.Annotations[osacImplementationStrategyAnnotation]
+		result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx,
+			[]provisioning.DeprovisionTarget{{
+				Name:                 ownerRole,
+				Provider:             newDispatchTargetProvider(r.ProvisioningProvider, strategy),
+				AbsorbsLegacyHistory: ownerRole == string(dispatcher.ManagerRoleFabric),
+			}},
+			subnet,
+			&subnet.Status.ProvisioningJobs,
+			r.MaxJobHistory,
+			r.StatusPollInterval,
+		)
+		if err != nil || !done {
+			return result, err
+		}
 		return ctrl.Result{}, nil
 	}
 

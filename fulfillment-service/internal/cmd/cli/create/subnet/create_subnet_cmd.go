@@ -65,15 +65,22 @@ func Cmd() *cobra.Command {
 		"",
 		ipv6CidrFlagHelp,
 	)
+	flags.StringVar(
+		&runner.args.implementationStrategy,
+		"implementation-strategy",
+		"",
+		implementationStrategyFlagHelp,
+	)
 	return result
 }
 
 type runnerContext struct {
 	args struct {
-		name           string
-		virtualNetwork string
-		ipv4Cidr       string
-		ipv6Cidr       string
+		name                   string
+		virtualNetwork         string
+		ipv4Cidr               string
+		ipv6Cidr               string
+		implementationStrategy string
 	}
 	logger   *slog.Logger
 	console  *terminal.Console
@@ -121,21 +128,13 @@ func (c *runnerContext) run(cmd *cobra.Command, args []string) error {
 
 	client := publicv1.NewSubnetsClient(conn)
 
-	spec := publicv1.SubnetSpec_builder{
-		VirtualNetwork: &publicv1.VirtualNetworkLocalReference{Id: vn.GetId()},
-	}
-	if c.args.ipv4Cidr != "" {
-		spec.Ipv4Cidr = &c.args.ipv4Cidr
-	}
-	if c.args.ipv6Cidr != "" {
-		spec.Ipv6Cidr = &c.args.ipv6Cidr
-	}
+	spec := c.buildSpec(vn.GetId())
 	subnet := publicv1.Subnet_builder{
 		Metadata: publicv1.Metadata_builder{
 			Name:   c.args.name,
 			Tenant: c.settings.Tenant(),
 		}.Build(),
-		Spec: spec.Build(),
+		Spec: spec,
 	}.Build()
 
 	response, err := client.Create(ctx, publicv1.SubnetsCreateRequest_builder{Object: subnet}.Build())
@@ -146,6 +145,22 @@ func (c *runnerContext) run(cmd *cobra.Command, args []string) error {
 	c.console.Infof(ctx, "Created subnet '%s' (ID: %s).\n", response.Object.GetMetadata().GetName(), response.Object.GetId())
 
 	return nil
+}
+
+func (c *runnerContext) buildSpec(virtualNetworkID string) *publicv1.SubnetSpec {
+	spec := publicv1.SubnetSpec_builder{
+		VirtualNetwork: &publicv1.VirtualNetworkLocalReference{Id: virtualNetworkID},
+	}
+	if c.args.ipv4Cidr != "" {
+		spec.Ipv4Cidr = &c.args.ipv4Cidr
+	}
+	if c.args.ipv6Cidr != "" {
+		spec.Ipv6Cidr = &c.args.ipv6Cidr
+	}
+	if c.args.implementationStrategy != "" {
+		spec.ImplementationStrategy = &c.args.implementationStrategy
+	}
+	return spec.Build()
 }
 
 const shortHelp = `Create a subnet`
@@ -165,6 +180,12 @@ To create a dual-stack subnet:
 {{ bt 3 }}shell
 {{ binary }} create subnet --name my-subnet --virtual-network vnet-abc123 --ipv4-cidr 10.0.1.0/24 --ipv6-cidr fd00:1234::/64
 {{ bt 3 }}
+
+For a Secondary (router-pod model) subnet, select its backend implementation:
+
+{{ bt 3 }}shell
+{{ binary }} create subnet --name my-subnet --virtual-network vnet-abc123 --ipv4-cidr 10.0.1.0/24 --implementation-strategy netris
+{{ bt 3 }}
 `
 
 const nameFlagHelp = `
@@ -183,4 +204,10 @@ _CIDR_ - IPv4 CIDR block for this subnet, for example
 const ipv6CidrFlagHelp = `
 _CIDR_ - IPv6 CIDR block for this subnet, for example
 {{ bt }}fd00:1234::/64{{ bt }}.
+`
+
+const implementationStrategyFlagHelp = `
+_NAME_ - Backend implementation strategy for this subnet. Only valid for
+Secondary (router-pod model) virtual networks; when omitted, the deployment
+default is selected.
 `

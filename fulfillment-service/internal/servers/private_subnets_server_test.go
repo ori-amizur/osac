@@ -145,6 +145,21 @@ var _ = Describe("Private subnets server", func() {
 		return response.GetObject()
 	}
 
+	createSecondaryVirtualNetwork := func(ctx context.Context, ipv4Cidr, ipv6Cidr string) *privatev1.VirtualNetwork {
+		vn := createVirtualNetwork(ctx, ipv4Cidr, ipv6Cidr)
+		vn.Spec.NetworkingType = privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY
+
+		vnDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+			SetLogger(logger).
+			SetTenancyLogic(tenancy).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		response, err := vnDao.Update().SetObject(vn).Do(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		return response.GetObject()
+	}
+
 	Describe("Creation", func() {
 		It("Can be built if all the required parameters are set", func() {
 			server, err := NewPrivateSubnetsServer().
@@ -203,6 +218,38 @@ var _ = Describe("Private subnets server", func() {
 
 				err := server.validateSubnet(ctx, subnet, nil)
 				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("accepts an implementation strategy for a Secondary VirtualNetwork", func() {
+				vn := createSecondaryVirtualNetwork(ctx, "10.0.0.0/16", "")
+				strategy := "cudn-net"
+
+				subnet := privatev1.Subnet_builder{
+					Spec: privatev1.SubnetSpec_builder{
+						Ipv4Cidr:               new("10.0.1.0/24"),
+						ImplementationStrategy: &strategy,
+						VirtualNetwork:         privatev1.VirtualNetworkLocalReference_builder{Id: vn.GetId()}.Build(),
+					}.Build(),
+				}.Build()
+
+				err := server.validateSubnet(ctx, subnet, nil)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("rejects an implementation strategy for a non-Secondary VirtualNetwork", func() {
+				vn := createVirtualNetwork(ctx, "10.0.0.0/16", "")
+				strategy := "cudn-net"
+
+				subnet := privatev1.Subnet_builder{
+					Spec: privatev1.SubnetSpec_builder{
+						Ipv4Cidr:               new("10.0.1.0/24"),
+						ImplementationStrategy: &strategy,
+						VirtualNetwork:         privatev1.VirtualNetworkLocalReference_builder{Id: vn.GetId()}.Build(),
+					}.Build(),
+				}.Build()
+
+				err := server.validateSubnet(ctx, subnet, nil)
+				Expect(err).To(MatchError("rpc error: code = InvalidArgument desc = field 'spec.implementation_strategy' is only valid for Secondary VirtualNetworks"))
 			})
 
 			It("rejects invalid IPv4 CIDR format", func() {
@@ -858,6 +905,29 @@ var _ = Describe("Private subnets server", func() {
 
 				err := server.validateSubnet(ctx, updated, existing)
 				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("prevents implementation strategy modification on Update", func() {
+				oldStrategy := "netris"
+				newStrategy := "cudn-net"
+				existing := privatev1.Subnet_builder{
+					Spec: privatev1.SubnetSpec_builder{
+						Ipv4Cidr:               new("10.0.1.0/24"),
+						ImplementationStrategy: &oldStrategy,
+						VirtualNetwork:         privatev1.VirtualNetworkLocalReference_builder{Id: "secondary-vn"}.Build(),
+					}.Build(),
+				}.Build()
+
+				updated := privatev1.Subnet_builder{
+					Spec: privatev1.SubnetSpec_builder{
+						Ipv4Cidr:               new("10.0.1.0/24"),
+						ImplementationStrategy: &newStrategy,
+						VirtualNetwork:         privatev1.VirtualNetworkLocalReference_builder{Id: "secondary-vn"}.Build(),
+					}.Build(),
+				}.Build()
+
+				err := server.validateSubnet(ctx, updated, existing)
+				Expect(err).To(MatchError("rpc error: code = InvalidArgument desc = field 'spec.implementation_strategy' is immutable and cannot be changed from 'netris' to 'cudn-net'"))
 			})
 		})
 

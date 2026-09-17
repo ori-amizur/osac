@@ -94,6 +94,13 @@ message SubnetSpec {
   //
   // Leave empty for IPv4-only subnets.
   optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
+
+  // Backend implementation strategy for this subnet. This field is only valid
+  // when the parent VirtualNetwork uses the Secondary networking model. When
+  // omitted for a Secondary subnet, the deployment's default implementation is
+  // selected. Exactly one backend owns a subnet; a subnet is never provisioned
+  // by multiple backends.
+  optional string implementation_strategy = 4 [(google.api.field_behavior) = IMMUTABLE];
 }
 
 // Represents the current operational state of a Subnet.

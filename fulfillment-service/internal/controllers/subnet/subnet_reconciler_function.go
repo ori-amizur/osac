@@ -415,5 +415,11 @@ func (t *task) buildSpec() osacv1alpha1.SubnetSpec {
 		spec.IPv6CIDR = t.subnet.GetSpec().GetIpv6Cidr()
 	}
 
+	// A backend strategy is only meaningful for Secondary VirtualNetworks. The
+	// service validates that constraint before this object reaches the hub.
+	if t.subnet.GetSpec().HasImplementationStrategy() {
+		spec.ImplementationStrategy = t.subnet.GetSpec().GetImplementationStrategy()
+	}
+
 	return spec
 }

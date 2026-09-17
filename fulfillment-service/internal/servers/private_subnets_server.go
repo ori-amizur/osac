@@ -338,6 +338,15 @@ func (s *PrivateSubnetsServer) validateVirtualNetworkReference(ctx context.Conte
 
 	parentSpec := virtualNetwork.GetSpec()
 
+	// A Subnet implementation strategy is a Secondary-networking feature. Primary
+	// Subnets retain the existing NetworkClass/dispatcher behavior and must not
+	// expose a second backend-selection mechanism.
+	if spec.GetImplementationStrategy() != "" &&
+		parentSpec.GetNetworkingType() != privatev1.VirtualNetworkNetworkingType_VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY {
+		return grpcstatus.Errorf(grpccodes.InvalidArgument,
+			"field 'spec.implementation_strategy' is only valid for Secondary VirtualNetworks")
+	}
+
 	// SUB-VAL-07: Validate IPv4 CIDR only if parent has IPv4
 	if spec.GetIpv4Cidr() != "" {
 		if parentSpec.GetIpv4Cidr() == "" {
@@ -469,6 +478,15 @@ func validateImmutableFieldsSubnet(newSubnet *privatev1.Subnet, existingSubnet *
 		return grpcstatus.Errorf(grpccodes.InvalidArgument,
 			"field 'spec.virtual_network' is immutable and cannot be changed from '%s' to '%s'",
 			refKey(existingSpec.GetVirtualNetwork()), refKey(newSpec.GetVirtualNetwork()))
+	}
+
+	// The implementation owner is immutable. Changing it after provisioning could
+	// leave the old backend's IPAM and network resources behind while another
+	// backend starts allocating from the same logical subnet.
+	if newSpec.GetImplementationStrategy() != existingSpec.GetImplementationStrategy() {
+		return grpcstatus.Errorf(grpccodes.InvalidArgument,
+			"field 'spec.implementation_strategy' is immutable and cannot be changed from '%s' to '%s'",
+			existingSpec.GetImplementationStrategy(), newSpec.GetImplementationStrategy())
 	}
 
 	// SUB-VAL-14, SUB-VAL-15: Preserve and check immutable CIDR fields.

@@ -103,6 +103,26 @@ var _ = Describe("buildSpec", func() {
 		Expect(spec.IPv4CIDR).To(BeEmpty())
 		Expect(spec.IPv6CIDR).To(Equal(ipv6))
 	})
+
+	It("Includes the requested implementation strategy", func() {
+		ipv4 := "10.0.1.0/24"
+		strategy := "cudn-net"
+
+		task := &task{
+			subnet: privatev1.Subnet_builder{
+				Id: "subnet-test-strategy",
+				Spec: privatev1.SubnetSpec_builder{
+					VirtualNetwork:         privatev1.VirtualNetworkLocalReference_builder{Id: "vnet-strategy"}.Build(),
+					Ipv4Cidr:               &ipv4,
+					ImplementationStrategy: &strategy,
+				}.Build(),
+			}.Build(),
+		}
+
+		spec := task.buildSpec()
+
+		Expect(spec.ImplementationStrategy).To(Equal(strategy))
+	})
 })
 
 // newSubnetCR creates a typed Subnet CR for use with the fake client.

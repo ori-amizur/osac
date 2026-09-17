@@ -56,6 +56,15 @@ spec:
           spec:
             description: spec defines the desired state of Subnet
             properties:
+              implementationStrategy:
+                description: |-
+                  ImplementationStrategy selects the single backend that owns this Subnet.
+                  It is only applicable to Subnets whose parent VirtualNetwork has Secondary
+                  networking type. When omitted, the deployment default is used.
+                type: string
+                x-kubernetes-validations:
+                - message: implementationStrategy is immutable
+                  rule: self == oldSelf
               ipv4Cidr:
                 description: IPv4CIDR is the IPv4 CIDR block for this subnet
                 type: string

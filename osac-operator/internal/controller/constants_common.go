@@ -43,6 +43,12 @@ const (
 	// already be gone at delete time.
 	osacK8sImplementationStrategyAnnotation = osacPrefix + "/k8s-implementation-strategy"
 
+	// osacSubnetImplementationRoleAnnotation records the single dispatch role
+	// selected for a Secondary Subnet. It is needed during deletion because the
+	// parent VirtualNetwork may already be gone. Primary Subnets retain the
+	// historical dual-dispatch annotations and do not use this marker.
+	osacSubnetImplementationRoleAnnotation = osacPrefix + "/subnet-implementation-role"
+
 	// osacExternalIPPoolNameAnnotation is the K8s resource name of the parent ExternalIPPool.
 	// set on ExternalIP CRs
 	osacExternalIPPoolNameAnnotation = osacPrefix + "/externalippool-name"

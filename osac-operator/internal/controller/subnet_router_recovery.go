@@ -25,7 +25,8 @@ func (r *SubnetReconciler) reconcileParentRouterReadiness(
 		return ctrl.Result{}
 	}
 
-	configApplied := isSubnetConfigApplied(subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion, plan)
+	configApplied := isSubnetConfigApplied(subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion, plan,
+		subnet.Annotations[osacSubnetImplementationRoleAnnotation])
 	recoveryReady := vnet.Status.RouterPodRecovery != nil &&
 		vnet.Status.RouterPodRecovery.State == v1alpha1.JobStateSucceeded &&
 		vnet.Status.RouterPodRecovery.PodUID != ""

@@ -74,6 +74,15 @@ var _ = Describe("Router agent configuration", func() {
 			Expect(config.Routes).To(HaveLen(1))
 		})
 
+		It("parses a route with multiple fabric peer gateways", func() {
+			config, err := parseConfig([]byte(`{
+        "routes":[{"destination":"10.250.1.0/24","gateways":["169.254.240.2","169.254.240.3"],"interface":"transit"}]
+    }`))
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(config.Routes[0].Gateways).To(Equal([]string{"169.254.240.2", "169.254.240.3"}))
+		})
+
 		It("rejects an incomplete route", func() {
 			_, err := parseConfig([]byte(`{"gatewayIPs":[],"routes":[{"destination":"10.0.0.0/8"}]}`))
 
@@ -95,6 +104,38 @@ var _ = Describe("Router agent configuration", func() {
 				{name: "ip", args: []string{"link", "set", "dev", "subnet-a", "up"}},
 				{name: "ip", args: []string{"addr", "replace", "10.220.1.1/24", "dev", "subnet-a"}},
 				{name: "ip", args: []string{"route", "replace", "10.240.0.0/16", "dev", "subnet-a"}},
+			}))
+		})
+
+		It("installs a multipath route through all fabric peers", func() {
+			runner := &fakeRunner{runFailures: map[string]error{}}
+			desired := RouterConfig{
+				Routes: []RouteSpec{{
+					Destination: "10.250.1.0/24",
+					Gateways:    []string{"169.254.240.2", "169.254.240.3"},
+					Interface:   "transit",
+				}},
+			}
+
+			err := reconcile(context.Background(), runner, RouterConfig{}, desired)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runner.calls).To(Equal([]recordedCommand{
+				{name: "ip", args: []string{"route", "replace", "10.250.1.0/24", "nexthop", "via", "169.254.240.2", "dev", "transit", "nexthop", "via", "169.254.240.3", "dev", "transit"}},
+			}))
+		})
+
+		It("deletes a multipath route by destination", func() {
+			runner := &fakeRunner{runFailures: map[string]error{}}
+			previous := RouterConfig{Routes: []RouteSpec{{
+				Destination: "10.250.1.0/24",
+				Gateways:    []string{"169.254.240.2", "169.254.240.3"},
+				Interface:   "transit",
+			}}}
+
+			err := reconcile(context.Background(), runner, previous, RouterConfig{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runner.calls).To(Equal([]recordedCommand{
+				{name: "ip", args: []string{"route", "del", "10.250.1.0/24"}},
 			}))
 		})
 

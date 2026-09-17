@@ -106,3 +106,12 @@
     msg: >-
       V-Net '{{ subnet_name }}' {{ (vnet_already_existed | default(false)) | ternary('already exists', 'created successfully') }}
       (ID: {{ vnet_id | default('unknown') }})
+
+- name: Publish fabric-owned Subnet routes to the router pod
+  ansible.builtin.include_role:
+    name: osac.templates.router_routes
+    tasks_from: update_locked
+  vars:
+    router_routes_subnet: "{{ subnet }}"
+    router_routes_exclude_current_subnet: false
+  when: subnet.metadata.annotations['osac.openshift.io/networking-type'] | default('Primary') == 'Secondary'

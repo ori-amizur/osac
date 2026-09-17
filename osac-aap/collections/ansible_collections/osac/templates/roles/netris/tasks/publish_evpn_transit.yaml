@@ -495,6 +495,22 @@
         label: "{{ item.address | default(item.ip_address, true) | default(item.ip, true) }}"
       when: (item.address | default(item.ip_address, true) | default(item.ip, true)) | length > 0
 
+    - name: Build the authoritative fabric peer address list
+      ansible.builtin.set_fact:
+        netris_evpn_transit_peer_addresses: >-
+          {{ netris_evpn_transit_peer_addresses | default([])
+             + [item.address | default(item.ip_address, true) | default(item.ip, true)
+                | ansible.utils.ipaddr('address')] }}
+      loop: "{{ netris_ipam_hosts | default([]) }}"
+      loop_control:
+        label: "{{ item.address | default(item.ip_address, true) | default(item.ip, true) }}"
+      when: (item.address | default(item.ip_address, true) | default(item.ip, true)) | length > 0
+
+    - name: Normalize the fabric peer address list
+      ansible.builtin.set_fact:
+        netris_evpn_transit_peer_addresses: >-
+          {{ netris_evpn_transit_peer_addresses | default([]) | unique | sort }}
+
     - name: Read the VN-scoped transit IPAM allocation
       ansible.builtin.include_role:
         name: netris.controller.ipam
@@ -590,6 +606,7 @@
                 'transit_reserved_ipam_subnet_name': netris_evpn_transit_reserved_ipam_subnet_name | string,
                 'transit_reserved_ipam_subnet_id': netris_evpn_transit_reserved_ipam_subnet.id | string,
                 'vpc_id': vpc_id | string,
+                'fabric_peer_addresses': netris_evpn_transit_peer_addresses | default([]) | to_json,
                 'source': 'netris'
               }
             } | to_nice_yaml

@@ -5,6 +5,15 @@
   ansible.builtin.set_fact:
     subnet_name: "{{ subnet.metadata.name }}"
 
+- name: Withdraw fabric-owned Subnet route from the router pod
+  ansible.builtin.include_role:
+    name: osac.templates.router_routes
+    tasks_from: update_locked
+  vars:
+    router_routes_subnet: "{{ subnet }}"
+    router_routes_exclude_current_subnet: true
+  when: subnet.metadata.annotations['osac.openshift.io/networking-type'] | default('Primary') == 'Secondary'
+
 - name: Display deletion information
   ansible.builtin.debug:
     msg: "Deleting Netris V-Net + IPAM subnet for Subnet '{{ subnet_name }}'"

@@ -1,0 +1,44 @@
+---
+# Reconcile only the routes field of the durable router ConfigMap while
+# preserving the current interface and gateway projection.
+
+- name: Collect the desired fabric-reachable routes
+  ansible.builtin.include_tasks: collect.yaml
+
+- name: Read the current router agent ConfigMap
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ router_routes_router_namespace }}"
+    name: "{{ router_routes_config_map_name }}"
+  register: router_routes_config_info
+  until:
+    - router_routes_config_info.resources | length == 1
+    - router_routes_config_info.resources[0].data['config.json'] is defined
+  retries: 60
+  delay: 2
+
+- name: Decode the current router agent configuration
+  ansible.builtin.set_fact:
+    router_routes_existing_config: >-
+      {{ router_routes_config_info.resources[0].data['config.json'] | from_json }}
+
+- name: Write the updated router agent ConfigMap
+  ansible.builtin.include_role:
+    name: osac.templates.cudn_net
+    tasks_from: write_router_config
+  vars:
+    router_pod_config_namespace: "{{ router_routes_router_namespace }}"
+    router_pod_config_tenant: "{{ router_routes_subnet.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
+    router_pod_config_owner_reference: "{{ router_routes_vn_uuid }}"
+    router_pod_config_networks: "{{ router_routes_existing_config.networks | default([]) }}"
+    router_pod_config_gateway_ips: "{{ router_routes_existing_config.gatewayIPs | default([]) }}"
+    router_pod_config_routes: "{{ router_routes_fabric_routes }}"
+    router_pod_config_version: >-
+      {{ {
+        'networks': router_routes_existing_config.networks | default([]),
+        'gatewayIPs': router_routes_existing_config.gatewayIPs | default([]),
+        'routes': router_routes_fabric_routes
+      } | to_json }}
+    router_pod_config_include_fabric_routes: false

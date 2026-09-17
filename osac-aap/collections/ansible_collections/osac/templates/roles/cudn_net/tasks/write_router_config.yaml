@@ -3,6 +3,20 @@
 # separate from OVN port-security reconciliation: the latter remains the temporary,
 # direct-ovn-nbctl AAP stopgap in patch_router_pod_port_security.yaml.
 
+- name: Collect fabric-reachable routes for the router agent
+  ansible.builtin.include_role:
+    name: osac.templates.router_routes
+    tasks_from: collect
+  vars:
+    router_routes_subnet: "{{ subnet }}"
+    router_routes_exclude_current_subnet: "{{ router_pod_config_exclude_current_subnet | default(false) }}"
+  when: router_pod_config_include_fabric_routes | default(false) | bool
+
+- name: Use the complete fabric-reachable route projection
+  ansible.builtin.set_fact:
+    router_pod_config_routes: "{{ router_routes_fabric_routes }}"
+  when: router_pod_config_include_fabric_routes | default(false) | bool
+
 - name: Write router agent ConfigMap
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"

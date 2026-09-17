@@ -1,0 +1,66 @@
+---
+# Serialize route projection updates that originate outside the cudn_net
+# router mutation workflow. cudn_net already holds this Lease when it calls
+# write_router_config directly.
+
+- name: Include remote cluster kubeconfig for route projection
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: get_remote_cluster_kubeconfig
+
+- name: Initialize router route lock state
+  ansible.builtin.set_fact:
+    router_routes_lock_acquired: false
+    router_routes_vn_name: >-
+      {{ router_routes_subnet.metadata.annotations
+         ['osac.openshift.io/virtual-network-name'] | default('') }}
+    router_routes_tenant: "{{ router_routes_subnet.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
+
+- name: Require the persisted VirtualNetwork name for route locking
+  ansible.builtin.assert:
+    that:
+      - router_routes_vn_name | length > 0
+    fail_msg: >-
+      Cannot lock route projection for Subnet '{{ router_routes_subnet.metadata.name }}'
+      without the persisted VirtualNetwork name.
+
+- name: Acquire the per-VirtualNetwork router mutation lock for route projection
+  ansible.builtin.include_role:
+    name: osac.service.vnet_lock
+    tasks_from: acquire
+  vars:
+    vnet_lock_name: "osac-router-{{ (router_routes_vn_name | hash('sha1'))[:32] }}"
+    vnet_lock_namespace: "{{ router_routes_vn_name }}"
+    vnet_lock_holder: >-
+      osac-router-routes-{{ awx_job_id | default(ansible_job_id | default('unknown')) }}
+    vnet_lock_tenant: "{{ router_routes_tenant }}"
+    vnet_lock_owner_reference: "{{ router_routes_subnet.spec.virtualNetwork | default('') }}"
+    vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    vnet_lock_duration_seconds: "{{ router_routes_lock_duration_seconds | default(600) }}"
+    _vnet_lock_max_retries: "{{ router_routes_lock_retries | default(180) }}"
+    _vnet_lock_retry_delay: "{{ router_routes_lock_retry_delay_seconds | default(1) }}"
+
+- name: Mark the router route lock as held
+  ansible.builtin.set_fact:
+    router_routes_lock_acquired: true
+
+- name: Reconcile the route projection under the per-VirtualNetwork lock
+  block:
+    - name: Update the router agent route projection
+      ansible.builtin.include_role:
+        name: osac.templates.router_routes
+        tasks_from: update
+      vars:
+        router_routes_manage_lock: false
+  always:
+    - name: Release the per-VirtualNetwork router mutation lock
+      ansible.builtin.include_role:
+        name: osac.service.vnet_lock
+        tasks_from: release
+      vars:
+        vnet_lock_name: "osac-router-{{ (router_routes_vn_name | hash('sha1'))[:32] }}"
+        vnet_lock_namespace: "{{ router_routes_vn_name }}"
+        vnet_lock_holder: >-
+          osac-router-routes-{{ awx_job_id | default(ansible_job_id | default('unknown')) }}
+        vnet_lock_kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+      when: router_routes_lock_acquired | bool

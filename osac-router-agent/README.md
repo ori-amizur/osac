@@ -16,7 +16,8 @@ The current contract is:
   ],
   "routes": [
     {"destination": "10.240.0.0/16", "interface": "subnet-example"},
-    {"destination": "0.0.0.0/0", "gateway": "10.220.1.1", "interface": "subnet-example"}
+    {"destination": "0.0.0.0/0", "gateway": "10.220.1.1", "interface": "subnet-example"},
+    {"destination": "10.250.1.0/24", "gateways": ["169.254.240.2", "169.254.240.3"], "interface": "transit"}
   ]
 }
 ```
@@ -25,6 +26,10 @@ The agent brings configured interfaces up, applies gateway addresses and routes,
 and removes state that disappeared from the last successfully applied
 configuration. If a referenced interface has not been injected yet, the
 configuration remains pending and is retried on the next poll.
+
+Routes may use `gateway` for one next hop or `gateways` for a multipath route
+through multiple fabric peers. The operator owns the peer list; the agent does
+not discover bare-metal networks or fabric topology.
 
 OVN port security is intentionally not handled here. AAP's `cudn_net` role
 currently performs that temporary OVN northbound database reconciliation.

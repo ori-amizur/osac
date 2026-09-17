@@ -1,0 +1,147 @@
+---
+# Build the complete fabric-reachable route projection for one Secondary
+# VirtualNetwork. The Subnet CRs are the authoritative source of destination
+# CIDRs and ownership; the VN-scoped transit ConfigMap is only the source of
+# backend-specific peer addresses.
+
+- name: Extract route projection identity
+  ansible.builtin.set_fact:
+    router_routes_vn_uuid: "{{ router_routes_subnet.spec.virtualNetwork | default('') }}"
+    router_routes_namespace: "{{ router_routes_subnet.metadata.namespace }}"
+    router_routes_router_namespace: >-
+      {{ router_routes_subnet.metadata.annotations
+         ['osac.openshift.io/virtual-network-name'] | default('') }}
+    router_routes_current_subnet_name: "{{ router_routes_subnet.metadata.name }}"
+
+- name: Require a VirtualNetwork reference for route projection
+  ansible.builtin.assert:
+    that:
+      - router_routes_vn_uuid | length > 0
+    fail_msg: >-
+      Cannot build router fabric routes for Subnet
+      '{{ router_routes_namespace }}/{{ router_routes_current_subnet_name }}'
+      without spec.virtualNetwork.
+
+- name: Require the persisted router namespace for route projection
+  ansible.builtin.assert:
+    that:
+      - router_routes_router_namespace | length > 0
+    fail_msg: >-
+      Cannot build router fabric routes for Subnet
+      '{{ router_routes_namespace }}/{{ router_routes_current_subnet_name }}'
+      without the persisted VirtualNetwork name.
+
+- name: Read the parent VirtualNetwork
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: osac.openshift.io/v1alpha1
+    kind: VirtualNetwork
+    namespace: "{{ router_routes_namespace }}"
+    label_selectors:
+      - "osac.openshift.io/virtualnetwork-uuid={{ router_routes_vn_uuid }}"
+  register: router_routes_virtual_network_info
+
+- name: Require an unambiguous parent VirtualNetwork
+  ansible.builtin.assert:
+    that:
+      - router_routes_virtual_network_info.resources | length == 1
+    fail_msg: >-
+      Expected exactly one parent VirtualNetwork for Subnet
+      '{{ router_routes_namespace }}/{{ router_routes_current_subnet_name }}',
+      found {{ router_routes_virtual_network_info.resources | length }}.
+
+- name: Select the parent VirtualNetwork route policy
+  ansible.builtin.set_fact:
+    router_routes_virtual_network: "{{ router_routes_virtual_network_info.resources[0] }}"
+    router_routes_transit_capability: >-
+      {{ router_routes_virtual_network_info.resources[0].metadata.annotations
+         ['osac.openshift.io/transit-capability'] | default('none') }}
+    router_routes_fabric_subnets: []
+    router_routes_fabric_routes: []
+
+- name: List authoritative Subnet resources in the VirtualNetwork namespace
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: osac.openshift.io/v1alpha1
+    kind: Subnet
+    namespace: "{{ router_routes_namespace }}"
+  register: router_routes_subnet_info
+  when:
+    - router_routes_virtual_network.spec.networkingType | default('Primary') == 'Secondary'
+    - router_routes_transit_capability == 'netris-evpn'
+
+- name: Select fabric-owned Secondary Subnets
+  ansible.builtin.set_fact:
+    router_routes_fabric_subnets: "{{ router_routes_fabric_subnets + [item] }}"
+  loop: "{{ router_routes_subnet_info.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - item.spec.virtualNetwork | default('') == router_routes_vn_uuid
+    - item.metadata.annotations['osac.openshift.io/networking-type'] | default('') == 'Secondary'
+    - item.metadata.annotations['osac.openshift.io/subnet-implementation-role'] | default('') == 'fabric'
+    - item.spec.ipv4Cidr | default('') | length > 0
+    - not (router_routes_exclude_current_subnet | bool and item.metadata.name == router_routes_current_subnet_name)
+
+- name: Read the VN-scoped Netris transit contract for fabric routes
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ router_routes_namespace }}"
+    name: "osac-transit-{{ (router_routes_vn_uuid | hash('sha1'))[:12] }}"
+  register: router_routes_transit_config_info
+  until:
+    - router_routes_transit_config_info.resources | length == 1
+    - router_routes_transit_config_info.resources[0].data.source | default('') == 'netris'
+    - >-
+      router_routes_transit_config_info.resources[0].data.fabric_peer_addresses
+      | default('[]') | from_json | length > 0
+  retries: 60
+  delay: 2
+  when: router_routes_fabric_subnets | length > 0
+
+- name: Decode the Netris fabric peer addresses
+  ansible.builtin.set_fact:
+    router_routes_transit_data: "{{ router_routes_transit_config_info.resources[0].data }}"
+    router_routes_peer_addresses: >-
+      {{ router_routes_transit_config_info.resources[0].data.fabric_peer_addresses | from_json }}
+  when: router_routes_fabric_subnets | length > 0
+
+- name: Validate the Netris fabric peer addresses
+  ansible.builtin.assert:
+    that:
+      - router_routes_peer_addresses is sequence
+      - router_routes_peer_addresses is not string
+      - router_routes_peer_addresses | length > 0
+      - item | ansible.utils.ipaddr('address') | length > 0
+      - router_routes_transit_data.cidr | osac.templates.cidr_contains(item)
+    fail_msg: >-
+      Netris transit contract for VirtualNetwork '{{ router_routes_virtual_network.metadata.name }}'
+      does not contain valid peer address '{{ item }}' inside '{{ router_routes_transit_data.cidr }}'.
+  loop: "{{ router_routes_peer_addresses | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: router_routes_fabric_subnets | length > 0
+
+- name: Build deterministic fabric-reachable route entries
+  ansible.builtin.set_fact:
+    router_routes_fabric_routes: >-
+      {{ router_routes_fabric_routes + [{
+        'destination': item.spec.ipv4Cidr,
+        'gateways': router_routes_peer_addresses | sort,
+        'interface': router_routes_transit_interface
+      }] }}
+  loop: "{{ router_routes_fabric_subnets | sort(attribute='metadata.name') }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Require unique fabric route destinations
+  ansible.builtin.assert:
+    that:
+      - >-
+        (router_routes_fabric_routes | map(attribute='destination') | list | unique | length)
+        == (router_routes_fabric_routes | length)
+    fail_msg: >-
+      Multiple fabric-owned Subnets would publish the same destination in the
+      router configuration for VirtualNetwork '{{ router_routes_virtual_network.metadata.name }}'.

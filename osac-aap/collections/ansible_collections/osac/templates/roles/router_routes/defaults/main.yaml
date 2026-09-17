@@ -1,0 +1,4 @@
+---
+router_routes_config_map_name: router-config
+router_routes_transit_interface: transit
+router_routes_exclude_current_subnet: false

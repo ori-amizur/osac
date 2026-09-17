@@ -51,9 +51,10 @@ type GatewayIPSpec struct {
 }
 
 type RouteSpec struct {
-	Destination string `json:"destination"`
-	Interface   string `json:"interface"`
-	Gateway     string `json:"gateway,omitempty"`
+	Destination string   `json:"destination"`
+	Interface   string   `json:"interface"`
+	Gateway     string   `json:"gateway,omitempty"`
+	Gateways    []string `json:"gateways,omitempty"`
 }
 
 type commandRunner interface {
@@ -213,6 +214,14 @@ func validateConfig(config RouterConfig) error {
 		if route.Interface == "" {
 			return fmt.Errorf("routes[%d].interface is required", index)
 		}
+		if route.Gateway != "" && len(route.Gateways) > 0 {
+			return fmt.Errorf("routes[%d] must use gateway or gateways, not both", index)
+		}
+		for gatewayIndex, gateway := range route.Gateways {
+			if gateway == "" {
+				return fmt.Errorf("routes[%d].gateways[%d] must not be empty", index, gatewayIndex)
+			}
+		}
 		key := routeKey(route)
 		if _, exists := seenRoutes[key]; exists {
 			return fmt.Errorf("routes[%d] duplicates route %q", index, key)
@@ -280,6 +289,17 @@ func reconcile(ctx context.Context, runner commandRunner, previous, desired Rout
 
 func routeCommand(operation string, route RouteSpec) []string {
 	args := []string{"ip", "route", operation, route.Destination}
+	if operation == "del" && len(route.Gateways) > 0 {
+		// Deleting by destination is sufficient for a multipath route and avoids
+		// making the delete command depend on the exact peer set used at install.
+		return args
+	}
+	if len(route.Gateways) > 0 {
+		for _, gateway := range route.Gateways {
+			args = append(args, "nexthop", "via", gateway, "dev", route.Interface)
+		}
+		return args
+	}
 	if route.Gateway != "" {
 		args = append(args, "via", route.Gateway)
 	}
@@ -292,7 +312,7 @@ func runRoute(ctx context.Context, runner commandRunner, operation string, route
 }
 
 func routeKey(route RouteSpec) string {
-	return strings.Join([]string{route.Destination, route.Gateway, route.Interface}, "\x00")
+	return strings.Join([]string{route.Destination, route.Gateway, strings.Join(route.Gateways, ","), route.Interface}, "\x00")
 }
 
 func ensureSNAT(ctx context.Context, runner commandRunner, clusterInterface, clusterIP string) error {

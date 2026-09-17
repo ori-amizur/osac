@@ -95,6 +95,7 @@
 - name: Initialize the router gateway mapping
   ansible.builtin.set_fact:
     router_pod_gateway_ips: []
+    router_pod_gateway_claim_names: "{{ router_pod_networks | map(attribute='name') | list }}"
 
 - name: Build the router gateway mapping from persistent claim addresses
   ansible.builtin.set_fact:
@@ -102,6 +103,7 @@
       {{ router_pod_gateway_ips + [item.metadata.name ~ '=' ~ item.status.ips[0]] }}
   loop: "{{ router_gateway_claims_info.resources }}"
   when:
+    - item.metadata.name in router_pod_gateway_claim_names
     - item.status is defined
     - item.status.ips is defined
     - item.status.ips | length > 0
@@ -119,6 +121,7 @@
       }] }}
   loop: "{{ router_gateway_claims_info.resources }}"
   when:
+    - item.metadata.name in router_pod_gateway_claim_names
     - item.status is defined
     - item.status.ips is defined
     - item.status.ips | length > 0

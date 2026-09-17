@@ -11,6 +11,14 @@
     name: osac.service.common
     tasks_from: get_remote_cluster_kubeconfig
 
+- name: Extract VirtualNetwork identity for transit reconciliation
+  ansible.builtin.set_fact:
+    vn_uuid: "{{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] }}"
+    vn_name: "{{ virtual_network.metadata.name }}"
+    vn_namespace: "{{ virtual_network.metadata.namespace }}"
+    vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
+    vn_ipv4_cidr: "{{ virtual_network.spec.ipv4Cidr | default('') }}"
+
 - name: Derive deterministic VN-scoped transit resource names
   ansible.builtin.set_fact:
     netris_evpn_transit_suffix: "{{ (vn_uuid | hash('sha1'))[:12] }}"

@@ -102,6 +102,24 @@ type SubnetStatus struct {
 	// +kubebuilder:validation:Optional
 	ProvisioningJobs []JobStatus `json:"provisioningJobs,omitempty"`
 
+	// FabricRouteConfigVersion is the configuration version successfully (or
+	// currently being) reconciled for the auxiliary fabric-side route. It is
+	// separate from DesiredConfigVersion because the route is not Subnet
+	// provisioning and must not affect the Subnet's single backend owner.
+	// +kubebuilder:validation:Optional
+	FabricRouteConfigVersion string `json:"fabricRouteConfigVersion,omitempty"`
+
+	// FabricRouteImplementationStrategy records the fabric manager that owns the
+	// auxiliary route. It is persisted independently of the Subnet owner because
+	// route deletion may happen after the parent VirtualNetwork is gone.
+	// +kubebuilder:validation:Optional
+	FabricRouteImplementationStrategy string `json:"fabricRouteImplementationStrategy,omitempty"`
+
+	// FabricRouteJobs holds the independent AAP job history for the route
+	// published to the fabric for a Kubernetes-owned Secondary Subnet.
+	// +kubebuilder:validation:Optional
+	FabricRouteJobs []JobStatus `json:"fabricRouteJobs,omitempty"`
+
 	// Conditions holds an array of metav1.Condition that describe the state of the Subnet
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`

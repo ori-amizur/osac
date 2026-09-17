@@ -1,0 +1,115 @@
+---
+# Publish the CIDR of a Kubernetes-owned Secondary Subnet into the VN's
+# existing Netris VPC. This is route-only reconciliation; it must not create a
+# Netris IPAM subnet or V-Net for the Kubernetes-owned Subnet.
+
+- name: Include remote cluster kubeconfig for the transit contract
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: get_remote_cluster_kubeconfig
+
+- name: Extract Subnet route identity
+  ansible.builtin.set_fact:
+    subnet_name: "{{ subnet.metadata.name }}"
+    subnet_ipv4_cidr: "{{ subnet.spec.ipv4Cidr | default('') }}"
+    subnet_virtual_network_id: "{{ subnet.spec.virtualNetwork | default('') }}"
+    subnet_virtual_network_name: >-
+      {{ subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] | default('') }}
+    subnet_virtual_network_region: >-
+      {{ subnet.metadata.annotations['osac.openshift.io/virtual-network-region'] | default('') }}
+    vn_namespace: "{{ subnet.metadata.namespace }}"
+
+- name: Validate Subnet route inputs
+  ansible.builtin.assert:
+    that:
+      - subnet_ipv4_cidr | length > 0
+      - subnet_virtual_network_id | length > 0
+      - subnet_virtual_network_name | length > 0
+      - subnet_virtual_network_region | length > 0
+    fail_msg: >-
+      Kubernetes-owned Secondary Subnet '{{ subnet_name }}' is missing the
+      immutable VirtualNetwork identity needed for fabric route reconciliation.
+
+- name: Read the VN-scoped EVPN transit contract
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ vn_namespace }}"
+    name: "osac-transit-{{ (subnet_virtual_network_id | hash('sha1'))[:12] }}"
+  register: transit_configmap_info
+  until:
+    - transit_configmap_info.resources | length == 1
+    - transit_configmap_info.resources[0].data.vpc_id | default('') | length > 0
+    - transit_configmap_info.resources[0].data.ipam_claim_name | default('') | length > 0
+  retries: 60
+  delay: 2
+
+- name: Select transit contract values
+  ansible.builtin.set_fact:
+    transit_config: "{{ transit_configmap_info.resources[0].data }}"
+    transit_ipam_claim_name: "{{ transit_configmap_info.resources[0].data.ipam_claim_name }}"
+    transit_vpc_id: "{{ transit_configmap_info.resources[0].data.vpc_id | int }}"
+
+- name: Read the persistent router transit IPAMClaim
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.cni.cncf.io/v1alpha1
+    kind: IPAMClaim
+    namespace: "{{ subnet_virtual_network_name }}"
+    name: "{{ transit_ipam_claim_name }}"
+  register: transit_ipam_claim_info
+  until:
+    - transit_ipam_claim_info.resources | length == 1
+    - transit_ipam_claim_info.resources[0].status.ips | default([]) | length > 0
+  retries: 60
+  delay: 2
+
+- name: Resolve the router pod transit next hop
+  ansible.builtin.set_fact:
+    transit_next_hop: >-
+      {{ transit_ipam_claim_info.resources[0].status.ips[0]
+         | ansible.utils.ipaddr('address') }}
+
+- name: Validate the router pod transit next hop
+  ansible.builtin.assert:
+    that:
+      - transit_next_hop | ansible.utils.ipaddr('version') == 4
+      - transit_next_hop | ansible.utils.ipaddr('address') | length > 0
+    fail_msg: >-
+      Persistent transit IPAMClaim '{{ transit_ipam_claim_name }}' did not
+      provide a valid IPv4 router transit address.
+
+- name: Read the VN VPC
+  ansible.builtin.include_role:
+    name: netris.controller.vpc
+    tasks_from: read
+  vars:
+    vpc_name: "{{ subnet_virtual_network_name }}"
+
+- name: Validate the transit contract VPC matches the VN VPC
+  ansible.builtin.assert:
+    that:
+      - netris_vpc is not none
+      - netris_vpc.id | int == transit_vpc_id | int
+    fail_msg: >-
+      Transit contract VPC '{{ transit_vpc_id }}' does not match the VN VPC
+      '{{ subnet_virtual_network_name }}'. Refusing to publish a route into a
+      different routing domain.
+
+- name: Derive the deterministic OSAC route identity
+  ansible.builtin.set_fact:
+    subnet_route_description: >-
+      osac-secondary-subnet-route-{{ (subnet_virtual_network_id | hash('sha1'))[:12] }}-{{ subnet_name }}
+    subnet_route_site_id: "{{ netris_region_site_map[subnet_virtual_network_region] | default(netris_site_id) }}"
+
+- name: Create or update the fabric-side route
+  ansible.builtin.include_role:
+    name: netris.controller.route
+    tasks_from: create
+  vars:
+    route_description: "{{ subnet_route_description }}"
+    route_prefix: "{{ subnet_ipv4_cidr }}"
+    route_next_hop: "{{ transit_next_hop }}"
+    route_site_id: "{{ subnet_route_site_id }}"
+    route_vpc_id: "{{ transit_vpc_id }}"

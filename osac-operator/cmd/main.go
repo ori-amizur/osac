@@ -96,13 +96,15 @@ const (
 	defaultStorageConfigNamespace = "osac-system"
 
 	// AAP configuration
-	envAAPURL                 = "OSAC_AAP_URL"
-	envAAPToken               = "OSAC_AAP_TOKEN"
-	envAAPProvisionTemplate   = "OSAC_AAP_PROVISION_TEMPLATE"
-	envAAPDeprovisionTemplate = "OSAC_AAP_DEPROVISION_TEMPLATE"
-	envAAPStatusPollInterval  = "OSAC_AAP_STATUS_POLL_INTERVAL"
-	envAAPInsecureSkipVerify  = "OSAC_AAP_INSECURE_SKIP_VERIFY"
-	envAAPTemplatePrefix      = "OSAC_AAP_TEMPLATE_PREFIX"
+	envAAPURL                       = "OSAC_AAP_URL"
+	envAAPToken                     = "OSAC_AAP_TOKEN"
+	envAAPProvisionTemplate         = "OSAC_AAP_PROVISION_TEMPLATE"
+	envAAPDeprovisionTemplate       = "OSAC_AAP_DEPROVISION_TEMPLATE"
+	envAAPStatusPollInterval        = "OSAC_AAP_STATUS_POLL_INTERVAL"
+	envAAPInsecureSkipVerify        = "OSAC_AAP_INSECURE_SKIP_VERIFY"
+	envAAPTemplatePrefix            = "OSAC_AAP_TEMPLATE_PREFIX"
+	envAAPCreateSubnetRouteTemplate = "OSAC_AAP_CREATE_SUBNET_ROUTE_TEMPLATE"
+	envAAPDeleteSubnetRouteTemplate = "OSAC_AAP_DELETE_SUBNET_ROUTE_TEMPLATE"
 
 	// Cluster (ClusterOrder) AAP template overrides
 	envClusterAAPProvisionTemplate   = "OSAC_CLUSTER_AAP_PROVISION_TEMPLATE"
@@ -663,6 +665,11 @@ func setupNetworkingControllers(
 	templatePrefix := helpers.GetEnvWithDefault(envAAPTemplatePrefix, "osac")
 	aapClient := aap.NewClient(aapURL, aapToken, aapInsecureSkipVerify)
 	networkingProvider := provisioning.NewAAPProviderWithPrefix(aapClient, templatePrefix)
+	fabricRouteProvider := provisioning.NewAAPRouteProvider(
+		aapClient,
+		helpers.GetEnvWithDefault(envAAPCreateSubnetRouteTemplate, fmt.Sprintf("%s-create-subnet-route", templatePrefix)),
+		helpers.GetEnvWithDefault(envAAPDeleteSubnetRouteTemplate, fmt.Sprintf("%s-delete-subnet-route", templatePrefix)),
+	)
 
 	// Create a dedicated provider for ExternalIP attach/detach operations.
 	externalIPAttachmentProvider, err := provisioning.NewProvider(provisioning.ProviderConfig{
@@ -709,7 +716,7 @@ func setupNetworkingControllers(
 
 	if err := setupSubnetControllers(
 		mgr, localMgr, grpcConn, networkingNamespace,
-		networkingProvider, statusPollInterval, maxJobHistory, targetCluster, resolver,
+		networkingProvider, fabricRouteProvider, statusPollInterval, maxJobHistory, targetCluster, resolver,
 		networkClassesClient, networkProvisioningEnabled,
 	); err != nil {
 		return err
@@ -807,7 +814,7 @@ func setupVirtualNetworkControllers(
 
 func setupSubnetControllers(
 	mgr mcmanager.Manager, localMgr ctrl.Manager, grpcConn *grpc.ClientConn,
-	networkingNamespace string, provider provisioning.ProvisioningProvider,
+	networkingNamespace string, provider, fabricRouteProvider provisioning.ProvisioningProvider,
 	statusPollInterval time.Duration, maxJobHistory int, targetCluster multicluster.ClusterName,
 	resolver *dispatcher.Resolver,
 	networkClassesClient privatev1.NetworkClassesClient, networkProvisioningEnabled bool,
@@ -823,6 +830,7 @@ func setupSubnetControllers(
 		mgr, networkingNamespace, provider, statusPollInterval, maxJobHistory, targetCluster, resolver,
 		networkClassesClient,
 	)
+	reconciler.FabricRouteProvider = fabricRouteProvider
 	reconciler.NetworkProvisioningEnabled = networkProvisioningEnabled
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("subnet controller: %w", err)

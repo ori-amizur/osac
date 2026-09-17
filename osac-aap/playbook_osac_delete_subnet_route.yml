@@ -1,0 +1,28 @@
+---
+- name: Withdraw a Secondary Subnet route from the fabric
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    subnet: "{{ osac_job_vars.resource }}"
+    subnet_name: "{{ osac_job_vars.resource.metadata.name }}"
+    implementation_strategy: >-
+      {{ osac_job_vars.resource.metadata.annotations
+         ['osac.openshift.io/implementation-strategy'] }}
+
+  pre_tasks:
+    - name: Show route resource metadata
+      ansible.builtin.debug:
+        var: osac_job_vars.resource.metadata
+
+  tasks:
+    - name: Display fabric route deletion information
+      ansible.builtin.debug:
+        msg:
+          - "Subnet name: {{ subnet_name }}"
+          - "Fabric implementation strategy: {{ implementation_strategy }}"
+
+    - name: Call the selected fabric route role
+      ansible.builtin.include_role:
+        name: "osac.templates.{{ implementation_strategy }}"
+        tasks_from: delete_subnet_route

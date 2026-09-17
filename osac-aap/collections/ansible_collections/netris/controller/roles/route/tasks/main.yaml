@@ -1,0 +1,3 @@
+---
+- name: Manage a Netris static route
+  ansible.builtin.include_tasks: "{{ route_state }}.yaml"

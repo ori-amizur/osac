@@ -38,6 +38,14 @@ type AAPProvider struct {
 	routerPodRecoveryTemplate string
 }
 
+// NewAAPRouteProvider creates a provider for a route-only AAP operation. Route
+// reconciliation is deliberately represented by its own provider and template
+// pair: a Kubernetes-owned Subnet must not be sent through the fabric Subnet
+// create/delete role merely because the fabric also needs a route for it.
+func NewAAPRouteProvider(client AAPClient, provisionTemplate, deprovisionTemplate string) ProvisioningProvider {
+	return NewAAPProvider(client, provisionTemplate, deprovisionTemplate)
+}
+
 // NewAAPProvider creates a new AAP provider with explicit template names.
 func NewAAPProvider(client AAPClient, provisionTemplate, deprovisionTemplate string) *AAPProvider {
 	return &AAPProvider{

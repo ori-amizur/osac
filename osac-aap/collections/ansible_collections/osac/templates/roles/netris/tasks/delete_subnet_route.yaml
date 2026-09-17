@@ -1,0 +1,45 @@
+---
+# Withdraw only the deterministic route created by create_subnet_route.yaml.
+# The Subnet itself is owned by the Kubernetes manager in this flow.
+
+- name: Extract Subnet route identity
+  ansible.builtin.set_fact:
+    subnet_name: "{{ subnet.metadata.name }}"
+    subnet_virtual_network_id: "{{ subnet.spec.virtualNetwork | default('') }}"
+    subnet_virtual_network_name: >-
+      {{ subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] | default('') }}
+    subnet_virtual_network_region: >-
+      {{ subnet.metadata.annotations['osac.openshift.io/virtual-network-region'] | default('') }}
+
+- name: Validate Subnet route deletion inputs
+  ansible.builtin.assert:
+    that:
+      - subnet_virtual_network_id | length > 0
+      - subnet_virtual_network_region | length > 0
+    fail_msg: >-
+      Subnet '{{ subnet_name }}' is missing the persisted VirtualNetwork
+      identity needed to withdraw its fabric route.
+
+- name: Read the VN VPC when it still exists
+  ansible.builtin.include_role:
+    name: netris.controller.vpc
+    tasks_from: read
+  vars:
+    vpc_name: "{{ subnet_virtual_network_name }}"
+
+- name: Derive the deterministic OSAC route identity
+  ansible.builtin.set_fact:
+    subnet_route_description: >-
+      osac-secondary-subnet-route-{{ (subnet_virtual_network_id | hash('sha1'))[:12] }}-{{ subnet_name }}
+    subnet_route_site_id: "{{ netris_region_site_map[subnet_virtual_network_region] | default(netris_site_id) }}"
+    subnet_route_vpc_id: >-
+      {{ netris_vpc.id if netris_vpc is not none else '' }}
+
+- name: Withdraw the fabric-side route
+  ansible.builtin.include_role:
+    name: netris.controller.route
+    tasks_from: delete
+  vars:
+    route_description: "{{ subnet_route_description }}"
+    route_site_id: "{{ subnet_route_site_id }}"
+    route_vpc_id: "{{ subnet_route_vpc_id }}"

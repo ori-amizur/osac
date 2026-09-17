@@ -1,0 +1,59 @@
+---
+- name: Ensure Netris auth
+  ansible.builtin.include_role:
+    name: netris.controller.auth
+  when: netris_session_cookie is not defined
+
+- name: Build the static route query URL
+  ansible.builtin.set_fact:
+    _route_list_url: >-
+      {{ netris_controller_url }}/api/routes?filterBySites[]={{ route_site_id }}
+
+- name: Restrict the static route query to the VPC
+  ansible.builtin.set_fact:
+    _route_list_url: "{{ _route_list_url }}&filterByVpc={{ route_vpc_id | int }}"
+  when: route_vpc_id is defined and route_vpc_id | string | length > 0
+
+- name: Read static routes in the target site
+  ansible.builtin.uri:
+    url: "{{ _route_list_url }}"
+    method: GET
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Cache-Control: "no-cache"
+      Pragma: "no-cache"
+    return_content: true
+    status_code: 200
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  register: _route_list_resp
+  no_log: true
+
+- name: Find OSAC-managed routes to withdraw
+  ansible.builtin.set_fact:
+    _matching_routes: >-
+      {{ (_route_list_resp.json.data | default([]))
+         | selectattr('description', 'equalto', route_description)
+         | list }}
+  when: _route_list_resp.json is mapping
+
+- name: Delete OSAC-managed static routes
+  ansible.builtin.uri:
+    url: "{{ netris_controller_url }}/api/routes"
+    method: DELETE
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      id: "{{ item.id | int }}"
+    return_content: true
+    status_code: [200, 204, 404]
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  loop: "{{ _matching_routes | default([]) }}"
+  no_log: true
+
+- name: Display static route withdrawal result
+  ansible.builtin.debug:
+    msg: "Netris route '{{ route_description }}' withdrawn or already absent"

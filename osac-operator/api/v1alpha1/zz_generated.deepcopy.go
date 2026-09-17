@@ -1225,6 +1225,13 @@ func (in *SubnetStatus) DeepCopyInto(out *SubnetStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.FabricRouteJobs != nil {
+		in, out := &in.FabricRouteJobs, &out.FabricRouteJobs
+		*out = make([]JobStatus, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

@@ -1,0 +1,37 @@
+---
+argument_specs:
+  main:
+    options:
+      route_state:
+        type: str
+        choices: [present, absent]
+        default: present
+        description: "Whether to create or delete the static route."
+  create:
+    options:
+      route_description:
+        type: str
+        required: true
+      route_prefix:
+        type: str
+        required: true
+      route_next_hop:
+        type: str
+        required: true
+      route_site_id:
+        type: int
+        required: true
+      route_vpc_id:
+        type: int
+        required: true
+  delete:
+    options:
+      route_description:
+        type: str
+        required: true
+      route_site_id:
+        type: int
+        required: true
+      route_vpc_id:
+        type: int
+        required: false

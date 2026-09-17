@@ -57,6 +57,11 @@ const (
 	// onto a Subnet CR, so AAP playbooks can branch on it without an extra lookup.
 	osacNetworkingTypeAnnotation = osacPrefix + "/networking-type"
 
+	// osacVirtualNetworkRegionAnnotation mirrors the parent VirtualNetwork's region
+	// onto a Subnet CR. AAP uses the persisted value when withdrawing a fabric-side
+	// route after the parent VirtualNetwork may already have been deleted.
+	osacVirtualNetworkRegionAnnotation = osacPrefix + "/virtual-network-region"
+
 	// osacFabricManagerConfiguredAnnotation records ("true"/"false") whether a
 	// VirtualNetwork's NetworkClass had a fabric manager at VirtualNetwork creation.
 	// The value is persisted as an immutable decision for the lifetime of the
@@ -71,11 +76,19 @@ const (
 	// manager provision Netris/EVPN resources.
 	osacTransitCapabilityAnnotation = osacPrefix + "/transit-capability"
 
-	// Transit capability values currently understood by the Netris EVPN path.
+	// Transit capability values. The controller currently produces only the
+	// Netris value; the agentless value is reserved for its future capability
+	// detection and transit-contract implementation.
 	transitCapabilityNone        = "none"
 	transitCapabilityNetrisEVPN  = "netris-evpn"
 	transitCapabilityUnsupported = "unsupported"
 	netrisFabricManagerName      = "netris"
+
+	// Fabric-route capable transit contracts are registered here rather than in
+	// Subnet reconciliation. A future backend (for example agentless_net's
+	// VLAN/LocalNet contract) adds its immutable capability value here and its
+	// own AAP route role; the route lifecycle remains unchanged.
+	transitCapabilityAgentlessVLANLocalNet = "agentless-vlan-localnet"
 
 	// defaultExternalIPPoolImplementationStrategy is the fallback strategy when none is specified.
 	// Used by ExternalIPPool (from its own spec) and ExternalIP (inherited from parent pool).

@@ -40,7 +40,7 @@ func selectSecondarySubnetDispatchPlan(
 		if requestedStrategy == "" {
 			return nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("Secondary Subnet requires a resolved dispatch plan")
+		return nil, nil, fmt.Errorf("Secondary Subnet requires a resolved dispatch plan") //nolint:staticcheck // preserve the existing API error text
 	}
 
 	selected := -1

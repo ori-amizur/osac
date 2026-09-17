@@ -1,0 +1,89 @@
+---
+- name: Ensure Netris auth
+  ansible.builtin.include_role:
+    name: netris.controller.auth
+  when: netris_session_cookie is not defined
+
+- name: Read static routes in the target site and VPC
+  ansible.builtin.uri:
+    url: >-
+      {{ netris_controller_url }}/api/routes?filterBySites[]={{ route_site_id }}&filterByVpc={{ route_vpc_id }}
+    method: GET
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Cache-Control: "no-cache"
+      Pragma: "no-cache"
+    return_content: true
+    status_code: 200
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  register: _route_list_resp
+  no_log: true
+
+- name: Find the OSAC-managed route by its deterministic description
+  ansible.builtin.set_fact:
+    _matching_routes: >-
+      {{ (_route_list_resp.json.data | default([]))
+         | selectattr('description', 'equalto', route_description)
+         | list }}
+  when: _route_list_resp.json is mapping
+
+- name: Refuse ambiguous OSAC route ownership
+  ansible.builtin.assert:
+    that:
+      - _matching_routes | length <= 1
+    fail_msg: >-
+      More than one Netris route has the OSAC-managed description
+      '{{ route_description }}'; refusing to modify ambiguous fabric state.
+
+- name: Build the desired Netris route body
+  ansible.builtin.set_fact:
+    _route_body:
+      description: "{{ route_description }}"
+      next_hop: "{{ route_next_hop }}"
+      prefix: "{{ route_prefix }}"
+      site_id: "{{ route_site_id | int }}"
+      stateStatus: enabled
+      switches: []
+      vpc:
+        id: "{{ route_vpc_id | int }}"
+
+- name: Create the OSAC-managed static route
+  ansible.builtin.uri:
+    url: "{{ netris_controller_url }}/api/routes"
+    method: POST
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Content-Type: application/json
+    body_format: json
+    body: "{{ _route_body }}"
+    return_content: true
+    status_code: [200, 201]
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  when: _matching_routes | length == 0
+  no_log: true
+
+- name: Update the OSAC-managed static route
+  ansible.builtin.uri:
+    url: "{{ netris_controller_url }}/api/routes"
+    method: PUT
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Content-Type: application/json
+    body_format: json
+    body: "{{ _route_body | combine({'route_id': _matching_routes[0].id}) }}"
+    return_content: true
+    status_code: [200, 201]
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  when: _matching_routes | length == 1
+  no_log: true
+
+- name: Display static route result
+  ansible.builtin.debug:
+    msg:
+      - "Netris route description: {{ route_description }}"
+      - "Prefix: {{ route_prefix }}"
+      - "Next hop: {{ route_next_hop }}"
+      - "VPC: {{ route_vpc_id }}"

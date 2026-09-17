@@ -150,14 +150,14 @@ func persistVirtualNetworkDispatchAnnotations(
 	transitCapability := transitCapabilityFromDispatchPlan(plan)
 	if existing, exists := vnet.Annotations[osacTransitCapabilityAnnotation]; exists {
 		switch existing {
-		case transitCapabilityNone, transitCapabilityNetrisEVPN, transitCapabilityUnsupported:
+		case transitCapabilityNone, transitCapabilityNetrisEVPN, transitCapabilityAgentlessVLANLocalNet, transitCapabilityUnsupported:
 			// Preserve the creation-time decision even if the NetworkClass or its
 			// manager registrations change later.
 			transitCapability = existing
 		default:
-			return "", "", false, fmt.Errorf("VirtualNetwork %q has invalid %s annotation %q; expected %q, %q, or %q",
+			return "", "", false, fmt.Errorf("VirtualNetwork %q has invalid %s annotation %q; expected %q, %q, %q, or %q",
 				vnet.Name, osacTransitCapabilityAnnotation, existing,
-				transitCapabilityNone, transitCapabilityNetrisEVPN, transitCapabilityUnsupported)
+				transitCapabilityNone, transitCapabilityNetrisEVPN, transitCapabilityAgentlessVLANLocalNet, transitCapabilityUnsupported)
 		}
 	} else {
 		vnet.Annotations[osacTransitCapabilityAnnotation] = transitCapability

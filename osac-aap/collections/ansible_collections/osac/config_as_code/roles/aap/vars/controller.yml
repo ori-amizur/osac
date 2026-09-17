@@ -192,6 +192,30 @@ controller_templates: # noqa: var-naming[no-role-prefix]
     allow_simultaneous: true
     ask_variables_on_launch: true
     verbosity: 0
+  - name: "{{ aap_prefix }}-create-subnet-route"
+    project: "{{ aap_prefix }}"
+    organization: "{{ aap_organization_name }}"
+    job_type: run
+    playbook: "osac-aap/playbook_osac_create_subnet_route.yml"
+    inventory: "{{ aap_prefix }}-networking-operations"
+    execution_environment: "{{ aap_prefix }}-ee"
+    instance_groups:
+      - "{{ aap_prefix }}-networking-operations-ig"
+    allow_simultaneous: true
+    ask_variables_on_launch: true
+    verbosity: 0
+  - name: "{{ aap_prefix }}-delete-subnet-route"
+    project: "{{ aap_prefix }}"
+    organization: "{{ aap_organization_name }}"
+    job_type: run
+    playbook: "osac-aap/playbook_osac_delete_subnet_route.yml"
+    inventory: "{{ aap_prefix }}-networking-operations"
+    execution_environment: "{{ aap_prefix }}-ee"
+    instance_groups:
+      - "{{ aap_prefix }}-networking-operations-ig"
+    allow_simultaneous: true
+    ask_variables_on_launch: true
+    verbosity: 0
   - name: "{{ aap_prefix }}-create-external-ip-pool"
     project: "{{ aap_prefix }}"
     organization: "{{ aap_organization_name }}"

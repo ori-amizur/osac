@@ -72,9 +72,13 @@ type SubnetReconciler struct {
 	networkClassesClient privatev1.NetworkClassesClient
 	NetworkingNamespace  string
 	ProvisioningProvider provisioning.ProvisioningProvider
-	StatusPollInterval   time.Duration
-	MaxJobHistory        int
-	targetCluster        mc.ClusterName
+	// FabricRouteProvider reconciles the separate fabric-side route required for
+	// Kubernetes-owned Secondary Subnets. It must never be used as the Subnet's
+	// backend owner.
+	FabricRouteProvider provisioning.ProvisioningProvider
+	StatusPollInterval  time.Duration
+	MaxJobHistory       int
+	targetCluster       mc.ClusterName
 	// Resolver resolves a NetworkClass to its registered managers. Nil when the
 	// two-manager model isn't configured (no gRPC connection / networking namespace),
 	// in which case the controller always uses the legacy implementation-strategy path.
@@ -247,6 +251,7 @@ func (r *SubnetReconciler) getParentVirtualNetwork(ctx context.Context, subnet *
 	return &vnetList.Items[0], ctrl.Result{}, nil
 }
 
+//nolint:gocyclo // This reconciler intentionally sequences immutable dispatch, owner selection, and independent route/readiness gates.
 func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Subnet) (ctrl.Result, error) {
 	log := ctrllog.FromContext(ctx)
 
@@ -369,7 +374,7 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	}
 
 	updated, err := r.updateSubnetStrategyAnnotations(ctx, subnet, implementationStrategy, k8sStrategy, vipCIDR,
-		string(networkingType), vnet.Name, hasK8sTarget, ownerRole)
+		string(networkingType), vnet.Name, vnet.Spec.Region, hasK8sTarget, ownerRole)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -403,6 +408,15 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	result, err = r.handleProvisioning(ctx, subnet, effectivePlan)
 	if err != nil {
 		return result, err
+	}
+
+	routeResult, routeErr := r.handleFabricRouteProvisioning(ctx, subnet, vnet, ownerRole)
+	if routeErr != nil {
+		return routeResult, routeErr
+	}
+	if routeResult.RequeueAfter > 0 &&
+		(result.RequeueAfter == 0 || routeResult.RequeueAfter < result.RequeueAfter) {
+		result.RequeueAfter = routeResult.RequeueAfter
 	}
 
 	// A Secondary Subnet cannot be Ready while its parent router Pod is being
@@ -450,7 +464,8 @@ func (r *SubnetReconciler) ensureVNetLockLease(ctx context.Context, subnet *v1al
 }
 
 // updateSubnetStrategyAnnotations stamps the implementation-strategy, k8s
-// implementation-strategy, selected Subnet dispatch role, VIP CIDR, networking-type, and parent-VirtualNetwork-name
+// implementation-strategy, selected Subnet dispatch role, VIP CIDR, networking-type, parent-VirtualNetwork-name,
+// and parent-VirtualNetwork-region
 // annotations AAP playbooks rely on, persisting subnet if anything changed. The k8s
 // annotation is compared and, when hasK8sTarget is false, removed unconditionally (not
 // just when previously present) so a Subnet transitioning from dual-dispatch to
@@ -460,7 +475,7 @@ func (r *SubnetReconciler) ensureVNetLockLease(ctx context.Context, subnet *v1al
 // parent VN by the time this runs. Returns true when it persisted a change — the caller
 // should return immediately in that case, since the change itself triggers a fresh
 // reconcile that resumes with up-to-date annotations.
-func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, vipCIDR, networkingType, virtualNetworkName string, hasK8sTarget bool, ownerRole string) (bool, error) {
+func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, vipCIDR, networkingType, virtualNetworkName, virtualNetworkRegion string, hasK8sTarget bool, ownerRole string) (bool, error) {
 	if subnet.Annotations == nil {
 		subnet.Annotations = make(map[string]string)
 	}
@@ -497,6 +512,10 @@ func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, 
 	}
 	if subnet.Annotations[osacVirtualNetworkNameAnnotation] != virtualNetworkName {
 		subnet.Annotations[osacVirtualNetworkNameAnnotation] = virtualNetworkName
+		changed = true
+	}
+	if subnet.Annotations[osacVirtualNetworkRegionAnnotation] != virtualNetworkRegion {
+		subnet.Annotations[osacVirtualNetworkRegionAnnotation] = virtualNetworkRegion
 		changed = true
 	}
 	if !changed {
@@ -601,6 +620,14 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *v1alpha1.Su
 		}
 
 		// Handle deprovisioning
+		routeResult, routeErr := r.handleFabricRouteDeprovisioning(ctx, subnet)
+		if routeErr != nil {
+			return routeResult, routeErr
+		}
+		if routeResult.RequeueAfter > 0 {
+			return routeResult, nil
+		}
+
 		result, err := r.handleDeprovisioning(ctx, subnet)
 		if err != nil {
 			return result, err
@@ -620,6 +647,177 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *v1alpha1.Su
 	}
 
 	return ctrl.Result{}, nil
+}
+
+const fabricRouteTarget = string(dispatcher.ManagerRoleFabric)
+
+// fabricRouteTransitCapabilities is the explicit registry of transit
+// contracts whose fabric side can accept the backend-neutral route intent. A
+// future agentless_net VLAN/LocalNet implementation adds its immutable
+// capability here and its own AAP route role; the lifecycle below remains
+// unchanged.
+var fabricRouteTransitCapabilities = map[string]struct{}{
+	transitCapabilityNetrisEVPN:            {},
+	transitCapabilityAgentlessVLANLocalNet: {},
+}
+
+// subnetFabricRouteJobsExtractor extracts the independent route job history
+// used by the route lifecycle's API-server duplicate-trigger check.
+func subnetFabricRouteJobsExtractor(obj client.Object) []v1alpha1.JobStatus {
+	return obj.(*v1alpha1.Subnet).Status.FabricRouteJobs //nolint:forcetypeassert // fixed by the lifecycle caller
+}
+
+func fabricTransitSupportsRoutes(vnet *v1alpha1.VirtualNetwork) bool {
+	if vnet == nil {
+		return false
+	}
+	_, supported := fabricRouteTransitCapabilities[vnet.Annotations[osacTransitCapabilityAnnotation]]
+	return supported
+}
+
+// fabricRouteRequired reports whether this Subnet needs an auxiliary fabric
+// route. The Subnet remains owned by Kubernetes; this is an independent route
+// intent dispatched to the VN's selected fabric manager. Fabric-owned Subnets
+// already have a native fabric representation and must not receive a duplicate
+// explicit route.
+func fabricRouteRequired(subnet *v1alpha1.Subnet, vnet *v1alpha1.VirtualNetwork, ownerRole string) bool {
+	if vnet == nil || ownerRole != string(dispatcher.ManagerRoleK8s) {
+		return false
+	}
+	if subnet.Annotations[osacNetworkingTypeAnnotation] != string(v1alpha1.VirtualNetworkNetworkingTypeSecondary) {
+		return false
+	}
+	return fabricTransitSupportsRoutes(vnet) && subnet.Spec.IPv4CIDR != ""
+}
+
+func (r *SubnetReconciler) handleFabricRouteProvisioning(
+	ctx context.Context, subnet *v1alpha1.Subnet, vnet *v1alpha1.VirtualNetwork, ownerRole string,
+) (ctrl.Result, error) {
+	if !fabricRouteRequired(subnet, vnet, ownerRole) {
+		return ctrl.Result{}, nil
+	}
+	if r.FabricRouteProvider == nil {
+		return ctrl.Result{}, fmt.Errorf("fabric route provider is not configured for Kubernetes-owned Secondary Subnet %s/%s", subnet.Namespace, subnet.Name)
+	}
+	if !allProvisionTargetsSucceeded(subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion, ownerRole) {
+		// The route must not be published before the selected Subnet owner has
+		// completed its own operation. This also gives the AAP route task a
+		// fully-created VN and transit contract to consume.
+		return ctrl.Result{}, nil
+	}
+
+	fabricManager := vnet.Annotations[osacImplementationStrategyAnnotation]
+	if fabricManager == "" {
+		return ctrl.Result{}, fmt.Errorf("fabric route manager is not set on VirtualNetwork %s/%s", vnet.Namespace, vnet.Name)
+	}
+	if existing := subnet.Status.FabricRouteImplementationStrategy; existing != "" && existing != fabricManager {
+		return ctrl.Result{}, fmt.Errorf("fabric route manager for Subnet %s/%s changed from %q to %q; route migration is not supported", subnet.Namespace, subnet.Name, existing, fabricManager)
+	}
+	subnet.Status.FabricRouteImplementationStrategy = fabricManager
+
+	routeVersion, err := provisioning.ComputeDesiredConfigVersion(struct {
+		VirtualNetwork string
+		Subnet         string
+		IPv4CIDR       string
+		FabricManager  string
+		TransitMode    string
+	}{
+		VirtualNetwork: subnet.Spec.VirtualNetwork,
+		Subnet:         subnet.Name,
+		IPv4CIDR:       subnet.Spec.IPv4CIDR,
+		FabricManager:  fabricManager,
+		TransitMode:    vnet.Annotations[osacTransitCapabilityAnnotation],
+	})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to compute fabric route config version: %w", err)
+	}
+	subnet.Status.FabricRouteConfigVersion = routeVersion
+
+	setProgressing := func() {
+		subnet.Status.Phase = v1alpha1.SubnetPhaseProgressing
+		setReadyConditionBlocked(&subnet.Status.Conditions, v1alpha1.ReasonProgressing, "fabric route reconciliation is in progress")
+	}
+	setFailed := func(message string) {
+		subnet.Status.Phase = v1alpha1.SubnetPhaseFailed
+		setReadyConditionFailed(&subnet.Status.Conditions, "fabric route: "+message)
+	}
+	setSucceeded := func(_ provisioning.ProvisionStatus) {
+		if allProvisionTargetsSucceeded(subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion, ownerRole) &&
+			allProvisionTargetsSucceeded(subnet.Status.FabricRouteJobs, subnet.Status.FabricRouteConfigVersion, fabricRouteTarget) {
+			subnet.Status.Phase = v1alpha1.SubnetPhaseReady
+			setReadyConditionTrue(&subnet.Status.Conditions)
+		}
+	}
+
+	if provisioning.FindLatestJobByTypeAndTarget(subnet.Status.FabricRouteJobs, v1alpha1.JobTypeProvision, fabricRouteTarget) == nil {
+		setProgressing()
+	}
+
+	result, err := provisioning.RunMultiTargetProvisioningLifecycle(ctx,
+		[]provisioning.JobTarget{{
+			Name:     fabricRouteTarget,
+			Provider: newDispatchTargetProvider(r.FabricRouteProvider, fabricManager),
+			Callbacks: &provisioning.PollCallbacks{
+				OnFailed:  setFailed,
+				OnSuccess: setSucceeded,
+			},
+			CheckAPIServer: func() bool {
+				return provisioning.CheckAPIServerForNonTerminalProvisionJobAndTarget(
+					ctx, r.APIReader, client.ObjectKeyFromObject(subnet), &v1alpha1.Subnet{}, subnetFabricRouteJobsExtractor, fabricRouteTarget)
+			},
+		}},
+		subnet,
+		&provisioning.State{Jobs: &subnet.Status.FabricRouteJobs, DesiredConfigVersion: subnet.Status.FabricRouteConfigVersion},
+		r.MaxJobHistory,
+		r.StatusPollInterval,
+		func() error {
+			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(subnet), subnet.Status)
+		},
+	)
+	if err != nil {
+		return result, fmt.Errorf("reconciling fabric route for Subnet %s/%s: %w", subnet.Namespace, subnet.Name, err)
+	}
+	return result, nil
+}
+
+// handleFabricRouteDeprovisioning withdraws the route before the Subnet owner
+// is deprovisioned. It uses the persisted route manager and job history, so
+// deletion remains deterministic even when the parent VirtualNetwork has
+// already disappeared.
+func (r *SubnetReconciler) handleFabricRouteDeprovisioning(ctx context.Context, subnet *v1alpha1.Subnet) (ctrl.Result, error) {
+	if r.FabricRouteProvider == nil || len(subnet.Status.FabricRouteJobs) == 0 {
+		return ctrl.Result{}, nil
+	}
+
+	fabricManager := subnet.Status.FabricRouteImplementationStrategy
+	if fabricManager == "" {
+		// Compatibility for status written before the explicit route-manager
+		// field existed. New jobs always persist the manager in status.
+		fabricManager = subnet.Annotations[osacImplementationStrategyAnnotation]
+	}
+	if fabricManager == "" {
+		return ctrl.Result{}, fmt.Errorf("fabric route manager is missing for Subnet %s/%s", subnet.Namespace, subnet.Name)
+	}
+
+	result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx,
+		[]provisioning.DeprovisionTarget{{
+			Name:     fabricRouteTarget,
+			Provider: newDispatchTargetProvider(r.FabricRouteProvider, fabricManager),
+		}},
+		subnet,
+		&subnet.Status.FabricRouteJobs,
+		r.MaxJobHistory,
+		r.StatusPollInterval,
+	)
+	if err != nil {
+		return result, fmt.Errorf("withdrawing fabric route for Subnet %s/%s: %w", subnet.Namespace, subnet.Name, err)
+	}
+	if !done {
+		if err := r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(subnet), subnet.Status); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return result, nil
 }
 
 // subnetProvisioningJobsExtractor extracts the Subnet-typed jobs array used by
@@ -764,12 +962,12 @@ func (r *SubnetReconciler) handleSingleOwnerProvisioning(
 	plan *dispatcher.DispatchPlan,
 ) (ctrl.Result, error) {
 	if plan == nil || len(plan.Targets) != 1 {
-		return ctrl.Result{}, fmt.Errorf("Secondary Subnet owner selection must resolve exactly one dispatch target")
+		return ctrl.Result{}, fmt.Errorf("Secondary Subnet owner selection must resolve exactly one dispatch target") //nolint:staticcheck // preserve the existing API error text
 	}
 	target := plan.Targets[0]
 	targetName := string(target.Role)
 	if targetName == "" {
-		return ctrl.Result{}, fmt.Errorf("Secondary Subnet owner selection resolved an empty dispatch role")
+		return ctrl.Result{}, fmt.Errorf("Secondary Subnet owner selection resolved an empty dispatch role") //nolint:staticcheck // preserve the existing API error text
 	}
 
 	onFailed := func(message string) {

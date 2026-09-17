@@ -5,12 +5,14 @@
 - name: Extract VirtualNetwork configuration
   ansible.builtin.set_fact:
     vn_name: "{{ virtual_network.metadata.name }}"
+    vn_namespace: "{{ virtual_network.metadata.namespace }}"
     vn_ipv4_cidr: "{{ virtual_network.spec.ipv4Cidr | default('') }}"
     vn_region: "{{ virtual_network.spec.region }}"
     vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
+    vn_uuid: "{{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] }}"
     vn_networking_type: "{{ virtual_network.spec.networkingType | default('Primary') }}"
-    vn_fabric_manager_configured: >-
-      {{ virtual_network.metadata.annotations['osac.openshift.io/fabric-manager-configured'] | default('false') | lower }}
+    vn_transit_capability: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/transit-capability'] | default('none', true) | lower }}
 
 - name: Resolve region to Netris site ID
   ansible.builtin.set_fact:
@@ -52,11 +54,11 @@
     ipam_vpc_id: "{{ vpc_id }}"
   when: vn_ipv4_cidr | length > 0
 
-- name: Publish the shared EVPN transit attachment for a fabric-backed Secondary VN
+- name: Reconcile the VN-scoped EVPN transit attachment for a fabric-backed Secondary VN
   ansible.builtin.include_tasks: publish_evpn_transit.yaml
   when:
     - vn_networking_type == 'Secondary'
-    - vn_fabric_manager_configured == 'true'
+    - vn_transit_capability == 'netris-evpn'
 
 - name: Display IPAM allocation result
   ansible.builtin.debug:

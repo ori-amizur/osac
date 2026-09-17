@@ -28,6 +28,11 @@ data:
   NETRIS_TENANT_ID: "1"
   NETRIS_TENANT_NAME: "Admin"
 
+  # -- Secondary VirtualNetwork EVPN transit endpoints (provider-owned) --
+  # Resolve current Netris port IDs from these server/interface pairs at
+  # reconciliation time; do not configure numeric port IDs here.
+  # NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS: '[{"host_name":"worker-0","logical_interface_name":"eth10"}]'
+
   # -- Netris management VPC --
   NETRIS_MGMT_VPC_ID: "4"
   NETRIS_MGMT_VPC_NAME: "RH-Infra"

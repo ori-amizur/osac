@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -102,6 +103,86 @@ func implementationStrategyFromDispatchPlan(plan *dispatcher.DispatchPlan) strin
 		return ""
 	}
 	return target.Manager.Name
+}
+
+// transitCapabilityFromDispatchPlan resolves the backend-specific transit
+// contract for a VirtualNetwork. The current implementation supports only the
+// Netris EVPN contract. A fabric manager with any other name is intentionally
+// classified as unsupported rather than being treated as EVPN by presence alone.
+func transitCapabilityFromDispatchPlan(plan *dispatcher.DispatchPlan) string {
+	if plan == nil || plan.FabricTarget() == nil {
+		return transitCapabilityNone
+	}
+	if plan.FabricTarget().Manager.Name == netrisFabricManagerName {
+		return transitCapabilityNetrisEVPN
+	}
+	return transitCapabilityUnsupported
+}
+
+// persistVirtualNetworkDispatchAnnotations records the immutable provisioning
+// decisions consumed by AAP and returns the effective k8s target, transit
+// capability, and whether the VirtualNetwork needs an update.
+func persistVirtualNetworkDispatchAnnotations(
+	vnet *v1alpha1.VirtualNetwork,
+	plan *dispatcher.DispatchPlan,
+	implementationStrategy string,
+) (string, string, bool, error) {
+	if vnet.Annotations == nil {
+		vnet.Annotations = make(map[string]string)
+	}
+
+	annotationsChanged := false
+	if vnet.Annotations[osacImplementationStrategyAnnotation] != implementationStrategy {
+		vnet.Annotations[osacImplementationStrategyAnnotation] = implementationStrategy
+		annotationsChanged = true
+	}
+
+	if existing, exists := vnet.Annotations[osacFabricManagerConfiguredAnnotation]; exists {
+		if existing != labelValueTrue && existing != "false" {
+			return "", "", false, fmt.Errorf("VirtualNetwork %q has invalid %s annotation %q; expected true or false",
+				vnet.Name, osacFabricManagerConfiguredAnnotation, existing)
+		}
+	} else {
+		vnet.Annotations[osacFabricManagerConfiguredAnnotation] = strconv.FormatBool(plan.FabricTarget() != nil)
+		annotationsChanged = true
+	}
+
+	transitCapability := transitCapabilityFromDispatchPlan(plan)
+	if existing, exists := vnet.Annotations[osacTransitCapabilityAnnotation]; exists {
+		switch existing {
+		case transitCapabilityNone, transitCapabilityNetrisEVPN, transitCapabilityUnsupported:
+			// Preserve the creation-time decision even if the NetworkClass or its
+			// manager registrations change later.
+			transitCapability = existing
+		default:
+			return "", "", false, fmt.Errorf("VirtualNetwork %q has invalid %s annotation %q; expected %q, %q, or %q",
+				vnet.Name, osacTransitCapabilityAnnotation, existing,
+				transitCapabilityNone, transitCapabilityNetrisEVPN, transitCapabilityUnsupported)
+		}
+	} else {
+		vnet.Annotations[osacTransitCapabilityAnnotation] = transitCapability
+		annotationsChanged = true
+	}
+
+	k8sImplementationStrategy := ""
+	// A k8s-only NetworkClass keeps the existing single-target lifecycle. Persist
+	// the k8s strategy separately only when a fabric target is also present, because
+	// that annotation represents a second provisioning target and is consumed by
+	// the matching multi-target deprovisioning path.
+	if plan.FabricTarget() != nil && plan.K8sTarget() != nil {
+		k8sImplementationStrategy = plan.K8sTarget().Manager.Name
+	}
+	if k8sImplementationStrategy == "" {
+		if _, exists := vnet.Annotations[osacK8sImplementationStrategyAnnotation]; exists {
+			delete(vnet.Annotations, osacK8sImplementationStrategyAnnotation)
+			annotationsChanged = true
+		}
+	} else if vnet.Annotations[osacK8sImplementationStrategyAnnotation] != k8sImplementationStrategy {
+		vnet.Annotations[osacK8sImplementationStrategyAnnotation] = k8sImplementationStrategy
+		annotationsChanged = true
+	}
+
+	return k8sImplementationStrategy, transitCapability, annotationsChanged, nil
 }
 
 // dispatchTargetProvider decorates a shared provisioning.ProvisioningProvider so that

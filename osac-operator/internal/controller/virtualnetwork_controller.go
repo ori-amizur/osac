@@ -19,7 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -195,55 +195,20 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
 	}
 
-	k8sImplementationStrategy := ""
-	// A k8s-only NetworkClass keeps the existing single-target lifecycle. Persist
-	// the k8s strategy separately only when a fabric target is also present, because
-	// that annotation represents a second provisioning target and is consumed by
-	// the matching multi-target deprovisioning path.
-	if plan.FabricTarget() != nil && plan.K8sTarget() != nil {
-		k8sImplementationStrategy = plan.K8sTarget().Manager.Name
-	}
-
-	// Add the implementation-strategy annotation if it is not present or different.
-	// This allows AAP playbooks to select the appropriate role without doing lookups.
-	// The fabric-manager-configured annotation is different: it is a creation-time
-	// decision and must not change over the VirtualNetwork's lifetime. A missing
-	// annotation is backfilled for VNs created before this decision was persisted.
-	if vnet.Annotations == nil {
-		vnet.Annotations = make(map[string]string)
-	}
-	annotationsChanged := false
-	if vnet.Annotations[osacImplementationStrategyAnnotation] != implementationStrategy {
-		vnet.Annotations[osacImplementationStrategyAnnotation] = implementationStrategy
-		annotationsChanged = true
-	}
-	fabricManagerConfigured := strconv.FormatBool(plan.FabricTarget() != nil)
-	if existing, exists := vnet.Annotations[osacFabricManagerConfiguredAnnotation]; exists {
-		if existing != labelValueTrue && existing != "false" {
-			return ctrl.Result{}, fmt.Errorf("VirtualNetwork %q has invalid %s annotation %q; expected true or false",
-				vnet.Name, osacFabricManagerConfiguredAnnotation, existing)
-		}
-		// Preserve the persisted creation-time decision even if the referenced
-		// NetworkClass is later changed.
-		fabricManagerConfigured = existing
-	} else {
-		vnet.Annotations[osacFabricManagerConfiguredAnnotation] = fabricManagerConfigured
-		annotationsChanged = true
-	}
-	if k8sImplementationStrategy == "" {
-		if _, exists := vnet.Annotations[osacK8sImplementationStrategyAnnotation]; exists {
-			delete(vnet.Annotations, osacK8sImplementationStrategyAnnotation)
-			annotationsChanged = true
-		}
-	} else if vnet.Annotations[osacK8sImplementationStrategyAnnotation] != k8sImplementationStrategy {
-		vnet.Annotations[osacK8sImplementationStrategyAnnotation] = k8sImplementationStrategy
-		annotationsChanged = true
+	k8sImplementationStrategy, transitCapability, annotationsChanged, err :=
+		persistVirtualNetworkDispatchAnnotations(vnet, plan, implementationStrategy)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 	if annotationsChanged {
-		log.Info("setting implementation-strategy/fabric-manager-configured annotations",
+		log.Info("setting implementation-strategy/fabric-manager-configured/transit-capability annotations",
 			"strategy", implementationStrategy,
 			"k8sStrategy", k8sImplementationStrategy,
-			"fabricManagerConfigured", fabricManagerConfigured)
+			"fabricManagerConfigured", plan.FabricTarget() != nil,
+			"transitCapability", transitCapability)
+		if transitCapability == transitCapabilityUnsupported && r.Recorder != nil {
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, "UnsupportedTransitCapability", "Provisioning remains Phase-1-only: fabric manager %q has no supported transit contract", plan.FabricTarget().Manager.Name)
+		}
 		if err := r.Update(ctx, vnet); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -418,6 +383,7 @@ func (r *VirtualNetworkReconciler) handleDelete(ctx context.Context, vnet *v1alp
 	log.Info("deleting virtual network")
 
 	vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseDeleting
+	setTransitTeardownCondition(&vnet.Status.Conditions, transitTeardownStuckMessage(vnet.Status.ProvisioningJobs))
 
 	// Base finalizer has already been removed, cleanup complete
 	if !controllerutil.ContainsFinalizer(vnet, osacVirtualNetworkFinalizer) {
@@ -492,6 +458,35 @@ func (r *VirtualNetworkReconciler) handleDelete(ctx context.Context, vnet *v1alp
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// transitTeardownStuckMessage extracts the explicit marker emitted by the
+// fabric delete playbook when a VN-scoped transit resource cannot be removed.
+// A later successful deprovision job clears the condition; a retry or an
+// unrelated failure does not hide a still-existing cost-bearing resource.
+func transitTeardownStuckMessage(jobs []v1alpha1.JobStatus) string {
+	var stuck *v1alpha1.JobStatus
+	var successful *v1alpha1.JobStatus
+	for i := range jobs {
+		job := &jobs[i]
+		if job.Type != v1alpha1.JobTypeDeprovision {
+			continue
+		}
+		if job.State == v1alpha1.JobStateSucceeded {
+			if successful == nil || job.Timestamp.After(successful.Timestamp.Time) {
+				successful = job
+			}
+		}
+		if job.State == v1alpha1.JobStateFailed && strings.Contains(job.Message, transitTeardownStuckMarker) {
+			if stuck == nil || job.Timestamp.After(stuck.Timestamp.Time) {
+				stuck = job
+			}
+		}
+	}
+	if stuck == nil || (successful != nil && successful.Timestamp.After(stuck.Timestamp.Time)) {
+		return ""
+	}
+	return stuck.Message
 }
 
 // handleDeprovisioning manages the deprovisioning job lifecycle for a VirtualNetwork.

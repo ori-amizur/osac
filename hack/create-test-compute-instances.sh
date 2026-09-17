@@ -30,7 +30,8 @@
 #   RUN_STRATEGY              Always
 #   SSH_KEY_PATH              ${TMPDIR:-/tmp}/osac-${OSAC_TENANT}-${NAME_SUFFIX}.ed25519
 #   USER_DATA                  empty
-#   EXTERNAL_IP_ATTACHMENT     true
+#   EXTERNAL_IP_ATTACHMENT     true (attach to the primary-only and dual-network VMs)
+#   SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT false
 #   REUSE_EXISTING             true (reuse an existing VM with the requested name)
 #   WAIT_FOR_RUNNING           true
 #   WAIT_TIMEOUT_SECONDS      600
@@ -64,7 +65,11 @@ OSAC_TENANT="${OSAC_TENANT:-}"
 [[ -n "$OSAC_TENANT" ]] || die "OSAC_TENANT is required; set it to an existing tenant such as 'test-tenant'"
 [[ "$OSAC_TENANT" != "shared" && "$OSAC_TENANT" != "system" ]] || \
 	die "OSAC_TENANT must be a tenant-scoped test tenant, not '$OSAC_TENANT'"
-OSAC_GLOBAL_ARGS=(--tenant "$OSAC_TENANT")
+# Resolve the tenant from the authenticated user's organization claim. Do not
+# force --tenant here: an explicit tenant filter hides shared catalog resources
+# (for example the ComputeInstanceTemplate and InstanceType) from tenant users,
+# and tenant admins are not necessarily allowed to Get the public Tenant object.
+OSAC_GLOBAL_ARGS=()
 
 NAME_SUFFIX="${NAME_SUFFIX:-$(date +%s)}"
 PRIMARY_SUBNET="${PRIMARY_SUBNET:-primary-subnet-${NAME_SUFFIX}}"
@@ -84,6 +89,7 @@ RUN_STRATEGY="${RUN_STRATEGY:-Always}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${TMPDIR:-/tmp}/osac-${OSAC_TENANT}-${NAME_SUFFIX}.ed25519}"
 USER_DATA="${USER_DATA:-}"
 EXTERNAL_IP_ATTACHMENT="${EXTERNAL_IP_ATTACHMENT:-true}"
+SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT="${SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT:-false}"
 REUSE_EXISTING="${REUSE_EXISTING:-true}"
 WAIT_FOR_RUNNING="${WAIT_FOR_RUNNING:-true}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-600}"
@@ -92,6 +98,8 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-600}"
 [[ -n "$DISK_IMAGE" ]] || die "DISK_IMAGE is required; set it to a tenant-visible DiskImage"
 [[ "$EXTERNAL_IP_ATTACHMENT" == "true" || "$EXTERNAL_IP_ATTACHMENT" == "false" ]] || \
 	die "EXTERNAL_IP_ATTACHMENT must be true or false"
+[[ "$SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT" == "true" || "$SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT" == "false" ]] || \
+	die "SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT must be true or false"
 [[ "$REUSE_EXISTING" == "true" || "$REUSE_EXISTING" == "false" ]] || \
 	die "REUSE_EXISTING must be true or false"
 [[ "$WAIT_FOR_RUNNING" == "true" || "$WAIT_FOR_RUNNING" == "false" ]] || \
@@ -138,6 +146,7 @@ cat <<EOF
   SSH_PRIVATE_KEY:          $SSH_KEY_PATH
   SSH_PUBLIC_KEY:           $SSH_KEY_PATH.pub
   EXTERNAL_IP_ATTACHMENT:   $EXTERNAL_IP_ATTACHMENT
+  SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT: $SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT
   REUSE_EXISTING:            $REUSE_EXISTING
   WAIT_FOR_RUNNING:         $WAIT_FOR_RUNNING
 
@@ -181,6 +190,28 @@ resolve_subnet_id() {
 	printf '%s\n' "$id"
 }
 
+validate_secondary_subnets_share_vn() {
+	local subnet1_json subnet2_json vn_name vn_json
+	subnet1_json="$("$OSAC_BIN" "${OSAC_GLOBAL_ARGS[@]}" get subnet "$SECONDARY_SUBNET1" -o json)" || \
+		die "failed to inspect subnet '$SECONDARY_SUBNET1'"
+	subnet2_json="$("$OSAC_BIN" "${OSAC_GLOBAL_ARGS[@]}" get subnet "$SECONDARY_SUBNET2" -o json)" || \
+		die "failed to inspect subnet '$SECONDARY_SUBNET2'"
+
+	local subnet1_vn_id subnet2_vn_id
+	subnet1_vn_id="$(jq -r '.spec.virtual_network.id // empty' <<<"$subnet1_json")"
+	subnet2_vn_id="$(jq -r '.spec.virtual_network.id // empty' <<<"$subnet2_json")"
+	[[ -n "$subnet1_vn_id" && "$subnet1_vn_id" == "$subnet2_vn_id" ]] || \
+		die "secondary subnets '$SECONDARY_SUBNET1' and '$SECONDARY_SUBNET2' belong to different VirtualNetworks; the test requires two subnets in one secondary VN"
+
+	vn_name="$(jq -r '.spec.virtual_network.name // empty' <<<"$subnet1_json")"
+	[[ -n "$vn_name" ]] || die "secondary subnet '$SECONDARY_SUBNET1' has no parent VirtualNetwork"
+	vn_json="$("$OSAC_BIN" "${OSAC_GLOBAL_ARGS[@]}" get virtualnetwork "$vn_name" -o json)" || \
+		die "failed to inspect secondary VirtualNetwork '$vn_name'"
+	jq -e '.spec.networking_type == "VIRTUAL_NETWORK_NETWORKING_TYPE_SECONDARY"' <<<"$vn_json" >/dev/null || \
+		die "parent VirtualNetwork '$vn_name' is not a Secondary VirtualNetwork"
+	echo "  Secondary subnets share Secondary VirtualNetwork '$vn_name'"
+}
+
 wait_for_running() {
 	local name="$1"
 	if [[ "$WAIT_FOR_RUNNING" != "true" ]]; then
@@ -213,7 +244,8 @@ wait_for_running() {
 
 create_vm() {
 	local name="$1"
-	shift
+	local attach_external_ip="$2"
+	shift 2
 	local -a args=(
 		"${OSAC_GLOBAL_ARGS[@]}"
 		create computeinstance
@@ -229,7 +261,7 @@ create_vm() {
 		args+=(--boot-disk-storage-tier "$BOOT_DISK_STORAGE_TIER")
 	fi
 	args+=(--ssh-public-key "$SSH_PUBLIC_KEY")
-	if [[ "$EXTERNAL_IP_ATTACHMENT" == "true" ]]; then
+	if [[ "$attach_external_ip" == "true" ]]; then
 		args+=(--external-ip-attachment)
 	fi
 	if [[ -n "$USER_DATA" ]]; then
@@ -245,11 +277,12 @@ create_vm() {
 
 create_or_reuse_vm() {
 	local name="$1"
-	shift
+	local attach_external_ip="$2"
+	shift 2
 	if [[ "$REUSE_EXISTING" == "true" ]] && "$OSAC_BIN" "${OSAC_GLOBAL_ARGS[@]}" describe computeinstance "$name" >/dev/null 2>&1; then
 		log "Reusing existing ComputeInstance: $name"
 	else
-		create_vm "$name" "$@"
+		create_vm "$name" "$attach_external_ip" "$@"
 	fi
 	wait_for_running "$name"
 }
@@ -266,15 +299,16 @@ require_ready subnet "$SECONDARY_SUBNET2"
 PRIMARY_SUBNET_ID="$(resolve_subnet_id "$PRIMARY_SUBNET")"
 SECONDARY_SUBNET1_ID="$(resolve_subnet_id "$SECONDARY_SUBNET1")"
 SECONDARY_SUBNET2_ID="$(resolve_subnet_id "$SECONDARY_SUBNET2")"
+validate_secondary_subnets_share_vn
 
 log "Creating primary-only ComputeInstance: $VM1_NAME"
-create_or_reuse_vm "$VM1_NAME" "$PRIMARY_SUBNET_ID"
+create_or_reuse_vm "$VM1_NAME" "$EXTERNAL_IP_ATTACHMENT" "$PRIMARY_SUBNET_ID"
 
 log "Creating primary + secondary ComputeInstance: $VM2_NAME"
-create_or_reuse_vm "$VM2_NAME" "$PRIMARY_SUBNET_ID" "$SECONDARY_SUBNET1_ID"
+create_or_reuse_vm "$VM2_NAME" "$EXTERNAL_IP_ATTACHMENT" "$PRIMARY_SUBNET_ID" "$SECONDARY_SUBNET1_ID"
 
 log "Creating second-secondary-only ComputeInstance: $VM3_NAME"
-create_or_reuse_vm "$VM3_NAME" "$SECONDARY_SUBNET2_ID"
+create_or_reuse_vm "$VM3_NAME" "$SECONDARY_ONLY_EXTERNAL_IP_ATTACHMENT" "$SECONDARY_SUBNET2_ID"
 
 log "Done -- final state"
 for name in "$VM1_NAME" "$VM2_NAME" "$VM3_NAME"; do

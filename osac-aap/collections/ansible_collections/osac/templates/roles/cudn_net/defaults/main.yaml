@@ -7,10 +7,9 @@ default_subnet_labels:
 default_layer2_role: Primary
 default_ipam_lifecycle: Persistent
 
-# Shared EVPN transit network. The fabric manager publishes the values below in
-# a ConfigMap before the k8s-manager job consumes them. One CUDN is shared by
-# all fabric-backed Secondary VirtualNetworks; using one CUDN is required because
-# OVN-Kubernetes requires an EVPN VNI to be unique across the cluster.
+# The fabric manager publishes a VN-scoped transit contract in the parent
+# networking namespace. Names are derived from the VN UUID by the create path;
+# these defaults remain useful for contract-only tests that inject data.
 cudn_net_evpn_transit_cudn_name: osac-evpn-transit
 cudn_net_evpn_transit_configmap_name: osac-evpn-transit
 cudn_net_evpn_transit_configmap_wait_retries: 60

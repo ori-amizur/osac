@@ -1499,11 +1499,13 @@
             },
             "machineConfigPoolSelector": {
               "type": "object",
-              "description": "Optional MachineConfigPool label selector; empty applies to all pools",
+              "description": "MachineConfigPool label selector; the built-in label selects all built-in pools",
               "additionalProperties": {
                 "type": "string"
               },
-              "default": {}
+              "default": {
+                "machineconfiguration.openshift.io/mco-built-in": ""
+              }
             }
           }
         }

@@ -1,3 +1,5 @@
 ---
 vnet_state: present
 vnet_vlan_id: auto
+vnet_l3vpn: false
+vnet_vlan_aware: false

@@ -1,8 +1,8 @@
 ---
-# EVPN transit contract test. This scenario intentionally injects the same
-# manager-neutral data that the Netris role publishes, so it can validate the
-# k8s-side CUDN/claim contract without requiring live Netris credentials. Run
-# it on a cluster with the EVPN CUDN feature enabled.
+# EVPN transit contract test. This scenario intentionally injects the
+# VN-scoped manager-neutral data that the Netris role publishes, so it can
+# validate the k8s-side CUDN/claim contract without requiring live Netris
+# credentials. Run it on a cluster with the EVPN CUDN feature enabled.
 
 - name: "VirtualNetwork Secondary router pod - EVPN transit contract"
   hosts: localhost
@@ -21,9 +21,11 @@
     cudn_net_evpn_transit_patch_port_security: false
     cudn_net_evpn_transit_data:
       cidr: 10.250.0.0/24
+      netris_pool: 10.250.0.0/26
+      osac_pool: 10.250.0.64/26
       mac_vrf_vni: "65001"
       vtep: tenant-vtep
-      reserved_subnets: '["10.250.0.1/32", "10.250.0.128/25"]'
+      reserved_subnets: '["10.250.0.0/26", "10.250.0.128/25"]'
 
   tasks:
     - name: Set fabric-backed Secondary VirtualNetwork fact
@@ -37,6 +39,7 @@
             annotations:
               osac.openshift.io/tenant: test-tenant
               osac.openshift.io/fabric-manager-configured: "true"
+              osac.openshift.io/transit-capability: netris-evpn
           spec:
             region: test-region
             networkClass: netris-cudn-net
@@ -47,14 +50,48 @@
         name: osac.templates.cudn_net
         tasks_from: create_virtual_network
 
-    - name: Read the shared transit CUDN
+    - name: Wait for the transit router Deployment to become available
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ test_vn_name }}"
+        name: router
+      register: transit_deployment_ready
+      until:
+        - transit_deployment_ready.resources | length == 1
+        - transit_deployment_ready.resources[0].status.availableReplicas | default(0) | int == 1
+      retries: 60
+      delay: 2
+
+    - name: Read the running transit router Pod
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ test_vn_name }}"
+        label_selectors:
+          - osac.openshift.io/router-pod=true
+      register: transit_running_pods
+      until:
+        - transit_running_pods.resources | length == 1
+        - transit_running_pods.resources[0].status.phase == 'Running'
+        - >-
+          transit_running_pods.resources[0].status.containerStatuses | default([])
+          | selectattr('ready', 'equalto', true) | list | length == 1
+      retries: 60
+      delay: 2
+
+    - name: Display the live transit router Pod network annotations
+      ansible.builtin.debug:
+        msg: "{{ transit_running_pods.resources[0].metadata.annotations | default({}) }}"
+
+    - name: Read the VN-scoped transit CUDN
       kubernetes.core.k8s_info:
         api_version: k8s.ovn.org/v1
         kind: ClusterUserDefinedNetwork
         name: "{{ cudn_net_evpn_transit_cudn_name }}"
       register: transit_cudn
 
-    - name: Assert the shared CUDN has the expected EVPN MAC-VRF only
+    - name: Assert the VN-scoped CUDN has the expected EVPN MAC-VRF only
       ansible.builtin.assert:
         that:
           - transit_cudn.resources | length == 1
@@ -63,8 +100,13 @@
           - transit_cudn.resources[0].spec.network.layer2.role == 'Primary'
           - transit_cudn.resources[0].spec.network.layer2.ipam.lifecycle == 'Persistent'
           - transit_cudn.resources[0].spec.network.layer2.subnets == ['10.250.0.0/24']
+          - transit_cudn.resources[0].spec.network.layer2.infrastructureSubnets == ['10.250.0.64/30']
+          - transit_cudn.resources[0].spec.network.layer2.reservedSubnets == ['10.250.0.0/26', '10.250.0.128/25']
           - transit_cudn.resources[0].spec.network.evpn.macVRF.vni == 65001
           - transit_cudn.resources[0].spec.network.evpn.ipVRF is not defined
+          - transit_cudn.resources[0].metadata.annotations['osac.openshift.io/tenant'] == 'test-tenant'
+          - transit_cudn.resources[0].metadata.annotations['osac.openshift.io/owner-reference'] == test_vn_uuid
+          - transit_cudn.resources[0].spec.namespaceSelector.matchLabels['secondary-vn.osac.openshift.io/' ~ test_vn_uuid] == 'true'
         fail_msg: "EVPN transit CUDN does not match the MAC-VRF-only contract"
 
     - name: Read the router namespace
@@ -74,7 +116,7 @@
         name: "{{ test_vn_name }}"
       register: transit_namespace
 
-    - name: Assert the namespace selects the shared primary CUDN
+    - name: Assert the namespace selects only this VN's primary CUDN
       ansible.builtin.assert:
         that:
           - transit_namespace.resources | length == 1
@@ -103,7 +145,7 @@
         name: transit
       register: transit_claim
 
-    - name: Assert the transit claim references the shared CUDN
+    - name: Assert the transit claim references this VN's CUDN
       ansible.builtin.assert:
         that:
           - transit_claim.resources | length == 1
@@ -157,6 +199,14 @@
         name: transit
       failed_when: false
 
+    - name: Cleanup the transit test router pod SCC ClusterRoleBinding
+      kubernetes.core.k8s:
+        state: absent
+        api_version: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        name: "router-pod-scc-{{ test_vn_name }}"
+      failed_when: false
+
     - name: Cleanup the transit test CUDN
       kubernetes.core.k8s:
         state: absent
@@ -173,4 +223,81 @@
         api_version: v1
         kind: Namespace
         name: "{{ test_vn_name }}"
+      failed_when: false
+
+# A configured fabric manager that does not advertise the current Netris/EVPN
+# contract must remain on the Phase-1-only router path.
+- name: "VirtualNetwork Secondary router pod - unsupported transit capability"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../common_vars.yml
+  vars:
+    unsupported_vn_name: vn-secondary-router-pod-unsupported-transit-test
+    unsupported_vn_uuid: vn-secondary-router-pod-unsupported-transit-test-uuid
+    virtual_network_name: "{{ unsupported_vn_name }}"
+
+  tasks:
+    - name: Set configured-but-unsupported Secondary VirtualNetwork fact
+      ansible.builtin.set_fact:
+        router_pod_transit_enabled: false
+        router_pod_transit_attachment: {}
+        virtual_network:
+          metadata:
+            name: "{{ unsupported_vn_name }}"
+            namespace: osac-networking
+            labels:
+              osac.openshift.io/virtualnetwork-uuid: "{{ unsupported_vn_uuid }}"
+            annotations:
+              osac.openshift.io/tenant: test-tenant
+              osac.openshift.io/fabric-manager-configured: "true"
+              osac.openshift.io/transit-capability: unsupported
+          spec:
+            region: test-region
+            networkClass: unsupported-fabric-net
+            networkingType: Secondary
+
+    - name: Create the unsupported-backend router resources
+      ansible.builtin.include_role:
+        name: osac.templates.cudn_net
+        tasks_from: create_virtual_network
+
+    - name: Verify that no EVPN transit CUDN was created
+      kubernetes.core.k8s_info:
+        api_version: k8s.ovn.org/v1
+        kind: ClusterUserDefinedNetwork
+        name: "osac-transit-cudn-{{ (unsupported_vn_uuid | hash('sha1'))[:12] }}"
+      register: unsupported_transit_cudn
+      failed_when: false
+
+    - name: Verify that no persistent transit IPAMClaim was created
+      kubernetes.core.k8s_info:
+        api_version: k8s.cni.cncf.io/v1alpha1
+        kind: IPAMClaim
+        namespace: "{{ unsupported_vn_name }}"
+        name: "osac-transit-{{ (unsupported_vn_uuid | hash('sha1'))[:12] }}"
+      register: unsupported_transit_claim
+      failed_when: false
+
+    - name: Assert unsupported transit remains Phase-1-only
+      ansible.builtin.assert:
+        that:
+          - unsupported_transit_cudn.resources | default([]) | length == 0
+          - unsupported_transit_claim.resources | default([]) | length == 0
+
+  post_tasks:
+    - name: Cleanup unsupported-backend router pod SCC ClusterRoleBinding
+      kubernetes.core.k8s:
+        state: absent
+        api_version: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        name: "router-pod-scc-{{ unsupported_vn_name }}"
+      failed_when: false
+
+    - name: Cleanup unsupported-backend router namespace
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ unsupported_vn_name }}"
       failed_when: false

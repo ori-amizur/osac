@@ -1,5 +1,7 @@
 ---
-# Get full V-Net details by ID with bounded retry for intermittent 304s.
+# Get full V-Net details by ID with bounded retry for Netris eventual
+# consistency. Immediately after POST/PUT, Netris can briefly return 404 or
+# 304 before the detail record is available through the read endpoint.
 # Required variables:
 #   vnet_id — Netris V-Net numeric ID
 # Output facts:
@@ -20,14 +22,24 @@
       Cache-Control: "no-cache"
       Pragma: "no-cache"
     return_content: true
-    status_code: [200, 304]
+    status_code: [200, 304, 404, 500, 502, 503, 504]
     timeout: "{{ netris_timeout | default(30) }}"
     validate_certs: "{{ netris_validate_certs | default(true) }}"
   register: _vnet_detail_resp
+  failed_when: false
   until: _vnet_detail_resp.status == 200
-  retries: 5
+  retries: 30
   delay: 2
   no_log: true
+
+- name: Require the V-Net detail read to succeed
+  ansible.builtin.assert:
+    that:
+      - _vnet_detail_resp.status | int == 200
+      - _vnet_detail_resp.json.data is mapping
+    fail_msg: >-
+      Netris V-Net '{{ vnet_id }}' detail did not become readable after the
+      retry window (HTTP {{ _vnet_detail_resp.status | default('unknown') }}).
 
 - name: Set V-Net detail fact
   ansible.builtin.set_fact:

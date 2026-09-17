@@ -50,3 +50,25 @@ func setReadyConditionBlocked(conditions *[]metav1.Condition, reason, message st
 		Message: message,
 	})
 }
+
+// setTransitTeardownCondition records the dedicated signal used when a
+// fabric-backed VirtualNetwork cannot remove its OSAC-owned transit resources.
+// It intentionally lives beside, rather than replaces, Ready: deletion may be
+// blocked while the ordinary provisioning condition still describes the last
+// successful desired state.
+func setTransitTeardownCondition(conditions *[]metav1.Condition, stuckMessage string) {
+	if stuckMessage == "" {
+		apimeta.SetStatusCondition(conditions, metav1.Condition{
+			Type:   v1alpha1.ConditionTransitTeardownStuck,
+			Status: metav1.ConditionFalse,
+			Reason: v1alpha1.ReasonTransitTeardownClear,
+		})
+		return
+	}
+	apimeta.SetStatusCondition(conditions, metav1.Condition{
+		Type:    v1alpha1.ConditionTransitTeardownStuck,
+		Status:  metav1.ConditionTrue,
+		Reason:  v1alpha1.ReasonTransitTeardownStuck,
+		Message: stuckMessage,
+	})
+}

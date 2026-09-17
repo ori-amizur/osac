@@ -853,6 +853,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			fakeDiscoveryClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				newFabricManagerConfigMap("fm-netris", "osac", "netris"),
 				newFabricManagerConfigMap("fm-netris-initial", "osac", "netris-initial"),
+				newFabricManagerConfigMap("fm-neutron", "osac", "neutron"),
 				newK8sManagerConfigMap("km-cudn-net", "osac", "cudn_net", "ipv4"),
 			).Build()
 		})
@@ -895,6 +896,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			updated := &osacv1alpha1.VirtualNetwork{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updated)).To(Succeed())
 			Expect(updated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("true"))
+			Expect(updated.Annotations[osacTransitCapabilityAnnotation]).To(Equal(transitCapabilityNetrisEVPN))
 		})
 
 		It("records fabric-manager-configured=false when the NetworkClass has only a k8sManager (Story 1.05 AC3)", func() {
@@ -919,7 +921,29 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			// strategy (via K8sTarget), it's just not a fabric one.
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("cudn_net"))
 			Expect(updated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("false"))
+			Expect(updated.Annotations[osacTransitCapabilityAnnotation]).To(Equal(transitCapabilityNone))
 			Expect(updated.Annotations).NotTo(HaveKey(osacK8sImplementationStrategyAnnotation))
+		})
+
+		It("records an unsupported transit capability without selecting EVPN", func() {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-neutron", FabricManager: ptr.To("neutron")}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			vnet.Spec.NetworkClass = "nc-neutron"
+			Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace},
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.VirtualNetwork{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace}, updated)).To(Succeed())
+			Expect(updated.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("true"))
+			Expect(updated.Annotations[osacTransitCapabilityAnnotation]).To(Equal(transitCapabilityUnsupported))
 		})
 
 		It("keeps the fabric-manager decision unchanged when the NetworkClass later gains a fabric manager", func() {
@@ -941,6 +965,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			created := &osacv1alpha1.VirtualNetwork{}
 			Expect(k8sClient.Get(ctx, req.NamespacedName, created)).To(Succeed())
 			Expect(created.Annotations[osacFabricManagerConfiguredAnnotation]).To(Equal("false"))
+			Expect(created.Annotations[osacTransitCapabilityAnnotation]).To(Equal(transitCapabilityNone))
 
 			// Simulate a later NetworkClass update. The persisted decision must remain
 			// false because this VirtualNetwork was created without a fabric manager.
@@ -970,6 +995,23 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 				NamespacedName: types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace},
 			}})
 			Expect(err).To(MatchError(ContainSubstring("invalid osac.openshift.io/fabric-manager-configured annotation")))
+		})
+
+		It("rejects an invalid persisted transit capability", func() {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-invalid-transit", FabricManager: ptr.To("netris")}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			vnet.Spec.NetworkClass = "nc-invalid-transit"
+			vnet.Annotations = map[string]string{osacTransitCapabilityAnnotation: "bogus"}
+			Expect(k8sClient.Create(ctx, vnet)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: vnet.Name, Namespace: vnet.Namespace},
+			}})
+			Expect(err).To(MatchError(ContainSubstring("invalid osac.openshift.io/transit-capability annotation")))
 		})
 
 		It("dispatches dual-manager VirtualNetworks to fabric and k8s provisioning targets", func() {

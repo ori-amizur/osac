@@ -92,18 +92,18 @@ service:
     level: info
     headers: false
     bodies: false
-  vault:
-    endpoint: ""
-    namespace: osac
-    kvMountPath: secret
-    lifecycleRole: ""
-    lifecycleMountPath: "jwt"
-    keycloakClientId: ""
-    keycloakIssuerUrl: ""
-    keycloakAudience: "osac-api"
-    caBundle:
-      configMap: ""
-    credentials: []
+# vault:
+#   endpoint: ""
+#   namespace: osac
+#   kvMountPath: secret
+#   lifecycleRole: ""
+#   lifecycleMountPath: "jwt"
+#   keycloakClientId: ""
+#   keycloakIssuerUrl: ""
+#   keycloakAudience: "osac-api"
+#   caBundle:
+#     configMap: ""
+#   credentials: []
 
 # --- AAP ---
 aap:
@@ -339,19 +339,22 @@ routerPodScc:
   # allowlist unsafe sysctls. The resource is rendered only on OpenShift.
   kubeletConfig:
     enabled: true
-    machineConfigPoolSelector: {}
+    # The built-in label is present on both the master and worker pools. An
+    # empty selector matches no MachineConfigPool on OpenShift.
+    machineConfigPoolSelector:
+      machineconfiguration.openshift.io/mco-built-in: ""
 
-bundledVault:
-  enabled: false
-  devRootToken: ""
-  image: "ghcr.io/openbao/openbao:2.6.2"
-  resources:
-    limits:
-      cpu: 500m
-      memory: 512Mi
-    requests:
-      cpu: 100m
-      memory: 256Mi
+# bundledVault:
+# enabled: false
+# devRootToken: ""
+# image: "ghcr.io/openbao/openbao:2.6.2"
+# resources:
+#   limits:
+#     cpu: 500m
+#     memory: 512Mi
+#   requests:
+#     cpu: 100m
+#     memory: 256Mi
 
 clusterVersions:
   enabled: false

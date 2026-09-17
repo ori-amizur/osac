@@ -184,9 +184,9 @@ ifneq ($(PLATFORM),kind)
 	oc create secret generic config-as-code-manifest-ig \
 		--from-file=license.zip="$(AAP_LICENSE_FILE)" \
 		-n $(NS) --dry-run=client -o yaml | oc apply --server-side -f -
-	oc label secret config-as-code-manifest-ig \
+	-oc label secret config-as-code-manifest-ig \
 		osac.openshift.io/project=osac-aap \
-		-n $(NS) --overwrite
+		-n $(NS) --overwrite || true
 	@bash -c 'source scripts/lib.sh && check_postgres_prerequisites "$(NS)" "$(INFRA_VALUES)"'
 	$(eval DOMAIN := $(shell oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'))
 	@[ -n "$(DOMAIN)" ] || { echo "ERROR: Could not determine cluster domain. Is oc logged in?" >&2; exit 1; }

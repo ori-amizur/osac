@@ -76,23 +76,32 @@ Steps 3 and 4 are where the network class takes effect — they delegate to the
 ### EVPN transit for fabric-backed Secondary VirtualNetworks
 
 When a Secondary VirtualNetwork is dispatched to the Netris fabric manager,
-the role can publish the provider-owned EVPN transit attachment for the k8s
-manager. Configure the shared Netris V-Net and its IPAM subnet in the AAP
-environment:
+OSAC creates and owns one transit V-Net and IPAM subnet inside that
+VirtualNetwork's dedicated Netris VPC/VRF. Names are derived from the
+VirtualNetwork UUID, so the operation is retry-safe and does not require a
+provider or tenant to create a resource in the Netris UI.
+
+Configure the provider transit policy in the AAP environment:
 
 | Variable | Meaning |
 | --- | --- |
-| `NETRIS_EVPN_TRANSIT_VNET_NAME` | Existing provider-owned Netris V-Net; its allocated `vxlanID` is used as the MAC-VRF VNI. |
-| `NETRIS_EVPN_TRANSIT_IPAM_SUBNET_NAME` | Netris IPAM subnet containing the transit CIDR; defaults to the V-Net name. |
+| `NETRIS_EVPN_TRANSIT_PREFIX_MODE` | `auto` (default, try link-local then fallback), `link-local`, or `private`; provider selection, never tenant input. |
+| `NETRIS_EVPN_TRANSIT_LINK_LOCAL_PREFIX` | Preferred static IPv4 transit prefix; defaults to `169.254.240.0/24`. |
+| `NETRIS_EVPN_TRANSIT_PRIVATE_PREFIX` | Provider-configured `/24` fallback, required for automatic fallback or when `NETRIS_EVPN_TRANSIT_PREFIX_MODE=private`. |
 | `OSAC_EVPN_VTEP_NAME` | Existing cluster VTEP name; defaults to `tenant-vtep`. |
-| `NETRIS_EVPN_TRANSIT_RESERVED_SUBNETS` | Optional JSON array of additional CIDRs/ranges reserved by the fabric. |
+| `NETRIS_EVPN_TRANSIT_RESERVED_SUBNETS` | Optional JSON array of additional CIDRs/ranges reserved by the fabric or platform. |
 
-The role reads the V-Net gateways, DHCP ranges, and allocated IPAM hosts,
-collapses them into CUDN `reservedSubnets`, and publishes the CIDR, VNI, VTEP,
-and reserved ranges in the `osac-evpn-transit` ConfigMap. The k8s manager then
-creates the shared Primary EVPN CUDN and a per-VirtualNetwork persistent
-`IPAMClaim`. The Netris IPAM subnet and CUDN therefore use the same CIDR; no
-single Netris gateway is assumed.
+Netris allocates the transit VNI when the VN-scoped V-Net is created. The role
+validates the VPC/VRF and prefix before adopting existing deterministic
+resources, and constrains Netris allocation to its configured pool. The k8s
+manager creates the matching Primary EVPN CUDN with the Netris pool and the
+unused portion of the `/24` in `reservedSubnets`, leaving only the OSAC pool
+available to the persistent `IPAMClaim`. The default policy is two disjoint
+`/26` pools inside the shared `/24`, with the remaining `/25` reserved. The
+Netris IPAM subnet and CUDN therefore use the same CIDR without sharing an
+address allocation pool; no single Netris gateway is assumed. A snapshot of
+currently allocated Netris hosts may be used as a diagnostic check, but is not
+the duplicate-prevention mechanism.
 
 ### Cluster Create Flow
 
@@ -254,6 +263,26 @@ are resolved in `group_vars/all/configuration.yaml` and `group_vars/all/netris.y
 | `NETRIS_TENANT_NAME` | Netris tenant name | Yes |
 | `NETRIS_MGMT_VPC_ID` | Management VPC ID (for API DNAT rules) | Yes |
 | `NETRIS_MGMT_VPC_NAME` | Management VPC name | No |
+
+#### Secondary VirtualNetwork EVPN transit
+
+For Netris-backed Secondary VirtualNetworks, configure the provider-owned
+fabric endpoints as a JSON list of Netris server/interface pairs:
+
+```json
+[
+  {"host_name": "hgx-pod00-su0-h00", "logical_interface_name": "eth10"},
+  {"host_name": "hgx-pod00-su0-h01", "logical_interface_name": "eth10"},
+  {"host_name": "hgx-pod00-su0-h02", "logical_interface_name": "eth10"}
+]
+```
+
+Set this value in `NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS`. OSAC resolves the
+current Netris port IDs from inventory at reconciliation time; do not copy
+numeric IDs such as `58` into deployment configuration. The transit V-Net is
+an L2 MAC-VRF (`l3vpn=false`, `vlanAware=false`) and the endpoint ports are
+tagged/trunk ports (`accessMode=false`) so multiple VN-scoped transit V-Nets
+can use the same provider uplinks.
 
 #### Resource Class Map
 

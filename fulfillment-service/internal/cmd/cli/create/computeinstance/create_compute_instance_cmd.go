@@ -320,7 +320,8 @@ func (c *runnerContext) run(cmd *cobra.Command, args []string) error {
 	// Prepare the compute instance:
 	computeInstance := publicv1.ComputeInstance_builder{
 		Metadata: publicv1.Metadata_builder{
-			Name: c.args.name,
+			Name:   c.args.name,
+			Tenant: c.settings.Tenant(),
 		}.Build(),
 		Spec: spec,
 	}.Build()

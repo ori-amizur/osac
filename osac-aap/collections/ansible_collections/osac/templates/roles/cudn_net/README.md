@@ -18,11 +18,11 @@ VirtualNetworks define the top-level network isolation boundary with CIDR alloca
 
 **Key behaviors:**
 - For a Secondary VirtualNetwork, creates the VN namespace and router Pod
-- For a fabric-backed Secondary VirtualNetwork, consumes the fabric manager's
-  shared transit contract and creates one Primary EVPN CUDN plus a persistent
-  transit IPAMClaim
-- A fabric-backed transit CUDN is cluster-shared because its MAC-VRF VNI must
-  be unique across the cluster; individual subnet changes do not alter it
+- For a fabric-backed Secondary VirtualNetwork, consumes that VN's fabric
+  transit contract and creates one isolated Primary EVPN CUDN plus a
+  persistent transit IPAMClaim
+- Each fabric-backed VirtualNetwork owns a separate transit CUDN and MAC-VRF;
+  individual subnet changes do not alter the VN-scoped transit interface
 - For a Primary VirtualNetwork, this entrypoint remains a logical grouping and
   does not create a router namespace
 
@@ -117,13 +117,18 @@ This role implements the `cudn_net` NetworkClass strategy using OpenShift's Clus
 
 **For VirtualNetworks:**
 - Create the Secondary VirtualNetwork router namespace and Deployment
-- When `osac.openshift.io/fabric-manager-configured=true`, consume the
-  `osac-evpn-transit` ConfigMap published by the fabric role and create the
-  shared Layer2/EVPN/MAC-VRF CUDN. The CUDN uses the fabric-owned transit CIDR
-  and VNI, with Netris-owned addresses represented in `reservedSubnets`.
+- When `osac.openshift.io/transit-capability=netris-evpn`, consume the
+  deterministic VN-scoped ConfigMap published by the fabric role and create
+  an isolated Layer2/EVPN/MAC-VRF CUDN. The CUDN uses the fabric-owned transit
+  CIDR and VNI. Netris and CUDN IPAM use disjoint pools within that CIDR: by
+  default Netris owns one `/26`, OSAC/CUDN owns a separate `/26`, and the
+  remaining `/25` is reserved. The Netris pool and reserved remainder are
+  represented in `reservedSubnets`; a host-list snapshot alone is not enough
+  to prevent future duplicate allocations.
 - Configure the CUDN with `ipam.lifecycle: Persistent`, create the router Pod's
   `IPAMClaim`, and request it through the Primary UDN claim annotation.
-- When the annotation is absent or false, skip all transit resources.
+- When the annotation is absent, `none`, or `unsupported`, skip all EVPN
+  transit resources. Fabric-manager presence alone is not sufficient.
 
 **For Subnets:**
 - Create namespace with CUDN attachment labels

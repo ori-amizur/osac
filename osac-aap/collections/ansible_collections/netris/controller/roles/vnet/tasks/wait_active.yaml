@@ -1,5 +1,5 @@
 ---
-# Poll a Netris V-Net by ID until its state becomes "active".
+# Poll a Netris V-Net by ID until the controller finishes provisioning it.
 # Required variables:
 #   vnet_id             — Netris V-Net numeric ID to poll
 # Optional variables:
@@ -24,14 +24,33 @@
       Cache-Control: "no-cache"
       Pragma: "no-cache"
     return_content: true
-    status_code: [200, 304]
+    status_code: [200, 304, 404, 500, 502, 503, 504]
     timeout: "{{ netris_timeout | default(30) }}"
     validate_certs: "{{ netris_validate_certs | default(true) }}"
   register: _vnet_poll_resp
+  failed_when: false
   until: >-
-    _vnet_poll_resp.status == 200
-    and (_vnet_poll_resp.json.data.state | default('')) == 'active'
-    and not (_vnet_poll_resp.json.data.provisioning | default(false) | bool)
+    _vnet_poll_resp.status | int == 200
+    and (((_vnet_poll_resp.json | default({})).data | default({})).state | default('')) == 'active'
+    and not (((_vnet_poll_resp.json | default({})).data | default({})).provisioning | default(false) | bool)
   retries: "{{ netris_vnet_active_retries | default(30) }}"
   delay: "{{ netris_vnet_active_delay | default(5) }}"
   no_log: true
+
+- name: Capture the final Netris V-Net poll data
+  ansible.builtin.set_fact:
+    _vnet_poll_data: "{{ (_vnet_poll_resp.json | default({})).data | default({}) }}"
+
+- name: Require the Netris V-Net to finish provisioning
+  ansible.builtin.assert:
+    that:
+      - _vnet_poll_resp.status | int == 200
+      - _vnet_poll_data is mapping
+      - _vnet_poll_data.state | default('') == 'active'
+      - not (_vnet_poll_data.provisioning | default(false) | bool)
+    fail_msg: >-
+      Netris V-Net '{{ vnet_id }}' did not finish provisioning: HTTP
+      {{ _vnet_poll_resp.status | default('unknown') }}, state={{ _vnet_poll_data.state | default('unknown') }},
+      provisioning={{ _vnet_poll_data.provisioning | default('unknown') }},
+      status={{ _vnet_poll_data.status | default({}) }},
+      ports={{ (_vnet_poll_data.ports | default([])) | length }}.

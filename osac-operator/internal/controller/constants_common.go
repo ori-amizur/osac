@@ -59,6 +59,18 @@ const (
 	// set represents "no fabric manager"; no new NetworkClass field is needed.
 	osacFabricManagerConfiguredAnnotation = osacPrefix + "/fabric-manager-configured"
 
+	// osacTransitCapabilityAnnotation records the immutable, creation-time transit
+	// capability selected for a VirtualNetwork. It is deliberately separate from
+	// fabric-manager-configured: manager presence alone must not make the k8s
+	// manager provision Netris/EVPN resources.
+	osacTransitCapabilityAnnotation = osacPrefix + "/transit-capability"
+
+	// Transit capability values currently understood by the Netris EVPN path.
+	transitCapabilityNone        = "none"
+	transitCapabilityNetrisEVPN  = "netris-evpn"
+	transitCapabilityUnsupported = "unsupported"
+	netrisFabricManagerName      = "netris"
+
 	// defaultExternalIPPoolImplementationStrategy is the fallback strategy when none is specified.
 	// Used by ExternalIPPool (from its own spec) and ExternalIP (inherited from parent pool).
 	defaultExternalIPPoolImplementationStrategy = "metallb-l2"
@@ -71,6 +83,7 @@ const (
 
 	conditionReasonConfigurationApplied  = "ConfigurationApplied"
 	conditionMessageConfigurationApplied = "Controller has processed the current spec"
+	transitTeardownStuckMarker           = "TRANSIT_TEARDOWN_STUCK"
 
 	labelValueTrue = "true"
 )

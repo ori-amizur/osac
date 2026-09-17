@@ -42,6 +42,14 @@ argument_specs:
         type: str
         default: auto
         description: "VLAN ID or 'auto' for automatic assignment."
+      vnet_l3vpn:
+        type: bool
+        default: false
+        description: "Whether to create the V-Net as an L3VPN."
+      vnet_vlan_aware:
+        type: bool
+        default: false
+        description: "Whether the L2 V-Net carries multiple VLAN tags."
       vnet_ports:
         type: list
         elements: dict

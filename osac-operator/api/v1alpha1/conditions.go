@@ -28,6 +28,7 @@ const (
 	ConditionCompleted             = "Completed"
 	ConditionAvailable             = "Available"
 	ConditionReady                 = "Ready"
+	ConditionTransitTeardownStuck  = "TransitTeardownStuck"
 )
 
 // Common reason constants
@@ -41,11 +42,13 @@ const (
 	ReasonWebhookTriggered = "WebhookTriggered"
 	ReasonWebhookFailed    = "WebhookFailed"
 
-	ReasonTenantNotReady      = "TenantNotReady"
-	ReasonProvisioningStorage = "ProvisioningStorage"
-	ReasonWaitingForVM        = "WaitingForVM"
-	ReasonScheduling          = "Scheduling"
-	ReasonInfrastructureReady = "InfrastructureReady"
-	ReasonProvisioningFailed  = "ProvisioningFailed"
-	ReasonNoManagerConfigured = "NoManagerConfigured"
+	ReasonTenantNotReady       = "TenantNotReady"
+	ReasonProvisioningStorage  = "ProvisioningStorage"
+	ReasonWaitingForVM         = "WaitingForVM"
+	ReasonScheduling           = "Scheduling"
+	ReasonInfrastructureReady  = "InfrastructureReady"
+	ReasonProvisioningFailed   = "ProvisioningFailed"
+	ReasonNoManagerConfigured  = "NoManagerConfigured"
+	ReasonTransitTeardownStuck = "TransitTeardownStuck"
+	ReasonTransitTeardownClear = "AsExpected"
 )

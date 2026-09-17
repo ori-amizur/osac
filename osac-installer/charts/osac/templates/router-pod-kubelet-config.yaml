@@ -1,8 +1,8 @@
 {{- if and .Values.routerPodScc.enabled .Values.routerPodScc.kubeletConfig.enabled ( .Capabilities.APIVersions.Has "machineconfiguration.openshift.io/v1" ) }}
 # The router Deployment sets net.ipv4.ip_forward at pod creation time. OpenShift
 # requires both the SCC allowlist and the node kubelet allowlist for this unsafe
-# sysctl. An empty pool selector intentionally applies the setting to every pool,
-# because the router Deployment has no node selector and may land on any pool.
+# sysctl. The default selector matches every built-in MachineConfigPool, because
+# the router Deployment has no node selector and may land on any pool.
 apiVersion: machineconfiguration.openshift.io/v1
 kind: KubeletConfig
 metadata:

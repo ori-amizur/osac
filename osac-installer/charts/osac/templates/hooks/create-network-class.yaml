@@ -56,6 +56,35 @@ spec:
             API="https://fulfillment-internal-api:8001/api/private/v1/network_classes"
             RESPONSE=/tmp/nc-response.json
 
+            # The API derives metadata.name from k8s_manager/fabric_manager.  A
+            # re-install therefore sees the same NetworkClass name even though
+            # the create request itself carries a fresh ID.  Check the existing
+            # object first so a duplicate-name response is handled as the
+            # idempotent success it is, rather than being misreported by the API
+            # as a concurrent default swap.
+            EXISTING=$(curl -skS \
+              --connect-timeout 5 --max-time 30 \
+              "${API}" \
+              -H "Authorization: Bearer ${AUTH_TOKEN}" || true)
+            if echo "${EXISTING}" | python3 -c '
+            import json, os, sys
+            try:
+                items = json.load(sys.stdin).get("items", [])
+            except (json.JSONDecodeError, AttributeError):
+                sys.exit(1)
+            for item in items:
+                metadata = item.get("metadata", {})
+                if (metadata.get("name") == os.environ["NETWORK_CLASS_NAME"]
+                        and item.get("title") == os.environ["NETWORK_CLASS_TITLE"]
+                        and item.get("k8s_manager") == os.environ["NETWORK_CLASS_K8S_MANAGER"]
+                        and item.get("is_default") is True):
+                    sys.exit(0)
+            sys.exit(1)
+            '; then
+              echo "NetworkClass ${NETWORK_CLASS_NAME} already exists with the desired configuration."
+              exit 0
+            fi
+
             CODE=$(curl -skS \
               --connect-timeout 5 --max-time 30 \
               -o "${RESPONSE}" -w '%{http_code}' \
@@ -80,6 +109,12 @@ spec:
         env:
         - name: HOME
           value: /tmp
+        - name: NETWORK_CLASS_NAME
+          value: {{ if .Values.networkClass.fabricManager }}{{ .Values.networkClass.fabricManager | replace "_" "-" | quote }}{{ else }}{{ .Values.networkClass.k8sManager | replace "_" "-" | quote }}{{ end }}
+        - name: NETWORK_CLASS_TITLE
+          value: {{ .Values.networkClass.title | quote }}
+        - name: NETWORK_CLASS_K8S_MANAGER
+          value: {{ .Values.networkClass.k8sManager | quote }}
         volumeMounts:
         - name: tmp
           mountPath: /tmp

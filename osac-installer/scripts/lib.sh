@@ -302,8 +302,14 @@ check_postgres_prerequisites() {
     local values_file="$2"
     local service target_namespace db_url db_host resolved bundled_status
 
-    _bundled_postgres_enabled "${values_file}"
-    bundled_status=$?
+    # The probe returns 1 when bundled PostgreSQL is disabled.  Keep it inside
+    # an if-condition so the caller's set -e does not abort before we inspect
+    # the status and validate the external PostgreSQL prerequisites below.
+    if _bundled_postgres_enabled "${values_file}"; then
+        bundled_status=0
+    else
+        bundled_status=$?
+    fi
     if [[ ${bundled_status} -eq 2 ]]; then
         _postgres_prereq_error "Values file ${values_file} not found or unreadable."
     elif [[ ${bundled_status} -eq 0 ]]; then

@@ -376,7 +376,10 @@ routerPodScc:
   # sysctl used by the router Deployment; applying this may roll the node pools.
   kubeletConfig:
     enabled: true
-    machineConfigPoolSelector: {}
+    # The built-in label is present on both the master and worker pools. An
+    # empty selector matches no MachineConfigPool on OpenShift.
+    machineConfigPoolSelector:
+      machineconfiguration.openshift.io/mco-built-in: ""
 
 # ---------------------
 # Publish Templates

@@ -50,6 +50,49 @@ def summarize_ip_ranges(values: Iterable[object]) -> list[str]:
     return [str(network) for network in ipaddress.collapse_addresses(networks)]
 
 
+def cidr_overlaps(left: object, right: object) -> bool:
+    """Return whether two IPv4 CIDRs overlap.
+
+    Empty values are treated as unset.  This lets callers use the filter for
+    optional VirtualNetwork CIDRs without adding a second conditional task.
+    """
+
+    if not left or not right:
+        return False
+    left_network = _as_network(left)
+    right_network = _as_network(right)
+    return left_network.overlaps(right_network)
+
+
+def cidr_contains(container: object, value: object) -> bool:
+    """Return whether an IPv4 CIDR contains another CIDR or address."""
+
+    if not container or not value:
+        return False
+    container_network = _as_network(container)
+    if isinstance(value, Mapping):
+        if "start" not in value or "end" not in value:
+            raise AnsibleFilterError(
+                "an IP range mapping must contain both 'start' and 'end'"
+            )
+        try:
+            start = ipaddress.ip_address(str(value["start"]))
+            end = ipaddress.ip_address(str(value["end"]))
+        except ValueError as exc:
+            raise AnsibleFilterError(f"invalid IPv4 range {value!r}: {exc}") from exc
+        if not isinstance(start, ipaddress.IPv4Address) or not isinstance(
+            end, ipaddress.IPv4Address
+        ):
+            raise AnsibleFilterError(f"only IPv4 ranges are supported: {value!r}")
+        return start <= end and start in container_network and end in container_network
+    value_network = _as_network(value)
+    return value_network.subnet_of(container_network)
+
+
 class FilterModule:
     def filters(self) -> dict[str, object]:
-        return {"summarize_ip_ranges": summarize_ip_ranges}
+        return {
+            "summarize_ip_ranges": summarize_ip_ranges,
+            "cidr_overlaps": cidr_overlaps,
+            "cidr_contains": cidr_contains,
+        }

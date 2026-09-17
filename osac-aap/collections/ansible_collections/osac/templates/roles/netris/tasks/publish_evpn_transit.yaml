@@ -19,6 +19,26 @@
     vn_tenant_id: "{{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}"
     vn_ipv4_cidr: "{{ virtual_network.spec.ipv4Cidr | default('') }}"
 
+- name: Load provider transit policy from the AAP execution environment
+  ansible.builtin.set_fact:
+    netris_evpn_transit_prefix_mode: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_PREFIX_MODE') | default('auto', true) }}"
+    netris_evpn_transit_link_local_prefix: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LINK_LOCAL_PREFIX') | default('169.254.240.0/24', true) }}"
+    netris_evpn_transit_private_prefix: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_PRIVATE_PREFIX') | default('', true) }}"
+    netris_evpn_transit_vtep_name: "{{ lookup('env', 'OSAC_EVPN_VTEP_NAME') | default('tenant-vtep', true) }}"
+    netris_evpn_transit_pool_prefix_length: 26
+    netris_evpn_transit_netris_pool_index: 0
+    netris_evpn_transit_osac_pool_index: 1
+    netris_evpn_transit_reserved_subnets: >-
+      {{ lookup('env', 'NETRIS_EVPN_TRANSIT_RESERVED_SUBNETS') | default('[]', true) | from_json }}
+    netris_evpn_transit_port_endpoints: >-
+      {{ lookup('env', 'NETRIS_EVPN_TRANSIT_PORT_ENDPOINTS') | default('[]', true) | from_json }}
+    netris_evpn_transit_l3vpn: false
+    netris_evpn_transit_vlan_aware: false
+    netris_evpn_transit_port_access_mode: false
+    netris_evpn_transit_lock_retries: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LOCK_RETRIES') | default('180', true) | int }}"
+    netris_evpn_transit_lock_delay_seconds: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LOCK_DELAY_SECONDS') | default('1', true) | int }}"
+    netris_evpn_transit_lock_duration_seconds: "{{ lookup('env', 'NETRIS_EVPN_TRANSIT_LOCK_DURATION_SECONDS') | default('600', true) | int }}"
+
 - name: Derive deterministic VN-scoped transit resource names
   ansible.builtin.set_fact:
     netris_evpn_transit_suffix: "{{ (vn_uuid | hash('sha1'))[:12] }}"

@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -31,6 +32,92 @@ import (
 )
 
 var _ = Describe("Subnet fabric route reconciliation", func() {
+	It("reports combined router and fabric route convergence", func() {
+		subnet := &osacv1alpha1.Subnet{
+			Status: osacv1alpha1.SubnetStatus{
+				DesiredConfigVersion:     "owner-version",
+				FabricRouteConfigVersion: "fabric-route-version",
+				ProvisioningJobs: []osacv1alpha1.JobStatus{{
+					JobID:         "owner-job",
+					Type:          osacv1alpha1.JobTypeProvision,
+					State:         osacv1alpha1.JobStateSucceeded,
+					ConfigVersion: "owner-version",
+					Target:        string(dispatcher.ManagerRoleK8s),
+				}},
+			},
+		}
+		vnet := &osacv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				osacTransitCapabilityAnnotation: transitCapabilityNetrisEVPN,
+			},
+		}, Spec: osacv1alpha1.VirtualNetworkSpec{
+			NetworkingType: osacv1alpha1.VirtualNetworkNetworkingTypeSecondary,
+		}}
+
+		reconcileRouteReadiness(subnet, vnet, string(dispatcher.ManagerRoleK8s))
+		condition := apimeta.FindStatusCondition(subnet.Status.Conditions, osacv1alpha1.ConditionRoutesReady)
+		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+		Expect(condition.Reason).To(Equal(osacv1alpha1.ReasonRoutesPending))
+
+		subnet.Status.FabricRouteJobs = []osacv1alpha1.JobStatus{{
+			JobID:         "fabric-route-job",
+			Type:          osacv1alpha1.JobTypeProvision,
+			State:         osacv1alpha1.JobStateFailed,
+			ConfigVersion: "fabric-route-version",
+			Target:        fabricRouteTarget,
+			Message:       "Netris route API unavailable",
+		}}
+		reconcileRouteReadiness(subnet, vnet, string(dispatcher.ManagerRoleK8s))
+		condition = apimeta.FindStatusCondition(subnet.Status.Conditions, osacv1alpha1.ConditionRoutesReady)
+		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+		Expect(condition.Reason).To(Equal(osacv1alpha1.ReasonRoutesFailed))
+		Expect(condition.Message).To(ContainSubstring("Netris route API unavailable"))
+
+		subnet.Status.FabricRouteJobs[0].State = osacv1alpha1.JobStateSucceeded
+		reconcileRouteReadiness(subnet, vnet, string(dispatcher.ManagerRoleK8s))
+		condition = apimeta.FindStatusCondition(subnet.Status.Conditions, osacv1alpha1.ConditionRoutesReady)
+		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		Expect(condition.Reason).To(Equal(osacv1alpha1.ReasonRoutesReady))
+	})
+
+	It("treats the owner operation as the router route gate for fabric-owned Subnets", func() {
+		subnet := &osacv1alpha1.Subnet{
+			Status: osacv1alpha1.SubnetStatus{
+				DesiredConfigVersion: "fabric-owner-version",
+				ProvisioningJobs: []osacv1alpha1.JobStatus{{
+					JobID:         "fabric-owner-job",
+					Type:          osacv1alpha1.JobTypeProvision,
+					State:         osacv1alpha1.JobStateSucceeded,
+					ConfigVersion: "fabric-owner-version",
+					Target:        string(dispatcher.ManagerRoleFabric),
+				}},
+			},
+		}
+		vnet := &osacv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				osacTransitCapabilityAnnotation: transitCapabilityNetrisEVPN,
+			},
+		}, Spec: osacv1alpha1.VirtualNetworkSpec{
+			NetworkingType: osacv1alpha1.VirtualNetworkNetworkingTypeSecondary,
+		}}
+
+		reconcileRouteReadiness(subnet, vnet, string(dispatcher.ManagerRoleFabric))
+		condition := apimeta.FindStatusCondition(subnet.Status.Conditions, osacv1alpha1.ConditionRoutesReady)
+		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		Expect(condition.Reason).To(Equal(osacv1alpha1.ReasonRoutesReady))
+	})
+
+	It("does not add a route condition for unsupported or fabric-manager-less networks", func() {
+		subnet := &osacv1alpha1.Subnet{}
+		vnet := &osacv1alpha1.VirtualNetwork{Spec: osacv1alpha1.VirtualNetworkSpec{
+			NetworkingType: osacv1alpha1.VirtualNetworkNetworkingTypeSecondary,
+		}}
+
+		reconcileRouteReadiness(subnet, vnet, string(dispatcher.ManagerRoleK8s))
+		condition := apimeta.FindStatusCondition(subnet.Status.Conditions, osacv1alpha1.ConditionRoutesReady)
+		Expect(condition).To(BeNil())
+	})
+
 	It("requires a fabric route only for Kubernetes-owned Secondary Subnets", func() {
 		subnet := &osacv1alpha1.Subnet{
 			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{

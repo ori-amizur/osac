@@ -28,6 +28,7 @@ const (
 	ConditionCompleted             = "Completed"
 	ConditionAvailable             = "Available"
 	ConditionReady                 = "Ready"
+	ConditionRoutesReady           = "RoutesReady"
 	ConditionTransitTeardownStuck  = "TransitTeardownStuck"
 )
 
@@ -49,6 +50,9 @@ const (
 	ReasonInfrastructureReady  = "InfrastructureReady"
 	ReasonProvisioningFailed   = "ProvisioningFailed"
 	ReasonNoManagerConfigured  = "NoManagerConfigured"
+	ReasonRoutesPending        = "RouteReconciliationPending"
+	ReasonRoutesFailed         = "RouteReconciliationFailed"
+	ReasonRoutesReady          = "RouteReconciliationSucceeded"
 	ReasonTransitTeardownStuck = "TransitTeardownStuck"
 	ReasonTransitTeardownClear = "AsExpected"
 )

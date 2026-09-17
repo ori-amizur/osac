@@ -407,17 +407,26 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	// Handle provisioning
 	result, err = r.handleProvisioning(ctx, subnet, effectivePlan)
 	if err != nil {
+		if routerRouteProjectionRequired(vnet) {
+			setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+				v1alpha1.ReasonRoutesFailed, "Router route reconciliation failed: "+err.Error())
+		}
 		return result, err
 	}
 
 	routeResult, routeErr := r.handleFabricRouteProvisioning(ctx, subnet, vnet, ownerRole)
 	if routeErr != nil {
+		if routerRouteProjectionRequired(vnet) {
+			setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+				v1alpha1.ReasonRoutesFailed, "Fabric-side route reconciliation failed: "+routeErr.Error())
+		}
 		return routeResult, routeErr
 	}
 	if routeResult.RequeueAfter > 0 &&
 		(result.RequeueAfter == 0 || routeResult.RequeueAfter < result.RequeueAfter) {
 		result.RequeueAfter = routeResult.RequeueAfter
 	}
+	reconcileRouteReadiness(subnet, vnet, ownerRole)
 
 	// A Secondary Subnet cannot be Ready while its parent router Pod is being
 	// recovered. This is independent of the Subnet's own config-version job.
@@ -570,6 +579,11 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *v1alpha1.Su
 	log.Info("deleting subnet")
 
 	subnet.Status.Phase = v1alpha1.SubnetPhaseDeleting
+	secondaryRouteLifecycle := subnet.Annotations[osacNetworkingTypeAnnotation] == string(v1alpha1.VirtualNetworkNetworkingTypeSecondary)
+	if secondaryRouteLifecycle {
+		setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+			v1alpha1.ReasonRoutesPending, "Withdrawing router-pod and fabric-side routes before deleting the Subnet")
+	}
 
 	// Base finalizer has already been removed, cleanup complete
 	if !controllerutil.ContainsFinalizer(subnet, osacSubnetFinalizer) {
@@ -622,6 +636,10 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *v1alpha1.Su
 		// Handle deprovisioning
 		routeResult, routeErr := r.handleFabricRouteDeprovisioning(ctx, subnet)
 		if routeErr != nil {
+			if secondaryRouteLifecycle {
+				setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+					v1alpha1.ReasonRoutesFailed, "Fabric-side route withdrawal failed: "+routeErr.Error())
+			}
 			return routeResult, routeErr
 		}
 		if routeResult.RequeueAfter > 0 {
@@ -630,6 +648,10 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *v1alpha1.Su
 
 		result, err := r.handleDeprovisioning(ctx, subnet)
 		if err != nil {
+			if secondaryRouteLifecycle {
+				setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+					v1alpha1.ReasonRoutesFailed, "Router route projection withdrawal failed: "+err.Error())
+			}
 			return result, err
 		}
 
@@ -641,6 +663,10 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *v1alpha1.Su
 
 	// Deprovisioning complete or skipped, remove base finalizer
 	if controllerutil.RemoveFinalizer(subnet, osacSubnetFinalizer) {
+		if secondaryRouteLifecycle {
+			setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionTrue,
+				v1alpha1.ReasonRoutesReady, "Router-pod and fabric-side routes have been withdrawn")
+		}
 		if err := r.Update(ctx, subnet); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -673,6 +699,83 @@ func fabricTransitSupportsRoutes(vnet *v1alpha1.VirtualNetwork) bool {
 	}
 	_, supported := fabricRouteTransitCapabilities[vnet.Annotations[osacTransitCapabilityAnnotation]]
 	return supported
+}
+
+// routerRouteProjectionRequired reports whether the Subnet lifecycle also
+// has to deliver fabric-owned Subnet routes to the router Pod. The owner AAP
+// job contains the router ConfigMap update for both owner roles; a
+// Kubernetes-owned Subnet additionally has the independent fabric-side route
+// lifecycle tracked in FabricRouteJobs.
+func routerRouteProjectionRequired(vnet *v1alpha1.VirtualNetwork) bool {
+	if vnet == nil {
+		return false
+	}
+	networkingType := vnet.Spec.NetworkingType
+	if networkingType == "" {
+		networkingType = v1alpha1.VirtualNetworkNetworkingTypePrimary
+	}
+	return networkingType == v1alpha1.VirtualNetworkNetworkingTypeSecondary &&
+		vnet.Annotations[osacTransitCapabilityAnnotation] == transitCapabilityNetrisEVPN
+}
+
+func routeJobSucceeded(job *v1alpha1.JobStatus, desiredVersion string) bool {
+	return job != nil && job.State.IsSuccessful() &&
+		(job.ConfigVersion == desiredVersion || job.ConfigVersion == "")
+}
+
+// reconcileRouteReadiness publishes the combined route state. It deliberately
+// uses the existing owner and FabricRoute job histories: the owner AAP job is
+// responsible for the router ConfigMap projection, while FabricRouteJobs
+// represents the separate Kubernetes-owned-Subnet route in the fabric.
+func reconcileRouteReadiness(subnet *v1alpha1.Subnet, vnet *v1alpha1.VirtualNetwork, ownerRole string) {
+	if !routerRouteProjectionRequired(vnet) {
+		return
+	}
+
+	ownerJob := provisioning.FindLatestJobByTypeAndTarget(
+		subnet.Status.ProvisioningJobs, v1alpha1.JobTypeProvision, ownerRole)
+	if ownerJob == nil || !ownerJob.State.IsTerminal() {
+		setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+			v1alpha1.ReasonRoutesPending, "Waiting for the owner operation to update the router route projection")
+		return
+	}
+	if !ownerJob.State.IsSuccessful() {
+		setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+			v1alpha1.ReasonRoutesFailed,
+			fmt.Sprintf("Router route projection owner operation failed: %s", ownerJob.Message))
+		return
+	}
+	if !routeJobSucceeded(ownerJob, subnet.Status.DesiredConfigVersion) {
+		setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+			v1alpha1.ReasonRoutesPending,
+			"The router route projection has not completed for the current Subnet configuration")
+		return
+	}
+
+	if ownerRole == string(dispatcher.ManagerRoleK8s) {
+		fabricRouteJob := provisioning.FindLatestJobByTypeAndTarget(
+			subnet.Status.FabricRouteJobs, v1alpha1.JobTypeProvision, fabricRouteTarget)
+		if fabricRouteJob == nil || !fabricRouteJob.State.IsTerminal() {
+			setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+				v1alpha1.ReasonRoutesPending, "Waiting for the fabric-side route to converge")
+			return
+		}
+		if !fabricRouteJob.State.IsSuccessful() {
+			setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+				v1alpha1.ReasonRoutesFailed,
+				fmt.Sprintf("Fabric-side route reconciliation failed: %s", fabricRouteJob.Message))
+			return
+		}
+		if !routeJobSucceeded(fabricRouteJob, subnet.Status.FabricRouteConfigVersion) {
+			setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionFalse,
+				v1alpha1.ReasonRoutesPending,
+				"The fabric-side route has not completed for the current Subnet configuration")
+			return
+		}
+	}
+
+	setRoutesCondition(&subnet.Status.Conditions, metav1.ConditionTrue,
+		v1alpha1.ReasonRoutesReady, "Router-pod and fabric-side routes have converged")
 }
 
 // fabricRouteRequired reports whether this Subnet needs an auxiliary fabric

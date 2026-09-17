@@ -51,6 +51,15 @@ func setReadyConditionBlocked(conditions *[]metav1.Condition, reason, message st
 	})
 }
 
+func setRoutesCondition(conditions *[]metav1.Condition, status metav1.ConditionStatus, reason, message string) {
+	apimeta.SetStatusCondition(conditions, metav1.Condition{
+		Type:    v1alpha1.ConditionRoutesReady,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
+}
+
 // setTransitTeardownCondition records the dedicated signal used when a
 // fabric-backed VirtualNetwork cannot remove its OSAC-owned transit resources.
 // It intentionally lives beside, rather than replaces, Ready: deletion may be

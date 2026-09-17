@@ -28,9 +28,15 @@
   ansible.builtin.set_fact:
     router_pod_attachment_network_status: >-
       {{
-        router_pod_network_status
-        | selectattr('name', 'in', [router_pod_attachment.name, subnet_vn_name ~ '/' ~ router_pod_attachment.name])
-        | list
+        (
+          router_pod_network_status
+          | selectattr('name', 'equalto', router_pod_attachment.name)
+          | list
+        ) + (
+          router_pod_network_status
+          | selectattr('name', 'equalto', subnet_vn_name ~ '/' ~ router_pod_attachment.name)
+          | list
+        )
       }}
 
 - name: Require the attachment to be present exactly once in the pod's own network-status annotation

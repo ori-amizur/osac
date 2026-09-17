@@ -28,6 +28,8 @@
     vn_uuid: "{{ virtual_network.metadata.labels['osac.openshift.io/virtualnetwork-uuid'] }}"
     vn_fabric_manager_configured: >-
       {{ virtual_network.metadata.annotations['osac.openshift.io/fabric-manager-configured'] | default('false') | lower }}
+    vn_transit_capability: >-
+      {{ virtual_network.metadata.annotations['osac.openshift.io/transit-capability'] | default('none', true) | lower }}
 
 - name: Display VirtualNetwork information
   ansible.builtin.debug:
@@ -39,6 +41,7 @@
       - "Region: {{ vn_region }}"
       - "Tenant ID: {{ vn_tenant_id }}"
       - "Fabric manager configured: {{ vn_fabric_manager_configured }}"
+      - "Transit capability: {{ vn_transit_capability }}"
       - "IPv4 CIDR: {{ vn_ipv4_cidr | default('not configured') }}"
       - "IPv6 CIDR: {{ vn_ipv6_cidr | default('not configured') }}"
       - ""
@@ -65,10 +68,10 @@
               {'secondary-vn.osac.openshift.io/' ~ vn_uuid: 'true'}
             ) | combine(
               {'osac.openshift.io/evpn-transit': 'true'}
-              if vn_fabric_manager_configured == 'true' else {}
+              if vn_transit_capability == 'netris-evpn' else {}
             ) | combine(
               {'k8s.ovn.org/primary-user-defined-network': ''}
-              if vn_fabric_manager_configured == 'true' else {}
+              if vn_transit_capability == 'netris-evpn' else {}
             )
           }}
 
@@ -82,11 +85,14 @@
           metadata:
             name: "{{ vn_name }}"
             labels: "{{ router_pod_namespace_labels }}"
+            annotations:
+              osac.openshift.io/tenant: "{{ vn_tenant_id }}"
+              osac.openshift.io/owner-reference: "{{ vn_uuid }}"
       register: router_pod_namespace_result
 
-    - name: Provision the shared EVPN transit interface
+    - name: Provision the VN-scoped EVPN transit interface
       ansible.builtin.include_tasks: ensure_evpn_transit.yaml
-      when: vn_fabric_manager_configured == 'true'
+      when: vn_transit_capability == 'netris-evpn'
 
     - name: Create router pod ServiceAccount
       kubernetes.core.k8s:
@@ -99,6 +105,9 @@
             name: "{{ router_pod_service_account_name }}"
             namespace: "{{ vn_name }}"
             labels: "{{ default_subnet_labels }}"
+            annotations:
+              osac.openshift.io/tenant: "{{ vn_tenant_id }}"
+              osac.openshift.io/owner-reference: "{{ vn_uuid }}"
 
     - name: Bind router pod ServiceAccount to the router pod SCC
       kubernetes.core.k8s:
@@ -110,6 +119,9 @@
           metadata:
             name: "{{ router_pod_service_account_name }}-scc-{{ vn_name }}"
             labels: "{{ default_subnet_labels }}"
+            annotations:
+              osac.openshift.io/tenant: "{{ vn_tenant_id }}"
+              osac.openshift.io/owner-reference: "{{ vn_uuid }}"
           roleRef:
             apiGroup: rbac.authorization.k8s.io
             kind: ClusterRole
@@ -141,8 +153,17 @@
             name: "{{ router_pod_name }}"
             namespace: "{{ vn_name }}"
             labels: "{{ default_subnet_labels | combine({'osac.openshift.io/router-pod': 'true'}) }}"
+            annotations:
+              osac.openshift.io/tenant: "{{ vn_tenant_id }}"
+              osac.openshift.io/owner-reference: "{{ vn_uuid }}"
           spec:
             replicas: 1
+            # The transit IPAMClaim is persistent and OVN reserves its MAC for
+            # one router Pod at a time. A fallback recreation must therefore
+            # terminate the old Pod before creating the replacement; the
+            # default RollingUpdate strategy causes a MAC collision.
+            strategy:
+              type: Recreate
             selector:
               matchLabels:
                 osac.openshift.io/router-pod: "true"

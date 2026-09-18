@@ -108,6 +108,97 @@
       {{ router_routes_transit_config_info.resources[0].data.fabric_peer_addresses | from_json }}
   when: router_routes_fabric_subnets | length > 0
 
+- name: Read the persistent transit IPAMClaim
+  # The IPAMClaim status identifies the transit address assigned to this router
+  # Pod. The requested interface name (`transit`) is not necessarily the Linux
+  # interface name: OVN-Kubernetes may expose a Primary UDN as ovn-udnN.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.cni.cncf.io/v1alpha1
+    kind: IPAMClaim
+    namespace: "{{ router_routes_router_namespace }}"
+    name: "{{ router_routes_transit_data.ipam_claim_name }}"
+  register: router_routes_transit_ipam_claim_info
+  until:
+    - router_routes_transit_ipam_claim_info.resources | length == 1
+    - router_routes_transit_ipam_claim_info.resources[0].status.ips | default([]) | length > 0
+  retries: 60
+  delay: 2
+  when: router_routes_fabric_subnets | length > 0
+
+- name: Normalize the persistent transit IP
+  ansible.builtin.set_fact:
+    router_routes_transit_ip: >-
+      {{ router_routes_transit_ipam_claim_info.resources[0].status.ips[0]
+         | ansible.utils.ipaddr('address') }}
+  when: router_routes_fabric_subnets | length > 0
+
+- name: Read the running router Pod network status
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ router_routes_router_namespace }}"
+    label_selectors:
+      - "osac.openshift.io/router-pod=true"
+      - "osac.openshift.io/virtual-network={{ router_routes_router_namespace }}"
+  register: router_routes_router_pod_info
+  until:
+    - router_routes_router_pod_info.resources | length == 1
+    - router_routes_router_pod_info.resources[0].status.phase | default('') == 'Running'
+    - >-
+      (
+        (
+          (router_routes_router_pod_info.resources[0].metadata.annotations | default({}))
+            .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+        )
+        | selectattr('ips', 'defined')
+        | map(attribute='ips') | flatten
+        | select('match', '^' ~ router_routes_transit_ip ~ '(/|$)')
+        | list | length
+      ) > 0
+  retries: 60
+  delay: 2
+  when: router_routes_fabric_subnets | length > 0
+
+- name: Resolve the actual Linux transit interface from network status
+  ansible.builtin.set_fact:
+    router_routes_effective_transit_interface: ""
+  when: router_routes_fabric_subnets | length > 0
+
+- name: Select the network-status entry carrying the transit IP
+  ansible.builtin.set_fact:
+    router_routes_effective_transit_interface: "{{ item.interface }}"
+  loop: >-
+    {{
+      (
+        (router_routes_router_pod_info.resources[0].metadata.annotations | default({}))
+          .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+      )
+    }}
+  loop_control:
+    label: "{{ item.name | default('unnamed') }}"
+  when:
+    - router_routes_fabric_subnets | length > 0
+    - item.interface | default('') | length > 0
+    - >-
+      (
+        item.ips | default([])
+        | select('match', '^' ~ router_routes_transit_ip ~ '(/|$)')
+        | list | length
+      ) > 0
+
+- name: Require a resolved Linux transit interface
+  ansible.builtin.assert:
+    that:
+      - router_routes_effective_transit_interface | default('') | length > 0
+    fail_msg: >-
+      Could not resolve the Linux interface carrying transit IP
+      '{{ router_routes_transit_ip }}' from the router Pod's network-status;
+      refusing to install fabric routes using the requested attachment name
+      '{{ router_routes_transit_interface }}'.
+  when: router_routes_fabric_subnets | length > 0
+
 - name: Validate the Netris fabric peer addresses
   ansible.builtin.assert:
     that:
@@ -130,11 +221,12 @@
       {{ router_routes_fabric_routes + [{
         'destination': item.spec.ipv4Cidr,
         'gateways': router_routes_peer_addresses | sort,
-        'interface': router_routes_transit_interface
+        'interface': router_routes_effective_transit_interface
       }] }}
   loop: "{{ router_routes_fabric_subnets | sort(attribute='metadata.name') }}"
   loop_control:
     label: "{{ item.metadata.name }}"
+  when: router_routes_fabric_subnets | length > 0
 
 - name: Require unique fabric route destinations
   ansible.builtin.assert:

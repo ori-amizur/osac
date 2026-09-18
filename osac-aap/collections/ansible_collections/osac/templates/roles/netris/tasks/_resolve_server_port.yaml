@@ -1,7 +1,8 @@
 ---
 # Resolve the Netris server port for a host + logical interface.
 # Inputs:  na_host_name, na_logical_interface
-# Output:  _target_port (dict with .id) or none.
+# Output:  _target_port (server-side dict) or none, and
+#          _target_vnet_port_id (the connected leaf-side port ID).
 
 - name: Initialize resolved port
   ansible.builtin.set_fact:
@@ -27,3 +28,19 @@
   ansible.builtin.set_fact:
     _target_port: "{{ netris_server_port | default(none) }}"
   when: netris_server is not none
+
+- name: Resolve the connected leaf-side V-Net port ID
+  ansible.builtin.set_fact:
+    _target_vnet_port_id: >-
+      {{ _target_port.connectedTo.portId | default(0, true) | int
+         if _target_port is not none else 0 }}
+
+- name: Require a connected leaf-side V-Net port
+  ansible.builtin.assert:
+    that:
+      - _target_vnet_port_id | int > 0
+    fail_msg: >-
+      Server port '{{ na_logical_interface }}' on '{{ na_host_name }}'
+      is not connected to a fabric leaf port and cannot be attached to a
+      Netris V-Net.
+  when: _target_port is not none

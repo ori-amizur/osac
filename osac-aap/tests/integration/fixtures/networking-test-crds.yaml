@@ -1,0 +1,60 @@
+---
+# Test-only API shims for the lightweight Kind integration cluster.
+#
+# OpenShift supplies these APIs through OVN-Kubernetes and Multus. The Kind
+# harness does not run either controller, but the AAP tests still need to
+# create and inspect the resources that OSAC submits to those controllers.
+# These permissive CRDs model only the API surface needed by the tests; they
+# deliberately do not emulate OVN-Kubernetes or Multus reconciliation.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusteruserdefinednetworks.k8s.ovn.org
+spec:
+  group: k8s.ovn.org
+  names:
+    kind: ClusterUserDefinedNetwork
+    listKind: ClusterUserDefinedNetworkList
+    plural: clusteruserdefinednetworks
+    singular: clusteruserdefinednetwork
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: network-attachment-definitions.k8s.cni.cncf.io
+spec:
+  group: k8s.cni.cncf.io
+  names:
+    kind: NetworkAttachmentDefinition
+    listKind: NetworkAttachmentDefinitionList
+    plural: network-attachment-definitions
+    singular: networkattachmentdefinition
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                config:
+                  type: string

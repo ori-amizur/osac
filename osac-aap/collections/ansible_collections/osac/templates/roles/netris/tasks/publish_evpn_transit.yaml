@@ -45,6 +45,7 @@
     netris_evpn_transit_vnet_name: "osac-transit-vnet-{{ (vn_uuid | hash('sha1'))[:12] }}"
     netris_evpn_transit_ipam_allocation_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-alloc"
     netris_evpn_transit_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-netris"
+    netris_evpn_transit_domain_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-domain"
     netris_evpn_transit_osac_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-osac"
     netris_evpn_transit_reserved_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-reserved"
     netris_evpn_transit_legacy_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}"
@@ -221,6 +222,57 @@
         name: netris.controller.vnet
         tasks_from: read_by_id
 
+    - name: Determine the number of Netris fabric peers
+      # A peer is one configured Netris server/node, not one physical uplink.
+      # Multiple ports on the same node must not consume multiple gateway IPs.
+      ansible.builtin.set_fact:
+        netris_evpn_transit_peer_node_names: >-
+          {{ netris_evpn_transit_port_endpoints
+             | map(attribute='host_name') | list | unique }}
+        netris_evpn_transit_gateway_prefixes: []
+
+    - name: Require a usable Netris-owned gateway pool
+      ansible.builtin.assert:
+        that:
+          - netris_evpn_transit_peer_node_names | length > 0
+          - netris_evpn_transit_peer_node_names | length < 63
+          - netris_evpn_transit_netris_pool | ansible.utils.ipaddr('prefix') | int == 26
+        fail_msg: >-
+          Cannot allocate one Netris transit gateway address per configured peer node.
+          Peer nodes={{ netris_evpn_transit_peer_node_names | length }},
+          Netris pool={{ netris_evpn_transit_netris_pool }}.
+
+    - name: Build one gateway prefix per Netris peer node
+    # The gateway/interface prefix must describe the complete transit L2/IP
+      # domain.  The Netris /26 is only the provider-owned allocation pool;
+      # using it here would make an OSAC router address from the separate
+      # /26 (for example .68) appear off-link to Netris.  The corresponding
+      # common /24 IPAM subnet is created below as the V-Net's domain record.
+      ansible.builtin.set_fact:
+        netris_evpn_transit_gateway_prefixes: >-
+          {{ netris_evpn_transit_gateway_prefixes + [
+            (netris_evpn_transit_netris_pool | ansible.utils.ipaddr('network')
+             | ansible.utils.ipmath(item)) ~ '/'
+             ~ (netris_evpn_transit_prefix | ansible.utils.ipaddr('prefix'))
+          ] }}
+      loop: "{{ range(1, (netris_evpn_transit_peer_node_names | length) + 1) | list }}"
+      loop_control:
+        label: "peer {{ item }}"
+
+    - name: Preserve existing gateway records and add missing peer gateways
+      ansible.builtin.set_fact:
+        netris_evpn_transit_gateways: >-
+          {{ netris_evpn_transit_gateways | default([]) + [
+            (
+              netris_vnet_detail.gateways | default([])
+              | selectattr('prefix', 'equalto', item) | list | first
+              | default({'prefix': item}, true)
+            )
+          ] }}
+      loop: "{{ netris_evpn_transit_gateway_prefixes }}"
+      loop_control:
+        label: "{{ item }}"
+
     - name: Refuse to adopt a transit V-Net in another VPC/VRF
       ansible.builtin.assert:
         that:
@@ -259,6 +311,9 @@
              or (netris_vnet_detail.ports | default([])
                  | selectattr('accessMode', 'defined') | list | length
                  != netris_vnet_detail.ports | default([]) | length) }}
+        netris_evpn_transit_gateway_prefix_mismatch: >-
+          {{ (netris_vnet_detail.gateways | default([]) | map(attribute='prefix') | list | sort)
+             != (netris_evpn_transit_gateway_prefixes | sort) }}
 
     - name: Reconcile the VN-scoped transit V-Net mode and endpoint ports
       ansible.builtin.include_role:
@@ -270,13 +325,15 @@
           {{ netris_vnet_detail | combine({
             'l3vpn': netris_evpn_transit_l3vpn | bool,
             'vlanAware': netris_evpn_transit_vlan_aware | bool,
-            'ports': netris_evpn_transit_ports
+            'ports': netris_evpn_transit_ports,
+            'gateways': netris_evpn_transit_gateways
           }) }}
       when:
         - netris_vnet_detail.l3vpn | default(false) | bool != netris_evpn_transit_l3vpn | bool
           or netris_vnet_detail.vlanAware | default(false) | bool != netris_evpn_transit_vlan_aware | bool
           or netris_evpn_transit_current_port_ids != netris_evpn_transit_desired_port_ids
           or netris_evpn_transit_port_mode_mismatch | bool
+          or netris_evpn_transit_gateway_prefix_mismatch | bool
 
     - name: Wait for the VN-scoped transit V-Net to become active
       ansible.builtin.include_role:
@@ -307,6 +364,9 @@
         netris_evpn_transit_ipam_subnet_specs:
           - name: "{{ netris_evpn_transit_ipam_subnet_name }}"
             prefix: "{{ netris_evpn_transit_netris_pool }}"
+            purpose: common
+          - name: "{{ netris_evpn_transit_domain_ipam_subnet_name }}"
+            prefix: "{{ netris_evpn_transit_prefix }}"
             purpose: common
           - name: "{{ netris_evpn_transit_osac_ipam_subnet_name }}"
             prefix: "{{ netris_evpn_transit_osac_pool }}"
@@ -401,6 +461,9 @@
               - name: "{{ netris_evpn_transit_ipam_subnet_name }}"
                 prefix: "{{ netris_evpn_transit_netris_pool }}"
                 purpose: common
+              - name: "{{ netris_evpn_transit_domain_ipam_subnet_name }}"
+                prefix: "{{ netris_evpn_transit_prefix }}"
+                purpose: common
               - name: "{{ netris_evpn_transit_osac_ipam_subnet_name }}"
                 prefix: "{{ netris_evpn_transit_osac_pool }}"
                 purpose: inactive
@@ -447,6 +510,10 @@
           {{ netris_ipam_subnets | default([])
              | selectattr('name', 'equalto', netris_evpn_transit_ipam_subnet_name)
              | list | first | default(none) }}
+        netris_evpn_transit_domain_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_domain_ipam_subnet_name)
+             | list | first | default(none) }}
         netris_evpn_transit_osac_ipam_subnet: >-
           {{ netris_ipam_subnets | default([])
              | selectattr('name', 'equalto', netris_evpn_transit_osac_ipam_subnet_name)
@@ -476,12 +543,15 @@
       loop_control:
         label: "{{ item.name }} ({{ item.prefix }}, {{ item.purpose }})"
 
-    - name: Read the VN-scoped Netris-owned transit hosts
+    - name: Read the VN-scoped Netris transit-domain gateway hosts
       ansible.builtin.include_role:
         name: netris.controller.ipam
         tasks_from: read_hosts
       vars:
-        ipam_subnet_id: "{{ netris_evpn_transit_ipam_subnet.id }}"
+        # Netris records V-Net gateways against the common domain subnet when
+        # the gateway prefix is /24. Their addresses are still required to be
+        # inside the provider-owned /26 below.
+        ipam_subnet_id: "{{ netris_evpn_transit_domain_ipam_subnet.id }}"
 
     - name: Validate Netris hosts remain inside the Netris-owned pool
       ansible.builtin.assert:
@@ -510,6 +580,20 @@
       ansible.builtin.set_fact:
         netris_evpn_transit_peer_addresses: >-
           {{ netris_evpn_transit_peer_addresses | default([]) | unique | sort }}
+
+    - name: Require one Netris IPAM host per configured fabric peer node
+      ansible.builtin.assert:
+        that:
+          - netris_evpn_transit_peer_addresses | length == netris_evpn_transit_gateway_prefixes | length
+          - item | ansible.utils.ipaddr('address') in netris_evpn_transit_peer_addresses
+        fail_msg: >-
+          Netris did not publish the expected gateway address '{{ item }}' for
+          transit V-Net '{{ netris_evpn_transit_vnet_name }}'. Expected gateway
+          prefixes={{ netris_evpn_transit_gateway_prefixes }},
+          allocated hosts={{ netris_evpn_transit_peer_addresses }}.
+      loop: "{{ netris_evpn_transit_gateway_prefixes }}"
+      loop_control:
+        label: "{{ item }}"
 
     - name: Read the VN-scoped transit IPAM allocation
       ansible.builtin.include_role:
@@ -601,6 +685,8 @@
                 'transit_ipam_allocation_id': netris_evpn_transit_ipam_allocation.id | string,
                 'transit_ipam_subnet_name': netris_evpn_transit_ipam_subnet_name | string,
                 'transit_ipam_subnet_id': netris_evpn_transit_ipam_subnet.id | string,
+                'transit_domain_ipam_subnet_name': netris_evpn_transit_domain_ipam_subnet_name | string,
+                'transit_domain_ipam_subnet_id': netris_evpn_transit_domain_ipam_subnet.id | string,
                 'transit_osac_ipam_subnet_name': netris_evpn_transit_osac_ipam_subnet_name | string,
                 'transit_osac_ipam_subnet_id': netris_evpn_transit_osac_ipam_subnet.id | string,
                 'transit_reserved_ipam_subnet_name': netris_evpn_transit_reserved_ipam_subnet_name | string,

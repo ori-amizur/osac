@@ -6,11 +6,12 @@
 # that namespace.
 #
 # For a Subnet on a Secondary-type VirtualNetwork: no dedicated namespace is created --
-# the VirtualNetwork already has one shared namespace (its router pod's namespace, from
-# create_virtual_network.yaml). Instead, a role:Secondary CUDN is created whose
-# namespaceSelector matches the same per-VN-UUID-keyed label the shared namespace already
-# carries, and the new subnet is attached to the running router Pod's Multus network list
-# (see design.md's "Router pod gains an interface for the new subnet", AC3).
+# the VirtualNetwork has one infrastructure namespace for its router Pod (from
+# create_virtual_network.yaml). The router namespace is labeled for this subnet before
+# its CUDN is created. A role:Secondary CUDN then selects the subnet-scoped label, which
+# can also be mirrored onto VM namespaces that explicitly attach this subnet. The new
+# subnet is attached to the running router Pod's Multus network list (see design.md's
+# "Router pod gains an interface for the new subnet", AC3).
 #
 # For Secondary subnets, the CUDN itself is deliberately *not* created here -- it is
 # created by add_router_pod_subnet.yaml, after the router Pod's Multus annotation already
@@ -40,6 +41,10 @@
     subnet_virtual_network: "{{ subnet.spec.virtualNetwork | default('') }}"
     subnet_networking_type: "{{ subnet.metadata.annotations['osac.openshift.io/networking-type'] | default('Primary') }}"
     subnet_vn_name: "{{ subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] | default('') }}"
+
+- name: Build the subnet selector label key
+  ansible.builtin.set_fact:
+    subnet_selector_label_key: "secondary-subnet.osac.openshift.io/{{ subnet_id }}"
 
 - name: Build CUDN subnets array
   ansible.builtin.set_fact:
@@ -98,14 +103,45 @@
       - "Namespace '{{ subnet_name }}' created/updated successfully"
       - "Changed: {{ namespace_result.changed | default(false) }}"
 
+- name: Require the Secondary VirtualNetwork namespace before adding its subnet label
+  when: subnet_networking_type == 'Secondary'
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ subnet_vn_name }}"
+  register: secondary_vn_namespace_info
+
+- name: Assert the Secondary VirtualNetwork namespace exists
+  when: subnet_networking_type == 'Secondary'
+  ansible.builtin.assert:
+    that:
+      - secondary_vn_namespace_info.resources | length == 1
+    fail_msg: >-
+      Cannot add subnet selector label '{{ subnet_selector_label_key }}':
+      Secondary VirtualNetwork namespace '{{ subnet_vn_name }}' does not exist.
+
+- name: Add the subnet selector label to the router namespace
+  when: subnet_networking_type == 'Secondary'
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ subnet_vn_name }}"
+    patch:
+      - op: add
+        path: "/metadata/labels/{{ subnet_selector_label_key | replace('/', '~1') }}"
+        value: "true"
+
 - name: Build CUDN namespaceSelector and layer2 role
   ansible.builtin.set_fact:
-    # Secondary: match the per-VN-UUID-keyed label the VirtualNetwork's shared namespace
-    # already carries (create_virtual_network.yaml) rather than a fixed namespace name.
+    # Secondary: match this subnet's own label. The router namespace receives this label
+    # during subnet creation and ComputeInstance reconciliation mirrors it to VM namespaces
+    # that attach this subnet. Transit intentionally uses the separate VN-scoped label.
     # Primary: unchanged, matches this subnet's own dedicated namespace.
     subnet_cudn_namespace_selector: >-
       {{
-        {'secondary-vn.osac.openshift.io/' ~ subnet_virtual_network: 'true'}
+        {subnet_selector_label_key: 'true'}
         if subnet_networking_type == 'Secondary'
         else {'osac.openshift.io/subnet-id': subnet_id}
       }}

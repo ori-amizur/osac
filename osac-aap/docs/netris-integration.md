@@ -93,15 +93,21 @@ Configure the provider transit policy in the AAP environment:
 
 Netris allocates the transit VNI when the VN-scoped V-Net is created. The role
 validates the VPC/VRF and prefix before adopting existing deterministic
-resources, and constrains Netris allocation to its configured pool. The k8s
-manager creates the matching Primary EVPN CUDN with the Netris pool and the
-unused portion of the `/24` in `reservedSubnets`, leaving only the OSAC pool
-available to the persistent `IPAMClaim`. The default policy is two disjoint
-`/26` pools inside the shared `/24`, with the remaining `/25` reserved. The
-Netris IPAM subnet and CUDN therefore use the same CIDR without sharing an
-address allocation pool; no single Netris gateway is assumed. A snapshot of
-currently allocated Netris hosts may be used as a diagnostic check, but is not
-the duplicate-prevention mechanism.
+resources, and constrains Netris allocation to its configured pool. Netris
+requires a common IPAM subnet matching the V-Net gateway prefix, so OSAC also
+creates a VN-scoped common transit-domain record for the full `/24`. The
+gateway records (`.1/24`, `.2/24`, and so on) are attached to that domain
+record, while the child `/26` records continue to identify the Netris-owned
+allocation pool and the OSAC/CUDN pool. This keeps the gateway/interface
+prefix identical on both sides of the EVPN L2 domain without allowing the
+router's persistent claim to use the Netris-owned pool.
+
+The k8s manager creates the matching Primary EVPN CUDN with the Netris pool
+and the unused portion of the `/24` in `reservedSubnets`, leaving only the
+OSAC pool available to the persistent `IPAMClaim`. The default policy is two
+disjoint `/26` pools inside the shared `/24`, with the remaining `/25`
+reserved. A snapshot of currently allocated Netris hosts may be used as a
+diagnostic check, but is not the duplicate-prevention mechanism.
 
 ### Cluster Create Flow
 

@@ -29,6 +29,10 @@
     subnet_vn_name: "{{ subnet.metadata.annotations['osac.openshift.io/virtual-network-name'] | default('') }}"
     subnet_virtual_network: "{{ subnet.spec.virtualNetwork | default('') }}"
 
+- name: Build the subnet selector label key
+  ansible.builtin.set_fact:
+    subnet_selector_label_key: "secondary-subnet.osac.openshift.io/{{ subnet_id }}"
+
 - name: Display deletion information
   ansible.builtin.debug:
     msg:
@@ -49,7 +53,7 @@
   # VirtualNetwork Lease) already issued this delete before checking references, and
   # force-clears the finalizer itself once confirmed safe. Issuing it again here would
   # race that sequence outside the Lease that protects it.
-  when: subnet_networking_type != 'Secondary'
+  when: subnet_networking_type != 'Secondary' or not (cudn_net_manage_router_pod | bool)
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: absent
@@ -64,11 +68,37 @@
     - "'NotFound' not in (cudn_delete_result.msg | default(''))"
 
 - name: Display CUDN deletion result
-  when: subnet_networking_type != 'Secondary'
+  when: subnet_networking_type != 'Secondary' or not (cudn_net_manage_router_pod | bool)
   ansible.builtin.debug:
     msg:
       - "CUDN '{{ subnet_name }}' deletion completed"
       - "Changed: {{ cudn_delete_result.changed | default(false) }}"
+
+- name: Read the Secondary VirtualNetwork namespace before removing its subnet label
+  when:
+    - subnet_networking_type == 'Secondary'
+    - not (subnet_still_referenced | default(false))
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ subnet_vn_name }}"
+  register: secondary_vn_namespace_info
+
+- name: Remove the subnet selector label from the router namespace
+  when:
+    - subnet_networking_type == 'Secondary'
+    - not (subnet_still_referenced | default(false))
+    - secondary_vn_namespace_info.resources | length == 1
+    - subnet_selector_label_key in (secondary_vn_namespace_info.resources[0].metadata.labels | default({}))
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ subnet_vn_name }}"
+    patch:
+      - op: remove
+        path: "/metadata/labels/{{ subnet_selector_label_key | replace('/', '~1') }}"
 
 - name: Delete Namespace
   when: subnet_networking_type != 'Secondary'

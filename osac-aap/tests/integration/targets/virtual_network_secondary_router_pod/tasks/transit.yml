@@ -62,6 +62,7 @@
         - transit_deployment_ready.resources[0].status.availableReplicas | default(0) | int == 1
       retries: 60
       delay: 2
+      when: cudn_net_evpn_transit_wait_ready | bool
 
     - name: Read the running transit router Pod
       kubernetes.core.k8s_info:
@@ -79,10 +80,12 @@
           | selectattr('ready', 'equalto', true) | list | length == 1
       retries: 60
       delay: 2
+      when: cudn_net_evpn_transit_wait_ready | bool
 
     - name: Display the live transit router Pod network annotations
       ansible.builtin.debug:
         msg: "{{ transit_running_pods.resources[0].metadata.annotations | default({}) }}"
+      when: cudn_net_evpn_transit_wait_ready | bool
 
     - name: Read the VN-scoped transit CUDN
       kubernetes.core.k8s_info:

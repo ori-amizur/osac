@@ -258,7 +258,12 @@ func (s *PrivateSubnetsServer) validateSubnet(ctx context.Context,
 	// Only on Create (existingSubnet == nil) or if virtual_network differs (SUB-VAL-11 above prevents
 	// VN changes on Update, so the second branch is effectively dead but kept for safety).
 	if existingSubnet == nil || refKey(spec.GetVirtualNetwork()) != refKey(existingSubnet.GetSpec().GetVirtualNetwork()) {
-		if err := s.validateVirtualNetworkReference(ctx, spec); err != nil {
+		// Serialize Subnet creates for the same VirtualNetwork by holding the
+		// parent row lock until the surrounding request transaction commits. The
+		// overlap check below reads sibling Subnets in that same transaction; the
+		// lock prevents two concurrent creates from both observing the same
+		// pre-create sibling set and then committing overlapping CIDRs.
+		if err := s.validateVirtualNetworkReference(ctx, spec, existingSubnet == nil); err != nil {
 			return err
 		}
 	}
@@ -304,7 +309,7 @@ func validateCIDRSubset(subnetCIDR string, parentCIDR string, ipVersion string) 
 // validateVirtualNetworkReference validates that the referenced VirtualNetwork exists, is in READY state,
 // and has matching IP families.
 func (s *PrivateSubnetsServer) validateVirtualNetworkReference(ctx context.Context,
-	spec *privatev1.SubnetSpec) error {
+	spec *privatev1.SubnetSpec, lockParent bool) error {
 
 	virtualNetworkID := spec.GetVirtualNetwork()
 	if virtualNetworkID == nil {
@@ -312,9 +317,11 @@ func (s *PrivateSubnetsServer) validateVirtualNetworkReference(ctx context.Conte
 	}
 
 	// SUB-VAL-04: Get parent VirtualNetwork by ID
-	getResponse, err := s.virtualNetworkDao.Get().
-		SetId(refKey(virtualNetworkID)).
-		Do(ctx)
+	parentRequest := s.virtualNetworkDao.Get().SetId(refKey(virtualNetworkID))
+	if lockParent {
+		parentRequest.SetLock(true)
+	}
+	getResponse, err := parentRequest.Do(ctx)
 	if err != nil {
 		var notFoundErr *dao.ErrNotFound
 		if errors.As(err, &notFoundErr) {
@@ -381,8 +388,9 @@ func (s *PrivateSubnetsServer) validateVirtualNetworkReference(ctx context.Conte
 
 // validateNoCIDROverlap checks that the new subnet's CIDRs don't overlap with any existing
 // subnets in the same VirtualNetwork.
-// Note: this check is not fully atomic; concurrent subnet creation could bypass overlap
-// validation. A locking mechanism would be needed for complete reliability.
+// The parent VirtualNetwork row is locked by validateVirtualNetworkReference during
+// creation, and this check runs in the same request transaction. This makes the
+// read-and-create sequence atomic for Subnets sharing one VirtualNetwork.
 func (s *PrivateSubnetsServer) validateNoCIDROverlap(ctx context.Context,
 	spec *privatev1.SubnetSpec) error {
 

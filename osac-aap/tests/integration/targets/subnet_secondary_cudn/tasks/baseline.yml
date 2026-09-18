@@ -58,8 +58,7 @@
                   >-
                     {{ {
                       'osac.openshift.io/managed-by': 'osac-fulfillment',
-                      'osac.openshift.io/tenant': 'test-tenant',
-                      ('secondary-vn.osac.openshift.io/' ~ test_vn_uuid): 'true'
+                      'osac.openshift.io/tenant': 'test-tenant'
                     } }}
 
         - name: Run cudn_net create_subnet
@@ -84,7 +83,7 @@
         - name: Assert the CUDN namespaceSelector and layer2 role facts are correct
           ansible.builtin.assert:
             that:
-              - "subnet_cudn_namespace_selector == {'secondary-vn.osac.openshift.io/' ~ test_vn_uuid: 'true'}"
+              - "subnet_cudn_namespace_selector == {'secondary-subnet.osac.openshift.io/' ~ (test_subnet_name ~ '-uuid'): 'true'}"
               - subnet_cudn_layer2_role == 'Secondary'
             fail_msg: "CUDN namespaceSelector/layer2 role not computed correctly for a Secondary Subnet"
             success_msg: "Secondary Subnet CUDN facts: passed"
@@ -96,6 +95,24 @@
             name: "{{ test_subnet_name }}"
           register: secondary_cudn_result
 
+        - name: Read the shared Secondary VirtualNetwork namespace
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Namespace
+            name: "{{ test_vn_name }}"
+          register: secondary_vn_namespace_result
+
+        - name: Assert the router namespace received this Subnet's selector label
+          ansible.builtin.assert:
+            that:
+              - secondary_vn_namespace_result.resources | length == 1
+              - >-
+                secondary_vn_namespace_result.resources[0].metadata.labels[
+                'secondary-subnet.osac.openshift.io/' ~ (test_subnet_name ~ '-uuid')]
+                == 'true'
+            fail_msg: "The shared Secondary VirtualNetwork namespace was not labeled for this Subnet"
+            success_msg: "Secondary Subnet router namespace label: passed"
+
         - name: Assert the Secondary CUDN was created with the requested contract
           ansible.builtin.assert:
             that:
@@ -105,7 +122,7 @@
               - secondary_cudn_result.resources[0].spec.network.layer2.subnets == ['10.4.1.0/24']
               - >-
                 secondary_cudn_result.resources[0].spec.namespaceSelector.matchLabels ==
-                {'secondary-vn.osac.openshift.io/' ~ test_vn_uuid: 'true'}
+                {'secondary-subnet.osac.openshift.io/' ~ (test_subnet_name ~ '-uuid'): 'true'}
             fail_msg: "Secondary CUDN was not created with the requested network contract"
             success_msg: "Secondary CUDN resource: passed"
 
@@ -126,8 +143,7 @@
             api_version: v1
             kind: Namespace
             name: "{{ test_vn_name }}"
-            wait: true
-            wait_timeout: 60
+            wait: false
           failed_when: false
 
 # ── Test 2: Primary Subnet still creates its own dedicated namespace (regression) ──
@@ -309,12 +325,12 @@
         fail_msg: "IPAMClaim status patch payload was not constructed correctly"
         success_msg: "IPAMClaim status patch payload: passed"
 
-# ── Test 4: fall back to Deployment recreation when live status never changes ──
-# A plain kind cluster has no Multus dynamic-network controller. The test uses
-# that condition to exercise both fallback directions without requiring CUDN or
-# IPAMClaim CRDs: the Pod annotation is patched first, the unchanged
-# network-status times out, and the Deployment template creates the replacement.
-- name: "Subnet Secondary CUDN - Test live mutation fallback for add and remove"
+# ── Test 4: live mutation and Deployment recreation fallback ──
+# A plain kind cluster has no Multus dynamic-network controller, so it exercises
+# the Deployment-recreation fallback. OpenShift may have the controller and
+# therefore exercise the live path; both outcomes must preserve the complete
+# attachment set and unrelated Pod metadata.
+- name: "Subnet Secondary CUDN - Test live mutation and fallback for add and remove"
   hosts: localhost
   gather_facts: false
   vars_files:
@@ -337,6 +353,16 @@
     # fallback path normally gets status from the admission-time attachment;
     # skipping only this assertion keeps the test independent of Multus.
     cudn_net_router_wait_for_recreated_network_status: false
+    test_fallback_network_config:
+      cniVersion: '0.3.1'
+      type: dummy
+      # The dummy plugin requires an IPAM result even though this test only
+      # exercises the Pod annotation/recreation fallback. Static IPAM is part
+      # of the standard CNI plugin set on both Kind and OpenShift nodes.
+      ipam:
+        type: static
+        addresses:
+          - address: 192.0.2.1/32
 
   tasks:
     - name: Test live mutation fallback
@@ -355,6 +381,24 @@
                 labels:
                   osac.openshift.io/tenant: test-tenant
                   osac.openshift.io/owner-reference: subnet-live-fallback-test
+
+        - name: Create the fallback fixture NADs
+          kubernetes.core.k8s:
+            state: present
+            api_version: k8s.cni.cncf.io/v1
+            kind: NetworkAttachmentDefinition
+            namespace: "{{ test_fallback_namespace }}"
+            definition:
+              metadata:
+                name: "{{ item.name }}"
+                annotations:
+                  osac.openshift.io/tenant: test-tenant
+                  osac.openshift.io/owner-reference: subnet-live-fallback-test
+              spec:
+                config: "{{ test_fallback_network_config | combine({'name': item.name}) | to_json }}"
+          loop:
+            - name: "{{ test_fallback_existing_subnet_name }}"
+            - name: "{{ test_fallback_subnet_name }}"
 
         - name: Create a fallback test router Deployment
           kubernetes.core.k8s:
@@ -418,7 +462,7 @@
             router_pod_live_attach_network_name: "{{ test_fallback_subnet_name }}"
             router_pod_networks: "{{ test_fallback_networks }}"
 
-        - name: Get the router Pod after add fallback
+        - name: Get the router Pod after add
           kubernetes.core.k8s_info:
             api_version: v1
             kind: Pod
@@ -429,20 +473,30 @@
           register: fallback_after_add_info
           until:
             - fallback_after_add_info.resources | length == 1
-            - fallback_after_add_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] | default('') == 'recreated'
+            - >-
+              fallback_after_add_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] | default('')
+              in ['live', 'recreated']
           retries: 30
           delay: 2
 
-        - name: Assert add fallback recreated the Pod with the complete set
+        - name: Assert add kept the complete attachment set
           ansible.builtin.assert:
             that:
-              - fallback_after_add_info.resources[0].metadata.uid != fallback_initial_pod_uid
+              - >-
+                fallback_after_add_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode']
+                in ['live', 'recreated']
+              - >-
+                (fallback_after_add_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] == 'recreated'
+                and fallback_after_add_info.resources[0].metadata.uid != fallback_initial_pod_uid)
+                or
+                (fallback_after_add_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] == 'live'
+                and fallback_after_add_info.resources[0].metadata.uid == fallback_initial_pod_uid)
               - >-
                 (fallback_after_add_info.resources[0].metadata.annotations['k8s.v1.cni.cncf.io/networks']
                 | from_json | map(attribute='name') | list)
                 == [test_fallback_existing_subnet_name, test_fallback_subnet_name]
               - fallback_after_add_info.resources[0].metadata.annotations['osac.test/preserve'] == 'keep-me'
-            success_msg: "Add fallback recreated the router Pod: passed"
+            success_msg: "Add live/fallback behavior: passed"
 
         - name: Leave a stale network-status entry to force remove fallback
           kubernetes.core.k8s_json_patch:
@@ -473,7 +527,7 @@
               - name: subnet-fallback-existing
                 interface: existing0
 
-        - name: Get the router Pod after remove fallback
+        - name: Get the router Pod after remove
           kubernetes.core.k8s_info:
             api_version: v1
             kind: Pod
@@ -484,29 +538,50 @@
           register: fallback_after_remove_info
           until:
             - fallback_after_remove_info.resources | length == 1
-            - fallback_after_remove_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] | default('') == 'recreated'
+            - >-
+              fallback_after_remove_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] | default('')
+              in ['live', 'recreated']
           retries: 30
           delay: 2
 
-        - name: Assert remove fallback recreated the Pod without the removed subnet
+        - name: Assert remove kept only the remaining attachment
           ansible.builtin.assert:
             that:
-              - fallback_after_remove_info.resources[0].metadata.uid != fallback_post_add_pod_uid
+              - >-
+                fallback_after_remove_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode']
+                in ['live', 'recreated']
+              - >-
+                (fallback_after_remove_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] == 'recreated'
+                and fallback_after_remove_info.resources[0].metadata.uid != fallback_post_add_pod_uid)
+                or
+                (fallback_after_remove_info.resources[0].metadata.annotations['osac.openshift.io/router-attachment-mode'] == 'live'
+                and fallback_after_remove_info.resources[0].metadata.uid == fallback_post_add_pod_uid)
               - >-
                 (fallback_after_remove_info.resources[0].metadata.annotations['k8s.v1.cni.cncf.io/networks']
                 | from_json | map(attribute='name') | list)
                 == [test_fallback_existing_subnet_name]
-            success_msg: "Remove fallback recreated the router Pod: passed"
+            success_msg: "Remove live/fallback behavior: passed"
 
       always:
+        - name: Cleanup -- delete fallback fixture NADs
+          kubernetes.core.k8s:
+            state: absent
+            api_version: k8s.cni.cncf.io/v1
+            kind: NetworkAttachmentDefinition
+            namespace: "{{ test_fallback_namespace }}"
+            name: "{{ item }}"
+          loop:
+            - "{{ test_fallback_existing_subnet_name }}"
+            - "{{ test_fallback_subnet_name }}"
+          failed_when: false
+
         - name: Cleanup -- delete fallback test namespace
           kubernetes.core.k8s:
             state: absent
             api_version: v1
             kind: Namespace
             name: "{{ test_fallback_namespace }}"
-            wait: true
-            wait_timeout: 60
+            wait: false
           failed_when: false
 
 # ── Test 5: patch the running router Pod without changing its identity ──
@@ -634,8 +709,7 @@
             api_version: v1
             kind: Namespace
             name: "{{ test_live_attach_namespace }}"
-            wait: true
-            wait_timeout: 60
+            wait: false
           failed_when: false
 
 # ── Test 6: direct CNI DEL sandbox/netns extraction from crictl JSON (in isolation) ──

@@ -37,7 +37,11 @@
     evpn_transit_cidr: "{{ evpn_transit_data.cidr }}"
     evpn_transit_netris_pool: "{{ evpn_transit_data.netris_pool }}"
     evpn_transit_osac_pool: "{{ evpn_transit_data.osac_pool }}"
-    evpn_transit_mac_vrf_vni: "{{ evpn_transit_data.mac_vrf_vni | int }}"
+    # Values read from ConfigMaps are strings. Preserve the numeric/string
+    # types required by the CUDN schema after Jinja renders them; otherwise
+    # native YAML coercion can turn both fields into the wrong JSON type.
+    evpn_transit_mac_vrf_vni: >-
+      {{ evpn_transit_data.mac_vrf_vni | int | to_json | from_json }}
     evpn_transit_vtep: "{{ evpn_transit_data.vtep }}"
     evpn_transit_reserved_subnets: >-
       {{ evpn_transit_data.reserved_subnets
@@ -52,7 +56,8 @@
       {{ evpn_transit_data.namespace_selector_key
          | default('secondary-vn.osac.openshift.io/' ~ vn_uuid) }}
     evpn_transit_namespace_selector_value: >-
-      {{ evpn_transit_data.namespace_selector_value | default('true') }}
+      {{ evpn_transit_data.namespace_selector_value | default('true')
+         | string | to_json | from_json }}
 
 - name: Validate the VN-scoped EVPN transit attachment contract
   ansible.builtin.assert:
@@ -95,46 +100,51 @@
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: present
-    definition:
-      apiVersion: k8s.ovn.org/v1
-      kind: ClusterUserDefinedNetwork
-      metadata:
-        name: "{{ cudn_net_evpn_transit_cudn_name }}"
-        labels: >-
-          {{ default_subnet_labels | combine({
-            'evpn': 'true',
-            'osac.openshift.io/evpn-transit': 'true',
-            'osac.openshift.io/virtualnetwork-uuid': vn_uuid
-          }) }}
-        annotations:
-          osac.openshift.io/tenant: "{{ vn_tenant_id }}"
-          osac.openshift.io/owner-reference: "{{ vn_uuid }}"
-      spec:
-        namespaceSelector:
-          matchLabels: >-
-            {{ dict([(evpn_transit_namespace_selector_key,
-                      evpn_transit_namespace_selector_value)]) }}
-        network:
-          topology: Layer2
-          transport: EVPN
-          layer2:
-            role: Primary
-            ipam:
-              lifecycle: "{{ default_ipam_lifecycle }}"
-            subnets:
-              - "{{ evpn_transit_cidr }}"
-            # Keep OVN's internal gateway/infrastructure addresses inside the
-            # OSAC-owned pool. The Netris pool is intentionally represented in
-            # reservedSubnets; without an explicit infrastructure range OVN
-            # selects 10.250.0.1 from that pool and rejects the allocation as
-            # already reserved.
-            infrastructureSubnets:
-              - "{{ evpn_transit_osac_pool | ansible.utils.ipsubnet(30, 0) }}"
-            reservedSubnets: "{{ evpn_transit_reserved_subnets }}"
-          evpn:
-            vtep: "{{ evpn_transit_vtep }}"
-            macVRF:
-              vni: "{{ evpn_transit_mac_vrf_vni | int }}"
+    # Build the definition as one native Jinja object so integer fields remain
+    # integers instead of becoming strings during YAML templating.
+    definition: >-
+      {{
+        {
+          'apiVersion': 'k8s.ovn.org/v1',
+          'kind': 'ClusterUserDefinedNetwork',
+          'metadata': {
+            'name': cudn_net_evpn_transit_cudn_name,
+            'labels': default_subnet_labels | combine({
+              'evpn': 'true',
+              'osac.openshift.io/evpn-transit': 'true',
+              'osac.openshift.io/virtualnetwork-uuid': vn_uuid
+            }),
+            'annotations': {
+              'osac.openshift.io/tenant': vn_tenant_id,
+              'osac.openshift.io/owner-reference': vn_uuid
+            }
+          },
+          'spec': {
+            'namespaceSelector': {
+              'matchLabels': {
+                evpn_transit_namespace_selector_key: 'true'
+              }
+            },
+            'network': {
+              'topology': 'Layer2',
+              'transport': 'EVPN',
+              'layer2': {
+                'role': 'Primary',
+                'ipam': {'lifecycle': default_ipam_lifecycle},
+                'subnets': [evpn_transit_cidr],
+                'infrastructureSubnets': [
+                  evpn_transit_osac_pool | ansible.utils.ipsubnet(30, 0)
+                ],
+                'reservedSubnets': evpn_transit_reserved_subnets
+              },
+              'evpn': {
+                'vtep': evpn_transit_vtep,
+                'macVRF': {'vni': evpn_transit_mac_vrf_vni | int}
+              }
+            }
+          }
+        }
+      }}
   register: evpn_transit_cudn_result
 
 - name: Wait for the VN-scoped EVPN transit CUDN to become ready

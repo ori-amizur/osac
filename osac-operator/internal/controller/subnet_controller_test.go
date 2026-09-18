@@ -673,7 +673,7 @@ var _ = Describe("SubnetReconciler", func() {
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("cudn-net"))
 		})
 
-		It("triggers both fabric and k8s provisioning jobs and persists both implementation-strategy annotations when the NetworkClass has both managers", func() {
+		It("preserves Primary dual dispatch when the NetworkClass has both managers", func() {
 			scheme := runtime.NewScheme()
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
 			dualDiscoveryClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
@@ -695,9 +695,10 @@ var _ = Describe("SubnetReconciler", func() {
 					Labels:    map[string]string{osacVirtualNetworkIDLabel: "dual-vnet-uuid"},
 				},
 				Spec: osacv1alpha1.VirtualNetworkSpec{
-					Region:       "us-west-1",
-					IPv4CIDR:     "10.4.0.0/16",
-					NetworkClass: "nc-dual",
+					Region:         "us-west-1",
+					IPv4CIDR:       "10.4.0.0/16",
+					NetworkClass:   "nc-dual",
+					NetworkingType: osacv1alpha1.VirtualNetworkNetworkingTypePrimary,
 				},
 			}
 			Expect(k8sClient.Create(ctx, dualVnet)).To(Succeed())

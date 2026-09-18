@@ -33,6 +33,7 @@
     netris_evpn_transit_vnet_name: "osac-transit-vnet-{{ (vn_uuid | hash('sha1'))[:12] }}"
     netris_evpn_transit_ipam_allocation_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-alloc"
     netris_evpn_transit_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-netris"
+    netris_evpn_transit_domain_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-domain"
     netris_evpn_transit_osac_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-osac"
     netris_evpn_transit_reserved_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}-reserved"
     netris_evpn_transit_legacy_ipam_subnet_name: "osac-transit-ipam-{{ (vn_uuid | hash('sha1'))[:12] }}"
@@ -86,6 +87,7 @@
     - name: Initialize optional VN transit IPAM resources
       ansible.builtin.set_fact:
         netris_evpn_transit_ipam_subnet: "{{ none }}"
+        netris_evpn_transit_domain_ipam_subnet: "{{ none }}"
         netris_evpn_transit_osac_ipam_subnet: "{{ none }}"
         netris_evpn_transit_reserved_ipam_subnet: "{{ none }}"
         netris_evpn_transit_reserved_last_ipam_subnet: "{{ none }}"
@@ -109,6 +111,10 @@
         netris_evpn_transit_osac_ipam_subnet: >-
           {{ netris_ipam_subnets | default([])
              | selectattr('name', 'equalto', netris_evpn_transit_osac_ipam_subnet_name)
+             | list | first | default(none) }}
+        netris_evpn_transit_domain_ipam_subnet: >-
+          {{ netris_ipam_subnets | default([])
+             | selectattr('name', 'equalto', netris_evpn_transit_domain_ipam_subnet_name)
              | list | first | default(none) }}
         netris_evpn_transit_reserved_ipam_subnet: >-
           {{ netris_ipam_subnets | default([])
@@ -138,6 +144,7 @@
           owned by VN VPC/VRF '{{ _vn_vpc_id }}'.
       loop:
         - "{{ netris_evpn_transit_ipam_subnet }}"
+        - "{{ netris_evpn_transit_domain_ipam_subnet }}"
         - "{{ netris_evpn_transit_osac_ipam_subnet }}"
         - "{{ netris_evpn_transit_reserved_ipam_subnet }}"
         - "{{ netris_evpn_transit_reserved_last_ipam_subnet }}"
@@ -164,6 +171,27 @@
       when:
         - netris_ipam_subnets | default([]) | selectattr('name', 'equalto', item) | list | length > 0
 
+    - name: Delete the VN-scoped transit V-Net
+      ansible.builtin.include_role:
+        name: netris.controller.vnet
+        tasks_from: delete
+      vars:
+        vnet_name: "{{ netris_evpn_transit_vnet_name }}"
+      when:
+        - vn_networking_type == 'Secondary'
+        - vn_transit_enabled | bool
+
+    - name: Delete the VN-scoped transit-domain IPAM subnet after V-Net teardown
+      ansible.builtin.include_role:
+        name: netris.controller.ipam
+        tasks_from: delete_subnet
+      vars:
+        ipam_name: "{{ netris_evpn_transit_domain_ipam_subnet_name }}"
+      when:
+        - netris_ipam_subnets | default([])
+          | selectattr('name', 'equalto', netris_evpn_transit_domain_ipam_subnet_name)
+          | list | length > 0
+
     - name: Delete the VN-scoped transit IPAM allocation
       ansible.builtin.include_role:
         name: netris.controller.ipam
@@ -171,16 +199,6 @@
       vars:
         ipam_name: "{{ netris_evpn_transit_ipam_allocation_name }}"
         ipam_vpc_id: "{{ _vn_vpc_id }}"
-      when:
-        - vn_networking_type == 'Secondary'
-        - vn_transit_enabled | bool
-
-    - name: Delete the VN-scoped transit V-Net
-      ansible.builtin.include_role:
-        name: netris.controller.vnet
-        tasks_from: delete
-      vars:
-        vnet_name: "{{ netris_evpn_transit_vnet_name }}"
       when:
         - vn_networking_type == 'Secondary'
         - vn_transit_enabled | bool

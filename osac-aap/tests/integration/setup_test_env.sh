@@ -28,6 +28,16 @@ echo "Installing OSAC CRDs..."
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 kubectl apply -f "${REPO_ROOT}/osac-operator/config/crd/bases/"
 
+# OpenShift supplies these APIs through OVN-Kubernetes and Multus. The
+# lightweight Kind harness has neither controller, but the AAP tests need to
+# create and inspect the resources submitted to those controllers.
+echo "Installing networking API test shims..."
+kubectl apply -f "${SCRIPT_DIR}/fixtures/networking-test-crds.yaml"
+kubectl wait --for=condition=Established \
+  crd/clusteruserdefinednetworks.k8s.ovn.org \
+  crd/network-attachment-definitions.k8s.cni.cncf.io \
+  --timeout=60s
+
 # 2.1. Install external CRDs needed by workflows
 echo "Installing KubeVirt operator..."
 kubectl apply -f https://github.com/kubevirt/kubevirt/releases/download/v1.1.0/kubevirt-operator.yaml
@@ -63,6 +73,18 @@ kubectl wait --for=delete pod --all -n kubevirt --timeout=60s 2>/dev/null || ech
 kubectl wait --for=delete pod --all -n cdi --timeout=60s 2>/dev/null || echo "Some cdi pods still terminating"
 
 echo "KubeVirt and CDI deployments scaled down. CRs and CRDs remain available for testing."
+
+# The scaled-down operators leave aggregated APIService objects whose backing
+# endpoints no longer exist. The namespace controller treats those stale API
+# groups as discovery failures and cannot finalize otherwise empty test
+# namespaces. The integration tests only need the KubeVirt/CDI CRDs, not these
+# aggregated subresource APIs.
+echo "Removing stale scaled-down KubeVirt/CDI API services..."
+kubectl delete apiservice \
+  v1.subresources.kubevirt.io \
+  v1alpha3.subresources.kubevirt.io \
+  v1beta1.upload.cdi.kubevirt.io \
+  --ignore-not-found
 
 echo "Installing OLM CRDs..."
 kubectl apply -f https://github.com/operator-framework/operator-lifecycle-manager/releases/download/v0.25.0/crds.yaml 2>/dev/null || echo "OLM CRDs may already exist or URL changed"

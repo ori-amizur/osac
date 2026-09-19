@@ -181,6 +181,12 @@
         router_pod_config_version: >-
           {{ (router_recovery_config_info.resources[0].data['config.json'] | from_json).version | default('') }}
 
+    - name: Build the expected OVN attachment keys
+      ansible.builtin.set_fact:
+        router_recovery_expected_network_keys: >-
+          {{ router_pod_networks | map(attribute='name')
+             | map('regex_replace', '^', subnet_vn_name ~ '/') | list }}
+
     - name: Patch the replacement Pod with the complete attachment set
       kubernetes.core.k8s_json_patch:
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -223,15 +229,13 @@
         - >-
           (
             (
-              (router_recovery_status_info.resources[0].metadata.annotations | default({})
-                ).get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+              (
+                (router_recovery_status_info.resources[0].metadata.annotations | default({})
+                  ).get('k8s.ovn.org/pod-networks', '{}') | from_json
+              ).keys() | list
+              | intersect(router_recovery_expected_network_keys)
+              | length
             )
-            | selectattr('name', 'in',
-                (router_pod_networks | map(attribute='name') | list)
-                + (router_pod_networks | map(attribute='name')
-                    | map('regex_replace', '^', subnet_vn_name ~ '/') | list)
-              )
-            | list | length
           ) == (router_pod_networks | length)
       retries: "{{ (cudn_net_router_recovery_timeout_seconds / cudn_net_router_recovery_poll_interval_seconds) | round(0, 'ceil') | int }}"
       delay: "{{ cudn_net_router_recovery_poll_interval_seconds }}"

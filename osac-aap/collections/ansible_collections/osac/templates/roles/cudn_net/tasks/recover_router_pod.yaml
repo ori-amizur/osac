@@ -80,7 +80,7 @@
         kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
         api_version: osac.openshift.io/v1alpha1
         kind: Subnet
-        namespace: "{{ subnet_vn_name }}"
+        namespace: "{{ subnet_management_namespace }}"
       register: router_recovery_subnet_info
 
     - name: Initialize the generated router attachment set
@@ -146,7 +146,7 @@
         router_recovery_route_subnet:
           metadata:
             name: "{{ subnet_vn_name }}-router-recovery"
-            namespace: "{{ subnet_vn_name }}"
+            namespace: "{{ subnet_management_namespace }}"
             annotations:
               osac.openshift.io/virtual-network-name: "{{ subnet_vn_name }}"
               osac.openshift.io/tenant: "{{ subnet_tenant_id }}"

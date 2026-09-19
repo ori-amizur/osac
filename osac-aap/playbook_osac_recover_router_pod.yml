@@ -10,6 +10,7 @@
       {{ virtual_network.metadata.annotations
          ['osac.openshift.io/implementation-strategy'] }}
     subnet_vn_name: "{{ virtual_network.metadata.name }}"
+    subnet_management_namespace: "{{ virtual_network.metadata.namespace }}"
     subnet_tenant_id: >-
       {{ virtual_network.metadata.annotations['osac.openshift.io/tenant'] | default('') }}
     subnet_virtual_network: >-

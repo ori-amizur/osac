@@ -71,9 +71,11 @@ is no removal path on Update either. Announcing the subnet first means the
 CUDN's own startup sync discovers the Pod immediately and creates the logical
 port without a restart. `multus-dynamic-networks-controller`'s first attempt
 races ahead of the NetworkAttachmentDefinition's existence and fails
-harmlessly with "not found"; a deliberate second annotation change (the
-"poke", after the NAD is confirmed present) is what makes it retry
-successfully.
+harmlessly with "not found". The pre-CUDN annotation is deliberately formatted
+differently from the normal compact JSON; once the NAD exists, the caller's
+normal patch becomes a meaningful Pod update that retriggers only the missing
+ADD, without the stale DEL race caused by temporarily removing and restoring
+the attachment list.
 
 **Detach (remove_router_pod_subnet.yaml, live_detach_cni_del.yaml,
 check_subnet_still_referenced.yaml):** removing a subnet from the running Pod's

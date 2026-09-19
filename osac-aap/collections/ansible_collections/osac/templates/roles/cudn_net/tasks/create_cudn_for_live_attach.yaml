@@ -31,6 +31,12 @@
 
 - name: Announce the subnet to the router Pod before its CUDN exists
   ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
+  vars:
+    # Keep the pre-CUDN value semantically identical but textually distinct from
+    # the normal compact JSON written by the caller after the NAD exists. The
+    # latter meaningful Pod update is the safe Multus retry trigger: it queues
+    # only the missing ADD and never creates a stale DEL for this attachment.
+    router_pod_networks_annotation_value: "{{ router_pod_networks | to_json }} "
 
 - name: Create ClusterUserDefinedNetwork for the announced subnet
   kubernetes.core.k8s:
@@ -64,8 +70,9 @@
   # Best-effort: if the NAD is unusually slow to appear (or never does), do not fail the
   # whole job here -- let patch_router_pod_networks.yaml's existing live-attach timeout and
   # recreation fallback be the single source of truth for "did this Subnet operation
-  # succeed," exactly as when this mechanism is unavailable. The wait is only an ordering
-  # aid for the subsequent verification; it must not mutate the Pod annotation again.
+  # succeed," exactly as when this mechanism is unavailable. Once the NAD exists, the
+  # caller's normal compact-JSON patch changes the annotation text and safely retriggers
+  # Multus without toggling the desired attachment list or queueing a stale DEL.
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     api_version: k8s.cni.cncf.io/v1

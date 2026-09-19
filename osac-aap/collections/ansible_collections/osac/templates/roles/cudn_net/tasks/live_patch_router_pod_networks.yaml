@@ -38,7 +38,7 @@
       - op: add
         path: /metadata/annotations
         value:
-          k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks | to_json }}"
+          k8s.v1.cni.cncf.io/networks: "{{ router_pod_networks_annotation_value | default(router_pod_networks | to_json) }}"
 
 - name: Update the router Pod Multus network attachment annotation live
   when: router_pod_live_attach_annotations | length > 0
@@ -51,7 +51,7 @@
     patch:
       - op: add
         path: /metadata/annotations/k8s.v1.cni.cncf.io~1networks
-        value: "{{ router_pod_networks | to_json }}"
+        value: "{{ router_pod_networks_annotation_value | default(router_pod_networks | to_json) }}"
 
 - name: Display router Pod live mutation result
   ansible.builtin.debug:

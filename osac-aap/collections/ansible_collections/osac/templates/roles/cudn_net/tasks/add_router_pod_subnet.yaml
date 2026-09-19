@@ -152,7 +152,6 @@
     router_pod_config_owner_reference: "{{ subnet_virtual_network }}"
     router_pod_config_version: "{{ router_pod_networks | to_json }}"
     router_pod_config_networks: "{{ router_pod_networks }}"
-    router_pod_config_routes: []
     router_pod_config_include_fabric_routes: true
     router_pod_config_exclude_current_subnet: false
 

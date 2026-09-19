@@ -41,6 +41,10 @@ var (
 	osacComputeInstanceFeedbackFinalizer         string = fmt.Sprintf("%s/computeinstance-feedback", osacPrefix)
 	osacComputeInstanceManagementStateAnnotation string = fmt.Sprintf("%s/management-state", osacPrefix)
 	osacSubnetTargetNamespaceAnnotation          string = fmt.Sprintf("%s/subnet-target-namespace", osacPrefix)
+	// osacCUDNReconcileAnnotation is updated after OSAC adds a secondary-subnet
+	// selector label to a VM namespace. The metadata change makes
+	// OVN-Kubernetes reconcile the CUDN and create the namespace-local NAD.
+	osacCUDNReconcileAnnotation string = fmt.Sprintf("%s/cudn-reconcile-at", osacPrefix)
 	// osacSecondarySubnetLabelsSyncedAnnotation marks that syncSecondarySubnetLabels has
 	// already run for this ComputeInstance. NetworkAttachments are immutable, so the derived
 	// secondary-subnet.osac.openshift.io/<uuid> label set never changes after creation.

@@ -24,6 +24,14 @@ argument_specs:
       route_vpc_id:
         type: int
         required: true
+      netris_route_convergence_retries:
+        type: int
+        required: false
+        default: 60
+      netris_route_convergence_delay_seconds:
+        type: int
+        required: false
+        default: 2
   delete:
     options:
       route_description:

@@ -18,7 +18,9 @@ FROM registry.access.redhat.com/ubi10-minimal:10.2
 # `microdnf install iptables` has no match on this base image). iproute is needed to
 # assign each subnet's reserved gateway address to the router pod's Multus interface and
 # install the desired routes.
-RUN microdnf install -y nftables iproute && microdnf clean all
+# iputils provides ping and arping for in-pod connectivity diagnostics. Keep
+# iproute for the agent's route/address management and nftables for SNAT.
+RUN microdnf install -y nftables iproute iputils && microdnf clean all
 
 COPY --from=builder /opt/app-root/src/router-agent /usr/local/bin/router-agent
 

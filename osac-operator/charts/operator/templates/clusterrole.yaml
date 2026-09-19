@@ -69,6 +69,16 @@ rules:
   - update
   - watch
 - apiGroups:
+  - k8s.ovn.org
+  resources:
+  - clusteruserdefinednetworks
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - kubevirt.io
   resources:
   - virtualmachineinstances

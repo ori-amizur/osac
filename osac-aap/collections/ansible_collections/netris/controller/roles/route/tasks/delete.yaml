@@ -54,6 +54,28 @@
   loop: "{{ _matching_routes | default([]) }}"
   no_log: true
 
+- name: Wait for the Netris route withdrawal to converge
+  ansible.builtin.uri:
+    url: "{{ _route_list_url }}"
+    method: GET
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Cache-Control: "no-cache"
+      Pragma: "no-cache"
+    return_content: true
+    status_code: 200
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  register: _route_withdrawal_resp
+  until:
+    - >-
+      (_route_withdrawal_resp.json.data | default([])
+        | selectattr('description', 'equalto', route_description)
+        | list | length) == 0
+  retries: "{{ netris_route_convergence_retries }}"
+  delay: "{{ netris_route_convergence_delay_seconds }}"
+  no_log: true
+
 - name: Display static route withdrawal result
   ansible.builtin.debug:
     msg: "Netris route '{{ route_description }}' withdrawn or already absent"

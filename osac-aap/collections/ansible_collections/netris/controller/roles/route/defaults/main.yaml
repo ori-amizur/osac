@@ -1,2 +1,4 @@
 ---
 route_state: present
+netris_route_convergence_retries: 60
+netris_route_convergence_delay_seconds: 2

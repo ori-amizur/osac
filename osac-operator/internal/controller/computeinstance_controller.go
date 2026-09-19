@@ -45,6 +45,7 @@ import (
 
 	"github.com/osac-project/osac/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac/osac-operator/pkg/provisioning"
+	ovnv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 )
 
@@ -60,6 +61,12 @@ const (
 // handleUpdate treats this as a transient error and requeues with a fixed delay
 // instead of exponential backoff.
 var errSubnetNotFound = errors.New("subnet CR not found")
+
+// errCUDNNotReady is returned when the OVN CUDN has not been created yet. A
+// ComputeInstance must not mark namespace-label synchronization complete in
+// that case: touching the CUDN is the reconciliation edge that causes OVN to
+// materialize the NAD in a namespace labelled after CUDN creation.
+var errCUDNNotReady = errors.New("CUDN not ready")
 
 // ComputeInstanceReconciler reconciles a ComputeInstance object
 type ComputeInstanceReconciler struct {
@@ -134,6 +141,7 @@ func NewComputeInstanceReconciler(
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=computeinstances/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines;virtualmachineinstances,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=k8s.ovn.org,resources=clusteruserdefinednetworks,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -488,6 +496,7 @@ func (r *ComputeInstanceReconciler) syncSecondarySubnetLabels(ctx context.Contex
 
 	attachments := instance.Spec.NetworkAttachments
 	subnetIDs := make([]string, 0, len(attachments))
+	secondarySubnetNames := make([]string, 0, len(attachments))
 	for i, attachment := range attachments {
 		subnet := &v1alpha1.Subnet{}
 		subnetKey := types.NamespacedName{Name: attachment.SubnetRef, Namespace: instance.Namespace}
@@ -507,6 +516,7 @@ func (r *ComputeInstanceReconciler) syncSecondarySubnetLabels(ctx context.Contex
 				subnetID = subnet.Labels[osacSubnetIDLabel]
 			}
 			subnetIDs = append(subnetIDs, subnetID)
+			secondarySubnetNames = append(secondarySubnetNames, subnet.Name)
 		}
 	}
 
@@ -536,8 +546,14 @@ func (r *ComputeInstanceReconciler) syncSecondarySubnetLabels(ctx context.Contex
 				metadataChanged = true
 			}
 		}
-		for _, subnetID := range subnetIDs {
+		for i, subnetID := range subnetIDs {
 			if err := r.ensureNamespaceLabel(ctx, targetNamespace, secondarySubnetLabelKey(subnetID)); err != nil {
+				return false, err
+			}
+			// OVN-Kubernetes does not reliably reconcile a CUDN after a
+			// namespace selector label is added. Touch the CUDN after OSAC
+			// adds the VM namespace label so its NAD is created there.
+			if err := r.requestCUDNReconciliation(ctx, secondarySubnetNames[i]); err != nil {
 				return false, err
 			}
 		}
@@ -551,6 +567,30 @@ func (r *ComputeInstanceReconciler) syncSecondarySubnetLabels(ctx context.Contex
 		metadataChanged = true
 	}
 	return metadataChanged, nil
+}
+
+// requestCUDNReconciliation updates an OSAC-owned annotation on the CUDN for a
+// secondary Subnet. The metadata update is harmless to the CUDN spec and causes
+// OVN-Kubernetes to reconcile its namespace selector, including a VM namespace
+// whose secondary-subnet label was just added by OSAC.
+func (r *ComputeInstanceReconciler) requestCUDNReconciliation(ctx context.Context, subnetName string) error {
+	cudn := &ovnv1.ClusterUserDefinedNetwork{}
+	if err := r.Get(ctx, types.NamespacedName{Name: subnetName}, cudn); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("%w: ClusterUserDefinedNetwork %s does not exist yet: %w", errCUDNNotReady, subnetName, err)
+		}
+		return fmt.Errorf("failed to get ClusterUserDefinedNetwork %s for reconciliation: %w", subnetName, err)
+	}
+
+	patch := client.RawPatch(types.MergePatchType, []byte(fmt.Sprintf(
+		`{"metadata":{"annotations":{%q:%q}}}`,
+		osacCUDNReconcileAnnotation,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)))
+	if err := r.Patch(ctx, cudn, patch); err != nil {
+		return fmt.Errorf("failed to request reconciliation of ClusterUserDefinedNetwork %s: %w", subnetName, err)
+	}
+	return nil
 }
 
 // ensureNamespaceLabel adds label=labelValueTrue to namespace via a scoped JSON merge
@@ -716,7 +756,7 @@ func (r *ComputeInstanceReconciler) handleUpdate(ctx context.Context, _ reconcil
 
 	subnetTargetNamespace, err := r.syncMetadataPreflight(ctx, instance, tenant.Status.Namespace)
 	if err != nil {
-		if errors.Is(err, errSubnetNotFound) {
+		if errors.Is(err, errSubnetNotFound) || errors.Is(err, errCUDNNotReady) {
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err

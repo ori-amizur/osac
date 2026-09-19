@@ -80,6 +80,52 @@
   when: _matching_routes | length == 1
   no_log: true
 
+- name: Wait for the Netris route to become active
+  ansible.builtin.uri:
+    url: >-
+      {{ netris_controller_url }}/api/routes?filterBySites[]={{ route_site_id }}&filterByVpc={{ route_vpc_id }}
+    method: GET
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Cache-Control: "no-cache"
+      Pragma: "no-cache"
+    return_content: true
+    status_code: 200
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  register: _route_convergence_resp
+  until:
+    - >-
+      (
+        (_route_convergence_resp.json.data | default([])
+          | selectattr('description', 'equalto', route_description)
+          | selectattr('prefix', 'equalto', route_prefix)
+          | selectattr('next_hop', 'equalto', route_next_hop)
+          | selectattr('state', 'equalto', 'active')
+          | list)
+        | length
+      ) == 1
+  retries: "{{ netris_route_convergence_retries }}"
+  delay: "{{ netris_route_convergence_delay_seconds }}"
+  no_log: true
+
+- name: Assert the converged Netris route belongs to the requested VPC and site
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_route_convergence_resp.json.data | default([])
+          | selectattr('description', 'equalto', route_description)
+          | selectattr('prefix', 'equalto', route_prefix)
+          | selectattr('next_hop', 'equalto', route_next_hop)
+          | selectattr('state', 'equalto', 'active')
+          | selectattr('vpc.id', 'equalto', route_vpc_id | int)
+          | selectattr('site_id', 'equalto', route_site_id | int)
+          | list | length) == 1
+    fail_msg: >-
+      Netris accepted route '{{ route_description }}' but did not expose one active
+      route with the requested prefix, next hop, VPC {{ route_vpc_id }}, and site
+      {{ route_site_id }}.
+
 - name: Display static route result
   ansible.builtin.debug:
     msg:

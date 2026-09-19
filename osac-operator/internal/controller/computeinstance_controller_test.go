@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	ovnv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/userdefinednetwork/v1"
 	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -3355,6 +3356,12 @@ var _ = Describe("ComputeInstance Controller", func() {
 			Expect(k8sClient.Create(ctx, secondarySubnet)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, secondarySubnet) }()
 
+			cudn := &ovnv1.ClusterUserDefinedNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: secondarySubnetRef},
+			}
+			Expect(k8sClient.Create(ctx, cudn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cudn) }()
+
 			Eventually(func() error {
 				return reconciler.Client.Get(ctx, types.NamespacedName{Name: secondarySubnetRef, Namespace: namespaceName}, &osacv1alpha1.Subnet{})
 			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
@@ -3379,6 +3386,10 @@ var _ = Describe("ComputeInstance Controller", func() {
 			ns := &corev1.Namespace{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: primarySubnetRef}, ns)).To(Succeed())
 			Expect(ns.Labels).To(HaveKeyWithValue(expectedLabel, labelValueTrue))
+
+			updatedCUDN := &ovnv1.ClusterUserDefinedNetwork{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secondarySubnetRef}, updatedCUDN)).To(Succeed())
+			Expect(updatedCUDN.Annotations).To(HaveKey(osacCUDNReconcileAnnotation))
 
 			// networkAttachments are immutable, so a repeat call (e.g. on a later
 			// reconcile) must be a no-op once the synced marker is set.

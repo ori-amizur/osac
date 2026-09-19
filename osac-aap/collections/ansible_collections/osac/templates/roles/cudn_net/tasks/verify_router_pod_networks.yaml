@@ -1,9 +1,61 @@
 ---
 # Verify the result of a live attach/detach. A per-operation deadline is used;
 # a later Subnet operation cannot extend this operation's deadline.
+#
+# Multus dynamic-networks-controller creates/removes the interface in the Pod's
+# network namespace, but it does not reliably rewrite network-status after a
+# live annotation update. The network namespace is therefore the authoritative
+# completion signal. After a live attach, OSAC records the observed interface in
+# network-status so later port-security matching has the same metadata it would
+# have received during normal Pod creation.
 
-- name: Wait for the live router Pod network-status update
+- name: Wait for the live router Pod interface mutation
   when: cudn_net_router_wait_for_network_status | bool
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ subnet_vn_name }}"
+      - "{{ router_pod_live_attach_name }}"
+      - --
+      - ip
+      - -j
+      - address
+      - show
+      - dev
+      - "{{ router_pod_live_attach_network_name }}"
+  environment: >-
+    {{
+      {'KUBECONFIG': remote_cluster_kubeconfig}
+      if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
+      else {}
+    }}
+  register: router_pod_live_attach_interface_info
+  changed_when: false
+  failed_when: false
+  until:
+    - >-
+      (
+        router_pod_live_attach_interface_info.rc | int == 0
+        and (router_pod_live_attach_interface_info.stdout | from_json | length == 1)
+        and (
+          (router_pod_live_attach_interface_info.stdout | from_json)[0].addr_info
+          | default([])
+          | selectattr('family', 'equalto', 'inet')
+          | list
+          | length > 0
+        )
+      )
+      if router_pod_attachment_action == 'attach'
+      else router_pod_live_attach_interface_info.rc | int != 0
+  retries: "{{ (cudn_net_router_live_attach_timeout_seconds / cudn_net_router_live_attach_poll_interval_seconds) | round(0, 'ceil') | int }}"
+  delay: "{{ cudn_net_router_live_attach_poll_interval_seconds }}"
+
+- name: Read the live router Pod after the interface mutation
+  when:
+    - cudn_net_router_wait_for_network_status | bool
+    - router_pod_attachment_action == 'attach'
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     api_version: v1
@@ -11,38 +63,54 @@
     namespace: "{{ subnet_vn_name }}"
     name: "{{ router_pod_live_attach_name }}"
   register: router_pod_live_attach_status_info
-  until:
-    - router_pod_live_attach_status_info.resources | length == 1
-    - router_pod_live_attach_status_info.resources[0].status.phase | default('') == 'Running'
-    - >-
-      (
+
+- name: Build network-status entry from the live router Pod interface
+  when:
+    - cudn_net_router_wait_for_network_status | bool
+    - router_pod_attachment_action == 'attach'
+  ansible.builtin.set_fact:
+    router_pod_live_attach_network_status_value: >-
+      {{
         (
           (
-            (router_pod_live_attach_status_info.resources[0].metadata.annotations | default({}))
-              .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+            (
+              (router_pod_live_attach_status_info.resources[0].metadata.annotations | default({}))
+                .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+            )
+            | rejectattr('name', 'equalto', router_pod_live_attach_network_name)
+            | rejectattr('name', 'equalto', subnet_vn_name ~ '/' ~ router_pod_live_attach_network_name)
+            | list
           )
-          | selectattr('name', 'in', [
-              router_pod_live_attach_network_name,
-              subnet_vn_name ~ '/' ~ router_pod_live_attach_network_name
-            ])
-          | list | length
-        ) > 0
-        if router_pod_attachment_action == 'attach'
-        else
-        (
-          (
-            (router_pod_live_attach_status_info.resources[0].metadata.annotations | default({}))
-              .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
-          )
-          | selectattr('name', 'in', [
-              router_pod_live_attach_network_name,
-              subnet_vn_name ~ '/' ~ router_pod_live_attach_network_name
-            ])
-          | list | length
-        ) == 0
-      )
-  retries: "{{ (cudn_net_router_live_attach_timeout_seconds / cudn_net_router_live_attach_poll_interval_seconds) | round(0, 'ceil') | int }}"
-  delay: "{{ cudn_net_router_live_attach_poll_interval_seconds }}"
+          + [{
+            'name': router_pod_live_attach_network_name,
+            'interface': router_pod_live_attach_network_name,
+            'ips': (
+              (router_pod_live_attach_interface_info.stdout | from_json)[0].addr_info
+              | default([])
+              | selectattr('family', 'equalto', 'inet')
+              | map(attribute='local')
+              | list
+            ),
+            'mac': (router_pod_live_attach_interface_info.stdout | from_json)[0].address,
+            'dns': {}
+          }]
+        ) | to_json
+      }}
+
+- name: Record the live router Pod interface in network-status
+  when:
+    - cudn_net_router_wait_for_network_status | bool
+    - router_pod_attachment_action == 'attach'
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_live_attach_name }}"
+    patch:
+      - op: add
+        path: /metadata/annotations/k8s.v1.cni.cncf.io~1network-status
+        value: "{{ router_pod_live_attach_network_status_value }}"
 
 - name: Mark the router Pod operation as live
   ansible.builtin.set_fact:

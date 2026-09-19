@@ -1,7 +1,7 @@
 ---
 # Attach or detach the desired Secondary UDN set on the running router Pod.
 #
-# The live mutation and its network-status verification are one transaction. If
+# The live mutation and its interface verification are one transaction. If
 # either the annotation patch or verification fails, the rescue path changes the
 # Deployment template and waits for a recreated Pod with the complete desired
 # attachment set.

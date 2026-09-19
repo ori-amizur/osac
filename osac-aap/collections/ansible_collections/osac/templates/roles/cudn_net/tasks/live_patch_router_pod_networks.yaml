@@ -1,7 +1,7 @@
 ---
 # Patch the running router Pod in place. Verification is deliberately separate:
 # this file only makes the API mutation, while verify_router_pod_networks.yaml
-# confirms that Multus reflected it in network-status.
+# confirms the interface in the Pod network namespace and records its metadata.
 
 - name: Wait for the running router Pod before live mutation
   kubernetes.core.k8s_info:

@@ -41,6 +41,8 @@ cudn_net_manage_router_pod: true
 # writing stale aggregate Pod/ConfigMap state.
 cudn_net_router_live_attach_timeout_seconds: 60
 cudn_net_router_live_attach_poll_interval_seconds: 2
+# Keep the historical name for compatibility; the live verifier checks the
+# actual network namespace interface and then synchronizes network-status.
 cudn_net_router_wait_for_network_status: true
 cudn_net_router_wait_for_recreated_network_status: true
 cudn_net_router_mutation_lock_retries: 180

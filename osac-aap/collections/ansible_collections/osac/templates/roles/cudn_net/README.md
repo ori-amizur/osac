@@ -68,9 +68,12 @@ Pod's annotation is changed. The dynamic-networks controller then sees one
 complete ADD request against an existing NAD. Patching the annotation before
 the NAD exists is unsafe: the controller can queue a failed ADD and a stale
 DEL, and later remove the interface after the ADD succeeds while leaving
-network-status stale. Waiting for the NAD avoids that race. If the NAD does
-not appear in time, the existing live-attach deadline and Deployment
-recreation fallback remain responsible for completing the operation.
+network-status stale. Waiting for the NAD avoids that race. Live verification
+checks the actual interface and IPv4 address in the Pod network namespace,
+then records that observed interface in network-status for later port-security
+matching. If the NAD or interface does not appear in time, the existing
+live-attach deadline and Deployment recreation fallback remain responsible for
+completing the operation.
 
 **Detach (remove_router_pod_subnet.yaml, live_detach_cni_del.yaml,
 check_subnet_still_referenced.yaml):** removing a subnet from the running Pod's

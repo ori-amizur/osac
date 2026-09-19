@@ -156,7 +156,7 @@
     router_pod_config_include_fabric_routes: true
     router_pod_config_exclude_current_subnet: false
 
-- name: Announce the subnet to the router Pod, create its CUDN, then retrigger the live attach
+- name: Create the CUDN before the live router Pod attachment
   ansible.builtin.include_tasks: create_cudn_for_live_attach.yaml
 
 - name: Attach the new subnet, falling back to router Pod recreation on timeout

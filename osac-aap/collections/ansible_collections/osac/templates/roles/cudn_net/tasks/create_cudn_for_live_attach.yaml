@@ -1,44 +1,27 @@
 ---
-# Announce the subnet to the router Pod's Multus annotation *before* its CUDN exists,
-# then create the CUDN and allow the dynamic-networks controller to finish the queued
-# attachment once the CUDN's NetworkAttachmentDefinition is present.
+# Create the CUDN and wait for its NetworkAttachmentDefinition before changing the
+# router Pod's Multus annotation. The caller patches the annotation immediately after
+# this task returns, allowing the dynamic-networks controller to process one complete
+# ADD request against an existing NAD.
 #
-# Why this order: OVN-Kubernetes's per-network Pod controller (layer2UserDefinedNetwork
-# Controller) only recomputes a Pod's network membership from scratch when its own
-# controller starts up (i.e., when this CUDN is created) or on a Pod Add event -- never on
-# a plain Pod Update to an already-scheduled Pod (its Update handler only ever considers
-# *adding* a port when the Pod's scheduled state changes; it never re-evaluates a Pod's
-# NAD list, and there is no removal-on-Update path either). Announcing the subnet on the
-# Pod's annotation before the CUDN exists means that when the CUDN's controller starts and
-# runs its own initial sync, it discovers the Pod already references it and creates the
-# logical port immediately as part of that startup sync -- no restart needed.
+# Why this order: the Multus dynamic-networks controller handles a Pod annotation update
+# without recreating the Pod. Waiting for the NAD first ensures that update is processed
+# as a single successful ADD, while the CUDN controller still creates the logical switch
+# port and network attachment definition before the Pod requests the network.
 #
-# multus-dynamic-networks-controller's own attempt to add the interface races ahead of the
-# NetworkAttachmentDefinition's existence (the CUDN's own controller has not created it
-# yet) and fails with "not found". The controller requeues that request, and retries it once
-# the NAD appears. A second annotation change is not needed and is unsafe: it can enqueue a
-# stale DEL behind the successful ADD, leaving network-status claiming an interface that no
-# longer exists in the Pod network namespace.
+# Patching the annotation before the NAD exists is unsafe: the dynamic-networks controller
+# can queue a failed ADD and a corresponding DEL. Once the NAD appears it can execute the
+# ADD and then the stale DEL, leaving network-status claiming an interface that no longer
+# exists in the Pod network namespace. Waiting for the NAD avoids that race.
 #
 # This file is only ever included for the "attach" path (see add_router_pod_subnet.yaml);
 # detach intentionally does not use this mechanism -- see delete_subnet.yaml.
 #
 # Computing router_pod_networks earlier in add_router_pod_subnet.yaml only sets a Jinja
-# fact -- it does not itself touch the Pod object. The "Announce" step below is what
-# actually patches the Pod's live annotation via the API, and it must run before CUDN
-# creation, not just be computed before it. The caller's normal live-attach patch and
-# verification remain the single completion/fallback path after this task returns.
+# fact -- it does not itself touch the Pod object. The caller's normal live-attach patch
+# and verification remain the single completion/fallback path after this task returns.
 
-- name: Announce the subnet to the router Pod before its CUDN exists
-  ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
-  vars:
-    # Keep the pre-CUDN value semantically identical but textually distinct from
-    # the normal compact JSON written by the caller after the NAD exists. The
-    # latter meaningful Pod update is the safe Multus retry trigger: it queues
-    # only the missing ADD and never creates a stale DEL for this attachment.
-    router_pod_networks_annotation_value: "{{ router_pod_networks | to_json }} "
-
-- name: Create ClusterUserDefinedNetwork for the announced subnet
+- name: Create ClusterUserDefinedNetwork for the subnet
   kubernetes.core.k8s:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     state: present
@@ -69,10 +52,9 @@
 - name: Wait for the subnet's NetworkAttachmentDefinition to be created
   # Best-effort: if the NAD is unusually slow to appear (or never does), do not fail the
   # whole job here -- let patch_router_pod_networks.yaml's existing live-attach timeout and
-  # recreation fallback be the single source of truth for "did this Subnet operation
-  # succeed," exactly as when this mechanism is unavailable. Once the NAD exists, the
-  # caller's normal compact-JSON patch changes the annotation text and safely retriggers
-  # Multus without toggling the desired attachment list or queueing a stale DEL.
+  # recreation fallback be the single source of truth for whether this Subnet operation
+  # succeeds. When the NAD is ready, the caller's normal compact-JSON patch is the first
+  # dynamic-network update for this attachment.
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     api_version: k8s.cni.cncf.io/v1

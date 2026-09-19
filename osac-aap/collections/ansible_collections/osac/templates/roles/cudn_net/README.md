@@ -63,19 +63,14 @@ and waits for the replacement Pod. This is the Epic 1 recreation fallback,
 shared by both directions.
 
 **Attach ordering (create_cudn_for_live_attach.yaml):** the subnet's CUDN is
-created *after* the router Pod's annotation already announces it, not before.
-OVN-Kubernetes's per-network Pod controller only recomputes a Pod's network
-membership from scratch on its own controller startup (CUDN creation) or a Pod
-Add event -- never on a plain Pod Update to an already-scheduled Pod, and there
-is no removal path on Update either. Announcing the subnet first means the
-CUDN's own startup sync discovers the Pod immediately and creates the logical
-port without a restart. `multus-dynamic-networks-controller`'s first attempt
-races ahead of the NetworkAttachmentDefinition's existence and fails
-harmlessly with "not found". The pre-CUDN annotation is deliberately formatted
-differently from the normal compact JSON; once the NAD exists, the caller's
-normal patch becomes a meaningful Pod update that retriggers only the missing
-ADD, without the stale DEL race caused by temporarily removing and restoring
-the attachment list.
+created and its NetworkAttachmentDefinition is awaited *before* the router
+Pod's annotation is changed. The dynamic-networks controller then sees one
+complete ADD request against an existing NAD. Patching the annotation before
+the NAD exists is unsafe: the controller can queue a failed ADD and a stale
+DEL, and later remove the interface after the ADD succeeds while leaving
+network-status stale. Waiting for the NAD avoids that race. If the NAD does
+not appear in time, the existing live-attach deadline and Deployment
+recreation fallback remain responsible for completing the operation.
 
 **Detach (remove_router_pod_subnet.yaml, live_detach_cni_del.yaml,
 check_subnet_still_referenced.yaml):** removing a subnet from the running Pod's

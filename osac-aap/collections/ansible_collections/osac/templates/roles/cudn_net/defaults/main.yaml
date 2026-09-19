@@ -51,10 +51,11 @@ cudn_net_router_recovery_poll_interval_seconds: 2
 cudn_net_router_recovery_lock_duration_seconds: 600
 
 # How long to wait for a newly-created CUDN's NetworkAttachmentDefinition to appear
-# before "poking" the router Pod's annotation to retrigger the live attach (see
+# before continuing to the normal live-attach verification (see
 # create_cudn_for_live_attach.yaml). Best-effort: exceeding this does not fail the Subnet
 # operation -- it falls through to patch_router_pod_networks.yaml's own live-attach
-# timeout and recreation fallback.
+# timeout and recreation fallback. The router Pod annotation is not toggled again here;
+# doing so can enqueue a stale Multus DEL after the successful ADD.
 cudn_net_router_nad_wait_timeout_seconds: 30
 cudn_net_router_nad_wait_poll_interval_seconds: 2
 

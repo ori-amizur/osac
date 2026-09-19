@@ -1,7 +1,7 @@
 ---
 # Announce the subnet to the router Pod's Multus annotation *before* its CUDN exists,
-# create the CUDN, then "poke" the annotation once the CUDN's NetworkAttachmentDefinition
-# is confirmed present.
+# then create the CUDN and allow the dynamic-networks controller to finish the queued
+# attachment once the CUDN's NetworkAttachmentDefinition is present.
 #
 # Why this order: OVN-Kubernetes's per-network Pod controller (layer2UserDefinedNetwork
 # Controller) only recomputes a Pod's network membership from scratch when its own
@@ -15,11 +15,10 @@
 #
 # multus-dynamic-networks-controller's own attempt to add the interface races ahead of the
 # NetworkAttachmentDefinition's existence (the CUDN's own controller has not created it
-# yet) and fails harmlessly with "not found"; its retry queue exhausts in well under a
-# second, faster than CUDN provisioning normally completes, so nothing is left in flight by
-# the time the NAD appears. The "poke" below -- a deliberate second change to the same
-# annotation -- is what makes multus-dynamic-networks-controller retry the CNI ADD once the
-# NAD actually exists.
+# yet) and fails with "not found". The controller requeues that request, and retries it once
+# the NAD appears. A second annotation change is not needed and is unsafe: it can enqueue a
+# stale DEL behind the successful ADD, leaving network-status claiming an interface that no
+# longer exists in the Pod network namespace.
 #
 # This file is only ever included for the "attach" path (see add_router_pod_subnet.yaml);
 # detach intentionally does not use this mechanism -- see delete_subnet.yaml.
@@ -27,7 +26,8 @@
 # Computing router_pod_networks earlier in add_router_pod_subnet.yaml only sets a Jinja
 # fact -- it does not itself touch the Pod object. The "Announce" step below is what
 # actually patches the Pod's live annotation via the API, and it must run before CUDN
-# creation, not just be computed before it.
+# creation, not just be computed before it. The caller's normal live-attach patch and
+# verification remain the single completion/fallback path after this task returns.
 
 - name: Announce the subnet to the router Pod before its CUDN exists
   ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
@@ -62,9 +62,10 @@
 
 - name: Wait for the subnet's NetworkAttachmentDefinition to be created
   # Best-effort: if the NAD is unusually slow to appear (or never does), do not fail the
-  # whole job here -- fall through to the poke and let patch_router_pod_networks.yaml's
-  # existing live-attach timeout and recreation fallback be the single source of truth for
-  # "did this Subnet operation succeed," exactly as when this mechanism is unavailable.
+  # whole job here -- let patch_router_pod_networks.yaml's existing live-attach timeout and
+  # recreation fallback be the single source of truth for "did this Subnet operation
+  # succeed," exactly as when this mechanism is unavailable. The wait is only an ordering
+  # aid for the subsequent verification; it must not mutate the Pod annotation again.
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
     api_version: k8s.cni.cncf.io/v1
@@ -76,47 +77,3 @@
   retries: "{{ (cudn_net_router_nad_wait_timeout_seconds / cudn_net_router_nad_wait_poll_interval_seconds) | round(0, 'ceil') | int }}"
   delay: "{{ cudn_net_router_nad_wait_poll_interval_seconds }}"
   ignore_errors: true
-
-- name: Compute the router Pod attachment list without the newly announced subnet
-  ansible.builtin.set_fact:
-    router_pod_networks_poke_without_subnet: "{{ router_pod_networks | rejectattr('name', 'equalto', subnet_name) | list }}"
-
-- name: Poke -- temporarily drop the new subnet from the router Pod annotation
-  vars:
-    router_pod_networks: "{{ router_pod_networks_poke_without_subnet }}"
-  ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
-
-- name: Wait for the temporary router Pod removal to complete
-  # The dynamic-networks-controller processes Pod updates asynchronously.  If
-  # the desired annotation is restored immediately, its queued DEL request can
-  # run after the subsequent ADD and remove the freshly attached interface.
-  # Serialize the two halves of the poke by waiting for network-status to no
-  # longer report this interface before restoring the desired list.
-  kubernetes.core.k8s_info:
-    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
-    api_version: v1
-    kind: Pod
-    namespace: "{{ subnet_vn_name }}"
-    name: "{{ router_pod_live_attach_name }}"
-  register: router_pod_poke_removal_info
-  until:
-    - router_pod_poke_removal_info.resources | length == 1
-    - router_pod_poke_removal_info.resources[0].status.phase | default('') == 'Running'
-    - >-
-      (
-        (
-          (router_pod_poke_removal_info.resources[0].metadata.annotations | default({}))
-            .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
-        )
-        | selectattr('name', 'in', [
-            subnet_name,
-            subnet_vn_name ~ '/' ~ subnet_name
-          ])
-        | list | length
-      ) == 0
-  retries: "{{ (cudn_net_router_live_attach_timeout_seconds / cudn_net_router_live_attach_poll_interval_seconds) | round(0, 'ceil') | int }}"
-  delay: "{{ cudn_net_router_live_attach_poll_interval_seconds }}"
-  failed_when: false
-
-- name: Poke -- restore the complete desired attachment list, retriggering the live attach
-  ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml

@@ -17,7 +17,6 @@
 - name: Set the live router logical port identity
   ansible.builtin.set_fact:
     router_pod_lsp_network_name: "{{ subnet_nad_info.resources[0].metadata.annotations['k8s.ovn.org/network-name'] }}"
-    router_pod_lsp_gateway_ip: "{{ subnet_gateway_address.split('/') | first }}"
     router_pod_lsp_name: >-
       {{
         (subnet_vn_name | replace('-', '.'))
@@ -29,7 +28,7 @@
         ~ router_pod_info.resources[0].metadata.name
       }}
     router_pod_lsp_mac: >-
-      {% set octets = router_pod_lsp_gateway_ip.split('.') %}
+      {% set octets = (subnet_gateway_address.split('/') | first).split('.') %}
       0a:58:{{ '%02x' | format(octets[0] | int) }}:{{ '%02x' | format(octets[1] | int) }}:{{ '%02x' | format(octets[2] | int) }}:{{ '%02x' | format(octets[3] | int) }}
 
 - name: Look up the ovnkube-node Pod for the live router Pod's node

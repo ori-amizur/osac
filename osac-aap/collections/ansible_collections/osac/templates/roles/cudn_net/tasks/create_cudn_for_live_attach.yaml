@@ -86,5 +86,37 @@
     router_pod_networks: "{{ router_pod_networks_poke_without_subnet }}"
   ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml
 
+- name: Wait for the temporary router Pod removal to complete
+  # The dynamic-networks-controller processes Pod updates asynchronously.  If
+  # the desired annotation is restored immediately, its queued DEL request can
+  # run after the subsequent ADD and remove the freshly attached interface.
+  # Serialize the two halves of the poke by waiting for network-status to no
+  # longer report this interface before restoring the desired list.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_live_attach_name }}"
+  register: router_pod_poke_removal_info
+  until:
+    - router_pod_poke_removal_info.resources | length == 1
+    - router_pod_poke_removal_info.resources[0].status.phase | default('') == 'Running'
+    - >-
+      (
+        (
+          (router_pod_poke_removal_info.resources[0].metadata.annotations | default({}))
+            .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
+        )
+        | selectattr('name', 'in', [
+            subnet_name,
+            subnet_vn_name ~ '/' ~ subnet_name
+          ])
+        | list | length
+      ) == 0
+  retries: "{{ (cudn_net_router_live_attach_timeout_seconds / cudn_net_router_live_attach_poll_interval_seconds) | round(0, 'ceil') | int }}"
+  delay: "{{ cudn_net_router_live_attach_poll_interval_seconds }}"
+  failed_when: false
+
 - name: Poke -- restore the complete desired attachment list, retriggering the live attach
   ansible.builtin.include_tasks: live_patch_router_pod_networks.yaml

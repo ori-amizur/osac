@@ -32,7 +32,7 @@
 
 - name: Create IPAM subnet
   ansible.builtin.uri:
-    url: "{{ netris_controller_url }}/api/v2/ipam/subnet"
+    url: "{{ netris_controller_url }}/api/v2/ipam/subnets"
     method: POST
     headers:
       Cookie: "connect.sid={{ netris_session_cookie }}"

@@ -159,6 +159,9 @@
 - name: Create the CUDN before the live router Pod attachment
   ansible.builtin.include_tasks: create_cudn_for_live_attach.yaml
 
+- name: Prepare the OVN logical switch port before the live router Pod attachment
+  ansible.builtin.include_tasks: prepare_router_pod_lsp.yaml
+
 - name: Attach the new subnet, falling back to router Pod recreation on timeout
   ansible.builtin.include_tasks: patch_router_pod_networks.yaml
   vars:

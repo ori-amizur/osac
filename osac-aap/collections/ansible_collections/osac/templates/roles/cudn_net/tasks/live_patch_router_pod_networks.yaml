@@ -26,6 +26,60 @@
     router_pod_live_attach_uid: "{{ router_pod_live_attach_info.resources[0].metadata.uid }}"
     router_pod_live_attach_annotations: "{{ router_pod_live_attach_info.resources[0].metadata.annotations | default({}) }}"
 
+# multus-dynamic-networks-controller uses the `default` field in
+# k8s.v1.cni.cncf.io/network-status to distinguish interfaces it owns from the
+# Pod's primary networks.  A router Pod has both eth0 and its primary UDN
+# interface, but OVN-Kubernetes marks only the latter as default.  Without
+# normalizing eth0 here, the controller treats eth0 as a detachable Multus
+# network, tries to DEL a non-existent NAD named `eth0`, and rolls back the
+# successful secondary ADD.
+- name: Mark the router Pod's OVN-Kubernetes interfaces as default networks
+  when:
+    - router_pod_attachment_action == 'attach'
+    - "'k8s.v1.cni.cncf.io/network-status' in router_pod_live_attach_annotations"
+  ansible.builtin.set_fact:
+    router_pod_live_attach_network_status_source: >-
+      {{
+        router_pod_live_attach_annotations[
+          'k8s.v1.cni.cncf.io/network-status'
+        ] | from_json
+      }}
+    router_pod_live_attach_network_status: []
+
+- name: Preserve dynamic status and mark static OVN status entries as default
+  when:
+    - router_pod_attachment_action == 'attach'
+    - router_pod_live_attach_network_status_source is defined
+  ansible.builtin.set_fact:
+    router_pod_live_attach_network_status: >-
+      {{
+        router_pod_live_attach_network_status + [
+          (
+            item | combine({'default': true})
+            if item.name == 'ovn-kubernetes' else item
+          )
+        ]
+      }}
+  loop: >-
+    {{
+      router_pod_live_attach_network_status_source
+    }}
+
+- name: Record normalized router Pod network status before live mutation
+  when:
+    - router_pod_attachment_action == 'attach'
+    - router_pod_live_attach_network_status_source is defined
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_live_attach_name }}"
+    patch:
+      - op: add
+        path: /metadata/annotations/k8s.v1.cni.cncf.io~1network-status
+        value: "{{ router_pod_live_attach_network_status | to_json }}"
+
 - name: Add the Multus annotation map to the router Pod
   when: router_pod_live_attach_annotations | length == 0
   kubernetes.core.k8s_json_patch:

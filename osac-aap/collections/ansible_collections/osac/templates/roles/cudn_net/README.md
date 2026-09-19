@@ -75,6 +75,14 @@ matching. If the NAD or interface does not appear in time, the existing
 live-attach deadline and Deployment recreation fallback remain responsible for
 completing the operation.
 
+Before that live annotation update, OSAC also marks the router Pod's existing
+`ovn-kubernetes` status entries as `default: true`. The dynamic-networks
+controller uses that field to distinguish primary OVN interfaces from
+interfaces that it owns; OVN-Kubernetes does not mark the router Pod's `eth0`
+entry when a primary UDN is also present. Without this normalization, the
+controller attempts to remove a fictitious `eth0` NetworkAttachmentDefinition
+after the secondary ADD and rolls the ADD back.
+
 **Detach (remove_router_pod_subnet.yaml, live_detach_cni_del.yaml,
 check_subnet_still_referenced.yaml):** removing a subnet from the running Pod's
 own `k8s.v1.cni.cncf.io/networks` annotation cannot trigger OVN-Kubernetes's own

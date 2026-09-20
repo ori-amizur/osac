@@ -62,7 +62,104 @@
       independently confirm this attachment is live before patching its port security.
       Not patching this attachment.
 
-- name: Patch OVN port security for this attachment's logical switch port
+- name: Read the attachment NetworkAttachmentDefinition
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: k8s.cni.cncf.io/v1
+    kind: NetworkAttachmentDefinition
+    namespace: "{{ subnet_vn_name }}"
+    name: "{{ router_pod_attachment.name }}"
+  register: router_pod_attachment_nad_info
+
+- name: Require the attachment NAD to expose its OVN network name
+  ansible.builtin.assert:
+    that:
+      - router_pod_attachment_nad_info.resources | length == 1
+      - >-
+        (
+          router_pod_attachment_nad_info.resources[0].metadata.annotations
+          | default({})
+        ).get('k8s.ovn.org/network-name', '') | length > 0
+    fail_msg: >-
+      NetworkAttachmentDefinition '{{ router_pod_attachment.name }}' in namespace
+      '{{ subnet_vn_name }}' does not expose an OVN network name; cannot converge
+      its local and remote logical switch ports.
+
+- name: Resolve the live OVN identity for this router attachment
+  ansible.builtin.set_fact:
+    router_pod_attachment_network_name: >-
+      {{
+        router_pod_attachment_nad_info.resources[0].metadata.annotations[
+          'k8s.ovn.org/network-name'
+        ]
+      }}
+    router_pod_attachment_network_key: >-
+      {{
+        (
+          router_pod_ovn_networks
+          | dict2items
+          | selectattr('key', 'equalto', subnet_vn_name ~ '/' ~ router_pod_attachment.name)
+          | map(attribute='value')
+          | list
+          | first
+          | default({})
+        ).tunnel_id | default('')
+      }}
+    router_pod_attachment_port_security: >-
+      {{ router_pod_attachment_network_status[0].mac }} 0.0.0.0/0
+    router_pod_attachment_addresses: >-
+      {{
+        router_pod_attachment_network_status[0].mac ~ ' ' ~
+        (
+          (
+            router_pod_ovn_networks
+            | dict2items
+            | selectattr('key', 'equalto', subnet_vn_name ~ '/' ~ router_pod_attachment.name)
+            | map(attribute='value')
+            | list
+            | first
+            | default({})
+          ).ip_addresses[0]
+        )
+      }}
+
+- name: Require the OVN tunnel key assigned to this live attachment
+  ansible.builtin.assert:
+    that:
+      - router_pod_attachment_network_key | string | length > 0
+      - router_pod_attachment_network_key | int > 0
+    fail_msg: >-
+      OVN did not publish a tunnel key for live router attachment
+      '{{ router_pod_attachment.name }}' in the router Pod's pod-networks
+      annotation; refusing to create an incomplete remote logical switch port.
+
+- name: Converge the local router logical switch port identity and forwarding policy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ ovnkube_node_pod_name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - set
+      - logical_switch_port
+      - "{{ router_pod_attachment_lsp_candidate }}"
+      - "options:requested-chassis=\"{{ router_pod_chassis_name }}\""
+      - "options:requested-tnl-key=\"{{ router_pod_attachment_network_key }}\""
+      - "options:iface-id-ver=\"{{ router_pod_iface_id_version }}\""
+      - "external_ids:k8s.ovn.org/nad=\"{{ subnet_vn_name }}/{{ router_pod_attachment.name }}\""
+      - "external_ids:k8s.ovn.org/network=\"{{ router_pod_attachment_network_name }}\""
+      - "external_ids:k8s.ovn.org/topology=layer2"
+      - "external_ids:namespace={{ subnet_vn_name }}"
+      - "external_ids:pod=true"
+  environment: "{{ router_pod_exec_environment }}"
+  changed_when: true
+
+- name: Relax local router port anti-spoofing while retaining its MAC identity
   ansible.builtin.command:
     argv:
       - kubectl
@@ -76,11 +173,170 @@
       - ovn-nbctl
       - lsp-set-port-security
       - "{{ router_pod_attachment_lsp_candidate }}"
+      - "{{ router_pod_attachment_port_security }}"
   environment: "{{ router_pod_exec_environment }}"
+  changed_when: true
+
+- name: Find the attachment logical switch in every remote OVN zone
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ item.metadata.name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - --bare
+      - --columns=name
+      - find
+      - logical_switch
+      - "name={{ router_pod_attachment_network_name }}_ovn_layer2_switch"
+  environment: "{{ router_pod_exec_environment }}"
+  loop: >-
+    {{
+      ovnkube_node_pods_info.resources
+      | rejectattr('spec.nodeName', 'equalto', router_pod_node_name)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.spec.nodeName }}"
+  register: router_pod_remote_lsp_switch_results
+  changed_when: false
+
+- name: Require the attachment logical switch in every remote OVN zone
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          router_pod_remote_lsp_switch_results.results
+          | selectattr('rc', 'equalto', 0)
+          | selectattr('stdout_lines', 'contains', router_pod_attachment_network_name ~ '_ovn_layer2_switch')
+          | list
+          | length
+        ) == (
+          router_pod_remote_lsp_switch_results.results | length
+        )
+    fail_msg: >-
+      The OVN logical switch '{{ router_pod_attachment_network_name }}_ovn_layer2_switch'
+      is not present in every remote OVN zone; refusing to create a partial router
+      attachment.
+
+- name: Create the router logical switch port in every remote OVN zone
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ item.item.metadata.name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - --may-exist
+      - lsp-add
+      - "{{ router_pod_attachment_network_name }}_ovn_layer2_switch"
+      - "{{ router_pod_attachment_lsp_candidate }}"
+  environment: "{{ router_pod_exec_environment }}"
+  loop: "{{ router_pod_remote_lsp_switch_results.results }}"
+  loop_control:
+    label: "{{ item.item.spec.nodeName }}"
+  changed_when: false
+
+- name: Configure the router logical switch port in every remote OVN zone
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ item.metadata.name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - set
+      - logical_switch_port
+      - "{{ router_pod_attachment_lsp_candidate }}"
+      - type=remote
+      - "options:requested-chassis=\"{{ router_pod_chassis_name }}\""
+      - "options:requested-tnl-key=\"{{ router_pod_attachment_network_key }}\""
+      - "options:iface-id-ver=\"{{ router_pod_iface_id_version }}\""
+      - "external_ids:k8s.ovn.org/nad=\"{{ subnet_vn_name }}/{{ router_pod_attachment.name }}\""
+      - "external_ids:k8s.ovn.org/network=\"{{ router_pod_attachment_network_name }}\""
+      - "external_ids:k8s.ovn.org/topology=layer2"
+      - "external_ids:namespace={{ subnet_vn_name }}"
+      - "external_ids:pod=true"
+  environment: "{{ router_pod_exec_environment }}"
+  loop: >-
+    {{
+      ovnkube_node_pods_info.resources
+      | rejectattr('spec.nodeName', 'equalto', router_pod_node_name)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.spec.nodeName }}"
+  changed_when: true
+
+- name: Set address and forwarding policy on every remote router logical switch port
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ item.metadata.name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - lsp-set-addresses
+      - "{{ router_pod_attachment_lsp_candidate }}"
+      - "{{ router_pod_attachment_addresses }}"
+  environment: "{{ router_pod_exec_environment }}"
+  loop: >-
+    {{
+      ovnkube_node_pods_info.resources
+      | rejectattr('spec.nodeName', 'equalto', router_pod_node_name)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.spec.nodeName }}"
+  changed_when: true
+
+- name: Relax anti-spoofing on every remote router logical switch port
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ item.metadata.name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - lsp-set-port-security
+      - "{{ router_pod_attachment_lsp_candidate }}"
+      - "{{ router_pod_attachment_port_security }}"
+  environment: "{{ router_pod_exec_environment }}"
+  loop: >-
+    {{
+      ovnkube_node_pods_info.resources
+      | rejectattr('spec.nodeName', 'equalto', router_pod_node_name)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.spec.nodeName }}"
   changed_when: true
 
 - name: Display port-security patch result
   ansible.builtin.debug:
     msg: >-
-      OVN port security cleared for attachment '{{ router_pod_attachment.name }}'
-      on logical switch port '{{ router_pod_attachment_lsp_candidate }}'
+      OVN router logical switch port '{{ router_pod_attachment_lsp_candidate }}'
+      converged locally and in {{ ovnkube_node_pods_info.resources | length - 1 }}
+      remote OVN zone(s) for attachment '{{ router_pod_attachment.name }}';
+      port-security entry '{{ router_pod_attachment_port_security }}'.

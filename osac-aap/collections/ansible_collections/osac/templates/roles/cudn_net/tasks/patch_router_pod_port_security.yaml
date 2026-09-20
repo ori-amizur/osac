@@ -18,10 +18,12 @@
 # tradeoff -- not a resolved problem -- pending an upstream OVN-Kubernetes mechanism or a
 # future redesign.
 #
-# No live OVN-Kubernetes cluster is available in this repo's test environment (same gap as
-# the rest of this role's CUDN/IPAMClaim-dependent code) -- the ovnkube-node pod label and
-# the LSP matching logic below must be verified against a real cluster before this is
-# considered production-ready.
+# The router must retain its MAC identity so OVN continues to program ARP and remote-port
+# flows, while it must be allowed to forward packets whose source is a workload or fabric
+# address rather than the router interface address. The per-LSP entry therefore keeps the
+# router MAC and allows the complete IPv4 source range (`0.0.0.0/0`); clearing port security
+# removes the MAC/ARP programming, while allowing only the interface IP breaks forwarding.
+# The same entry is applied to the local router LSP and to remote-zone copies below.
 #
 # Never trusts a computed logical switch port name outright: OVN-Kubernetes's UDN naming
 # formula (GetUserDefinedNetworkPrefix + composePortName, go-controller/pkg/util) is an
@@ -108,6 +110,11 @@
         (router_pod_running_list[0].metadata.annotations | default({}))
           .get('k8s.v1.cni.cncf.io/network-status', '[]') | from_json
       }}
+    router_pod_ovn_networks: >-
+      {{
+        (router_pod_running_list[0].metadata.annotations | default({}))
+          .get('k8s.ovn.org/pod-networks', '{}') | from_json
+      }}
 
 - name: Look up the ovnkube-node pod on the router pod's node
   kubernetes.core.k8s_info:
@@ -142,6 +149,88 @@
         {'KUBECONFIG': remote_cluster_kubeconfig}
         if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
         else {}
+      }}
+
+- name: Look up all ovnkube-node pods for remote-zone router port convergence
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    label_selectors:
+      - "{{ ovnkube_node_pod_label }}"
+  register: ovnkube_node_pods_info
+
+- name: Require one ovnkube-node pod per cluster node
+  ansible.builtin.assert:
+    that:
+      - ovnkube_node_pods_info.resources | length > 0
+      - >-
+        (
+          ovnkube_node_pods_info.resources
+          | map(attribute='spec.nodeName')
+          | unique
+          | list
+          | length
+        ) == (ovnkube_node_pods_info.resources | length)
+    fail_msg: >-
+      Could not identify a unique ovnkube-node database endpoint for every node;
+      refusing to converge router logical switch ports across OVN zones.
+
+- name: Read the router node's OVN chassis name
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ ovnkube_node_pod_name }}"
+      - -c
+      - sbdb
+      - --
+      - ovn-sbctl
+      - --bare
+      - --columns=name
+      - find
+      - chassis
+      - "hostname={{ router_pod_node_name }}"
+  environment: "{{ router_pod_exec_environment }}"
+  register: router_pod_chassis_name_result
+  changed_when: false
+  until:
+    - router_pod_chassis_name_result.rc == 0
+    - router_pod_chassis_name_result.stdout_lines | length == 1
+  retries: 30
+  delay: 2
+
+- name: Read the router pod's stable interface identity
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ ovn_kubernetes_namespace }}"
+      - "{{ ovnkube_node_pod_name }}"
+      - -c
+      - "{{ ovnkube_node_nbdb_container }}"
+      - --
+      - ovn-nbctl
+      - get
+      - logical_switch_port
+      - "{{ subnet_vn_name }}_{{ router_pod_actual_name }}"
+      - options
+  environment: "{{ router_pod_exec_environment }}"
+  register: router_pod_default_lsp_options_result
+  changed_when: false
+
+- name: Set router port convergence facts
+  ansible.builtin.set_fact:
+    router_pod_chassis_name: "{{ router_pod_chassis_name_result.stdout | trim }}"
+    router_pod_iface_id_version: >-
+      {{
+        router_pod_default_lsp_options_result.stdout
+        | regex_search('iface-id-ver="([^\"]+)"', '\\1')
+        | default('', true)
       }}
 
 - name: Build the expected logical switch port suffix for this router pod

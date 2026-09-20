@@ -41,6 +41,68 @@
       More than one Netris route has the OSAC-managed description
       '{{ route_description }}'; refusing to modify ambiguous fabric state.
 
+- name: Read V-Nets attached to the target VPC
+  ansible.builtin.uri:
+    url: >-
+      {{ netris_controller_url }}/api/v2/vnet?filterByVpc={{ route_vpc_id | int }}
+    method: GET
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Cache-Control: "no-cache"
+      Pragma: "no-cache"
+    return_content: true
+    status_code: 200
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  register: _vpc_vnet_list_resp
+  no_log: true
+
+- name: Read details for each V-Net attached to the target VPC
+  ansible.builtin.uri:
+    url: "{{ netris_controller_url }}/api/v2/vnet/{{ item.id }}"
+    method: GET
+    headers:
+      Cookie: "connect.sid={{ netris_session_cookie }}"
+      Cache-Control: "no-cache"
+      Pragma: "no-cache"
+    return_content: true
+    status_code: 200
+    timeout: "{{ netris_timeout | default(30) }}"
+    validate_certs: "{{ netris_validate_certs | default(true) }}"
+  loop: "{{ _vpc_vnet_list_resp.json.data | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default(item.id) }}"
+  register: _vpc_vnet_detail_responses
+  no_log: true
+
+- name: Collect the fabric switches carrying the target VPC
+  ansible.builtin.set_fact:
+    _route_switch_ids: >-
+      {{
+        (
+          _route_switch_ids | default([])
+        ) + (
+          item.json.data.ports | default([])
+          | map(attribute='switchId')
+          | map('int')
+          | list
+        )
+        | unique
+        | list
+      }}
+  loop: "{{ _vpc_vnet_detail_responses.results | default([]) }}"
+  when:
+    - item.json is mapping
+    - item.json.data is mapping
+
+- name: Require a physical fabric endpoint for the target VPC route
+  ansible.builtin.assert:
+    that:
+      - _route_switch_ids | default([]) | length > 0
+    fail_msg: >-
+      VPC {{ route_vpc_id }} has no attached physical V-Net endpoint. Cannot
+      apply route '{{ route_description }}' to a fabric switch.
+
 - name: Build the desired Netris route body
   ansible.builtin.set_fact:
     _route_body:
@@ -48,8 +110,11 @@
       next_hop: "{{ route_next_hop }}"
       prefix: "{{ route_prefix }}"
       site_id: "{{ route_site_id | int }}"
+      # `switches` is the list of fabric switches on which Netris applies the
+      # route.  An empty list is accepted by the API but leaves the route
+      # unapplied; derive the list from the VPC's attached V-Nets above.
       stateStatus: enabled
-      switches: []
+      switches: "{{ _route_switch_ids }}"
       vpc:
         id: "{{ route_vpc_id | int }}"
 
@@ -108,6 +173,8 @@
           | selectattr('prefix_length', 'equalto', route_prefix_length)
           | selectattr('next_hop', 'equalto', route_next_hop)
           | selectattr('state', 'in', netris_route_ready_states)
+          | selectattr('switches', 'defined')
+          | selectattr('switches', 'length')
           | list)
         | length
       ) == 1
@@ -127,12 +194,34 @@
           | selectattr('state', 'in', netris_route_ready_states)
           | selectattr('vpc.id', 'equalto', route_vpc_id | int)
           | selectattr('site_id', 'equalto', route_site_id | int)
+          | selectattr('switches', 'defined')
+          | selectattr('switches', 'length')
           | list | length) == 1
+      - >-
+        (
+          (
+            _route_convergence_resp.json.data | default([])
+            | selectattr('description', 'equalto', route_description)
+            | selectattr('prefix', 'equalto', route_prefix_address)
+            | selectattr('prefix_length', 'equalto', route_prefix_length)
+            | selectattr('next_hop', 'equalto', route_next_hop)
+            | selectattr('state', 'in', netris_route_ready_states)
+            | selectattr('switches', 'defined')
+            | map(attribute='switches')
+            | map('map', attribute='id')
+            | map('list')
+            | map('difference', _route_switch_ids)
+            | map('list')
+            | select('equalto', [])
+            | list
+          ) | length
+        ) == 1
     fail_msg: >-
       Netris accepted route '{{ route_description }}' but did not expose one
       converged
-      route with the requested prefix, next hop, VPC {{ route_vpc_id }}, and site
-      {{ route_site_id }} (ready states: {{ netris_route_ready_states | join(', ') }}).
+      route with the requested prefix, next hop, VPC {{ route_vpc_id }}, site
+      {{ route_site_id }}, and applied fabric switches {{ _route_switch_ids }}
+      (ready states: {{ netris_route_ready_states | join(', ') }}).
 
 - name: Display static route result
   ansible.builtin.debug:

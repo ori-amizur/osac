@@ -32,6 +32,11 @@ argument_specs:
         type: int
         required: false
         default: 2
+      netris_route_ready_states:
+        type: list
+        elements: str
+        required: false
+        default: [active, enabled]
   delete:
     options:
       route_description:

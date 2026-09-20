@@ -101,7 +101,7 @@
           | selectattr('description', 'equalto', route_description)
           | selectattr('prefix', 'equalto', route_prefix)
           | selectattr('next_hop', 'equalto', route_next_hop)
-          | selectattr('state', 'equalto', 'active')
+          | selectattr('state', 'in', netris_route_ready_states)
           | list)
         | length
       ) == 1
@@ -117,14 +117,15 @@
           | selectattr('description', 'equalto', route_description)
           | selectattr('prefix', 'equalto', route_prefix)
           | selectattr('next_hop', 'equalto', route_next_hop)
-          | selectattr('state', 'equalto', 'active')
+          | selectattr('state', 'in', netris_route_ready_states)
           | selectattr('vpc.id', 'equalto', route_vpc_id | int)
           | selectattr('site_id', 'equalto', route_site_id | int)
           | list | length) == 1
     fail_msg: >-
-      Netris accepted route '{{ route_description }}' but did not expose one active
+      Netris accepted route '{{ route_description }}' but did not expose one
+      converged
       route with the requested prefix, next hop, VPC {{ route_vpc_id }}, and site
-      {{ route_site_id }}.
+      {{ route_site_id }} (ready states: {{ netris_route_ready_states | join(', ') }}).
 
 - name: Display static route result
   ansible.builtin.debug:

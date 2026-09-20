@@ -2,3 +2,9 @@
 route_state: present
 netris_route_convergence_retries: 60
 netris_route_convergence_delay_seconds: 2
+# Netris exposes enabled static routes as `state: enabled` on the controller
+# used by the OSAC EVPN backend. Some controller versions expose the same
+# converged state as `active`, so both representations are accepted.
+netris_route_ready_states:
+  - active
+  - enabled

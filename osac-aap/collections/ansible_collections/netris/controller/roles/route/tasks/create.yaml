@@ -113,7 +113,10 @@
       # `switches` is the list of fabric switches on which Netris applies the
       # route.  An empty list is accepted by the API but leaves the route
       # unapplied; derive the list from the VPC's attached V-Nets above.
-      stateStatus: enabled
+      # Netris' route API uses `active` for an enabled route.  `enabled` is a
+      # display/state value returned by the API and does not apply the route
+      # to the requested switches.
+      stateStatus: active
       switches: "{{ _route_switch_ids }}"
       vpc:
         id: "{{ route_vpc_id | int }}"

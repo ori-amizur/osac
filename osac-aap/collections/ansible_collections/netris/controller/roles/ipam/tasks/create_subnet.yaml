@@ -6,7 +6,7 @@
 
 - name: Query existing IPAM subnets
   ansible.builtin.uri:
-    url: "{{ netris_controller_url }}/api/v2/ipam/subnets"
+    url: "{{ netris_controller_url }}/api/v2/ipam/subnet"
     method: GET
     headers:
       Cookie: "connect.sid={{ netris_session_cookie }}"

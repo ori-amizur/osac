@@ -163,7 +163,6 @@
         router_pod_config_version: >-
           {{ {'networks': router_pod_networks, 'gatewayIPs': router_pod_config_gateway_ips} | to_json }}
         router_pod_config_networks: "{{ router_pod_networks }}"
-        router_pod_config_gateway_ips: "{{ router_pod_config_gateway_ips }}"
         router_pod_config_include_fabric_routes: true
         router_pod_config_exclude_current_subnet: false
 

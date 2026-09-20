@@ -11,7 +11,11 @@
     headers:
       Cookie: "connect.sid={{ netris_session_cookie }}"
     return_content: true
-    status_code: [200]
+    # Some Netris controller versions return 404 when the IPAM subnet
+    # collection is empty or not exposed to the tenant. Treat that as an
+    # empty collection so the singular create endpoint below can establish
+    # the requested subnet; creation errors remain fatal.
+    status_code: [200, 404]
     timeout: "{{ netris_timeout | default(30) }}"
     validate_certs: "{{ netris_validate_certs | default(true) }}"
   register: _ipam_subnets_resp

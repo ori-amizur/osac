@@ -193,7 +193,7 @@
       - --columns=name
       - find
       - logical_switch
-      - "name={{ router_pod_attachment_network_name }}_ovn_layer2_switch"
+      - "external_ids:k8s.ovn.org/network={{ router_pod_attachment_network_name }}"
   environment: "{{ router_pod_exec_environment }}"
   loop: >-
     {{
@@ -209,20 +209,16 @@
 - name: Require the attachment logical switch in every remote OVN zone
   ansible.builtin.assert:
     that:
-      - >-
-        (
-          router_pod_remote_lsp_switch_results.results
-          | selectattr('rc', 'equalto', 0)
-          | selectattr('stdout_lines', 'contains', router_pod_attachment_network_name ~ '_ovn_layer2_switch')
-          | list
-          | length
-        ) == (
-          router_pod_remote_lsp_switch_results.results | length
-        )
+      - item.rc == 0
+      - item.stdout_lines | length == 1
     fail_msg: >-
-      The OVN logical switch '{{ router_pod_attachment_network_name }}_ovn_layer2_switch'
-      is not present in every remote OVN zone; refusing to create a partial router
-      attachment.
+      The OVN logical switch for network '{{ router_pod_attachment_network_name }}'
+      is not uniquely present in remote OVN zone '{{ item.item.spec.nodeName }}'
+      (rc={{ item.rc }}, stdout={{ item.stdout | default('') | trim | quote }});
+      refusing to create a partial router attachment.
+  loop: "{{ router_pod_remote_lsp_switch_results.results }}"
+  loop_control:
+    label: "{{ item.item.spec.nodeName }}"
 
 - name: Create the router logical switch port in every remote OVN zone
   ansible.builtin.command:
@@ -238,7 +234,7 @@
       - ovn-nbctl
       - --may-exist
       - lsp-add
-      - "{{ router_pod_attachment_network_name }}_ovn_layer2_switch"
+      - "{{ item.stdout_lines[0] }}"
       - "{{ router_pod_attachment_lsp_candidate }}"
   environment: "{{ router_pod_exec_environment }}"
   loop: "{{ router_pod_remote_lsp_switch_results.results }}"
@@ -253,7 +249,7 @@
       - exec
       - -n
       - "{{ ovn_kubernetes_namespace }}"
-      - "{{ item.metadata.name }}"
+      - "{{ item.item.metadata.name }}"
       - -c
       - "{{ ovnkube_node_nbdb_container }}"
       - --
@@ -272,13 +268,9 @@
       - "external_ids:pod=true"
   environment: "{{ router_pod_exec_environment }}"
   loop: >-
-    {{
-      ovnkube_node_pods_info.resources
-      | rejectattr('spec.nodeName', 'equalto', router_pod_node_name)
-      | list
-    }}
+    {{ router_pod_remote_lsp_switch_results.results }}
   loop_control:
-    label: "{{ item.spec.nodeName }}"
+    label: "{{ item.item.spec.nodeName }}"
   changed_when: true
 
 - name: Set address and forwarding policy on every remote router logical switch port
@@ -288,7 +280,7 @@
       - exec
       - -n
       - "{{ ovn_kubernetes_namespace }}"
-      - "{{ item.metadata.name }}"
+      - "{{ item.item.metadata.name }}"
       - -c
       - "{{ ovnkube_node_nbdb_container }}"
       - --
@@ -298,13 +290,9 @@
       - "{{ router_pod_attachment_addresses }}"
   environment: "{{ router_pod_exec_environment }}"
   loop: >-
-    {{
-      ovnkube_node_pods_info.resources
-      | rejectattr('spec.nodeName', 'equalto', router_pod_node_name)
-      | list
-    }}
+    {{ router_pod_remote_lsp_switch_results.results }}
   loop_control:
-    label: "{{ item.spec.nodeName }}"
+    label: "{{ item.item.spec.nodeName }}"
   changed_when: true
 
 - name: Relax anti-spoofing on every remote router logical switch port
@@ -314,7 +302,7 @@
       - exec
       - -n
       - "{{ ovn_kubernetes_namespace }}"
-      - "{{ item.metadata.name }}"
+      - "{{ item.item.metadata.name }}"
       - -c
       - "{{ ovnkube_node_nbdb_container }}"
       - --
@@ -324,13 +312,9 @@
       - "{{ router_pod_attachment_port_security }}"
   environment: "{{ router_pod_exec_environment }}"
   loop: >-
-    {{
-      ovnkube_node_pods_info.resources
-      | rejectattr('spec.nodeName', 'equalto', router_pod_node_name)
-      | list
-    }}
+    {{ router_pod_remote_lsp_switch_results.results }}
   loop_control:
-    label: "{{ item.spec.nodeName }}"
+    label: "{{ item.item.spec.nodeName }}"
   changed_when: true
 
 - name: Display port-security patch result

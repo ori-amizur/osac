@@ -4,6 +4,11 @@
     name: netris.controller.auth
   when: netris_session_cookie is not defined
 
+- name: Normalize the requested route prefix for the Netris API representation
+  ansible.builtin.set_fact:
+    route_prefix_address: "{{ route_prefix | ansible.utils.ipaddr('network') }}"
+    route_prefix_length: "{{ route_prefix | ansible.utils.ipaddr('prefix') | int }}"
+
 - name: Read static routes in the target site and VPC
   ansible.builtin.uri:
     url: >-
@@ -99,7 +104,8 @@
       (
         (_route_convergence_resp.json.data | default([])
           | selectattr('description', 'equalto', route_description)
-          | selectattr('prefix', 'equalto', route_prefix)
+          | selectattr('prefix', 'equalto', route_prefix_address)
+          | selectattr('prefix_length', 'equalto', route_prefix_length)
           | selectattr('next_hop', 'equalto', route_next_hop)
           | selectattr('state', 'in', netris_route_ready_states)
           | list)
@@ -115,7 +121,8 @@
       - >-
         (_route_convergence_resp.json.data | default([])
           | selectattr('description', 'equalto', route_description)
-          | selectattr('prefix', 'equalto', route_prefix)
+          | selectattr('prefix', 'equalto', route_prefix_address)
+          | selectattr('prefix_length', 'equalto', route_prefix_length)
           | selectattr('next_hop', 'equalto', route_next_hop)
           | selectattr('state', 'in', netris_route_ready_states)
           | selectattr('vpc.id', 'equalto', route_vpc_id | int)

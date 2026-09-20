@@ -174,7 +174,7 @@
           | selectattr('next_hop', 'equalto', route_next_hop)
           | selectattr('state', 'in', netris_route_ready_states)
           | selectattr('switches', 'defined')
-          | selectattr('switches', 'length')
+          | rejectattr('switches', 'equalto', [])
           | list)
         | length
       ) == 1
@@ -195,7 +195,7 @@
           | selectattr('vpc.id', 'equalto', route_vpc_id | int)
           | selectattr('site_id', 'equalto', route_site_id | int)
           | selectattr('switches', 'defined')
-          | selectattr('switches', 'length')
+          | rejectattr('switches', 'equalto', [])
           | list | length) == 1
       - >-
         (

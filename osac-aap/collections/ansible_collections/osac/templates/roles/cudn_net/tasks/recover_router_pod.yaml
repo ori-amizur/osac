@@ -87,7 +87,7 @@
       ansible.builtin.set_fact:
         router_pod_networks: []
 
-    - name: Generate router attachments from authoritative Secondary Subnets
+    - name: Generate router attachments from authoritative Kubernetes-owned Secondary Subnets
       ansible.builtin.set_fact:
         router_pod_networks: >-
           {{ router_pod_networks + [{
@@ -101,6 +101,11 @@
       when:
         - item.spec.virtualNetwork | default('') == subnet_virtual_network
         - item.metadata.annotations['osac.openshift.io/networking-type'] | default('') == 'Secondary'
+        # Fabric-owned Secondary Subnets are reached through the transit
+        # interface. They do not have a CUDN/IPAMClaim-backed router Pod
+        # interface; only Kubernetes-owned Subnets belong in this attachment
+        # set and in the generated gateway configuration.
+        - item.metadata.annotations['osac.openshift.io/subnet-implementation-role'] | default('') == 'k8s'
 
     - name: Read persistent gateway claims for generated router attachments
       kubernetes.core.k8s_info:

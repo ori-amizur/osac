@@ -102,7 +102,6 @@ var _ = Describe("Default networking provisioning", func() {
 
 		By("Waiting for VN finalizer set in DB (pass 1: addFinalizer + Update done)")
 		Eventually(func(g Gomega) {
-			logVNState()
 			resp, err := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: vnId}.Build())
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(resp.GetObject().GetMetadata().GetFinalizers()).ToNot(BeEmpty())
@@ -110,7 +109,6 @@ var _ = Describe("Default networking provisioning", func() {
 
 		By("Waiting for VN hub set in DB (pass 2: selectHub + Update done)")
 		Eventually(func(g Gomega) {
-			logVNState()
 			resp, err := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: vnId}.Build())
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(resp.GetObject().GetStatus().GetHub()).ToNot(BeEmpty())
@@ -129,7 +127,6 @@ var _ = Describe("Default networking provisioning", func() {
 		kubeClient := tool.KubeClient()
 		vnList := &osacv1alpha1.VirtualNetworkList{}
 		Eventually(func(g Gomega) {
-			logVNState()
 			err := kubeClient.List(ctx, vnList, crclient.MatchingLabels{
 				labels.VirtualNetworkUuid: vnId,
 			})

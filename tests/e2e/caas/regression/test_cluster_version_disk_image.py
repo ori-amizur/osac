@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests.e2e.catalog.conftest import unique_name
 from tests.e2e.core.grpc_client import GRPCClient
+from tests.e2e.core.helpers import unique_name
 from tests.e2e.core.runner import env
 
 pytestmark = pytest.mark.regression

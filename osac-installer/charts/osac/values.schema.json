@@ -225,6 +225,34 @@
           },
           "additionalProperties": false
         },
+        "ignition": {
+          "type": "object",
+          "description": "Assisted Service discovery ignition HTTPS trust",
+          "properties": {
+            "trustIngressCA": {
+              "type": "boolean",
+              "description": "Trust the OpenShift-managed default-ingress-cert CA in addition to system roots",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "stall": {
+          "type": "object",
+          "description": "ClusterOrder provisioning stage stall thresholds",
+          "properties": {
+            "preparingInfrastructureThreshold": {"$ref": "#/$defs/positiveDuration"},
+            "controlPlaneStartingThreshold": {"$ref": "#/$defs/positiveDuration"},
+            "workersJoiningThreshold": {"$ref": "#/$defs/positiveDuration"},
+            "workersJoiningByInstanceType": {
+              "type": "object",
+              "description": "Per-BareMetalInstanceType worker-join threshold durations, keyed by the exact instance type name",
+              "propertyNames": {"minLength": 1, "maxLength": 253},
+              "additionalProperties": {"$ref": "#/$defs/positiveDuration"}
+            }
+          },
+          "additionalProperties": false
+        },
         "aap": {
           "type": "object",
           "description": "AAP connection settings for the operator",
@@ -609,6 +637,17 @@
             }
           },
           "additionalProperties": false
+        },
+        "eventPublisher": {
+          "type": "object",
+          "description": "Event publisher configuration",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Deploy the Kafka-backed event publisher (disable for API-only environments)",
+              "default": true
+            }
+          }
         },
         "certs": {
           "type": "object",
@@ -1141,11 +1180,12 @@
                   "properties": {
                     "NETWORK_CLASS": {
                       "type": "string",
-                      "description": "Supported values: netris, agentless_net. Legacy backends (esi, nico) are removed from the standard schema; direct AAP configuration via expertOverrides.aap accepts any free-form string.",
+                      "description": "Supported values: netris, agentless_net, ci (CUDN CaaS only). Legacy backends (esi, nico) are removed from the standard schema.",
                       "enum": [
                         "",
                         "netris",
-                        "agentless_net"
+                        "agentless_net",
+                        "ci"
                       ]
                     },
                     "NETWORK_STEPS_COLLECTION": {
@@ -2471,6 +2511,13 @@
     }
   },
   "$defs": {
+    "positiveDuration": {
+      "type": "string",
+      "description": "Positive Go time.Duration (e.g. 500ms, 15m, 1h30m). A zero or negative threshold is not useful for stall detection.",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[1-9][0-9]*(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*$"
+    },
     "globalNetworking": {
       "type": "object",
       "description": "High-level networking profile shared by the umbrella, operator, and AAP charts. Select fabricManager and/or k8sManager; Helm derives AAP backends and NetworkClass defaults.",
@@ -2478,7 +2525,7 @@
       "properties": {
         "fabricManager": {
           "type": "string",
-          "description": "Fabric manager profile. Supported: empty string, netris, or agentless_net. Reserved names cudn_net and vlan fail during Helm rendering.",
+          "description": "Fabric manager profile. Supported: empty string, netris, agentless_net (stub), or cudn_net for CaaS with ci.steps. vlan is reserved and fails Helm rendering.",
           "enum": [
             "",
             "netris",

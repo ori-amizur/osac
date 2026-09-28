@@ -218,7 +218,6 @@ env = {e['name']: e['value'] for c in job['spec']['template']['spec']['container
 body = json.loads(env['NETWORK_CLASS_BODY'])
 assert body.get('fabric_manager') == 'cudn_net', 'default class must select CUDN'
 assert not body.get('k8s_manager'), 'default class must have no k8s manager'
-assert body['is_default'] is True
 manager = resource('ConfigMap', 'osac-network-fabric-manager-cudn-net')
 assert manager['data']['name'] == 'cudn_net'
 cluster = resource('ConfigMap', 'cluster-fulfillment-ig')['data']

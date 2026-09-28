@@ -90,16 +90,6 @@ var _ = Describe("Default networking provisioning", func() {
 			tenantName,
 		)
 
-		// logVNState logs the current VN state from the FS DB for tracing reconciler progress.
-		logVNState := func() {
-			if resp, getErr := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: vnId}.Build()); getErr == nil {
-				vn := resp.GetObject()
-				GinkgoWriter.Printf("[vn-state] state=%v hub=%q finalizers=%v message=%q\n",
-					vn.GetStatus().GetState(), vn.GetStatus().GetHub(),
-					vn.GetMetadata().GetFinalizers(), vn.GetStatus().GetMessage())
-			}
-		}
-
 		By("Waiting for VN finalizer set in DB (pass 1: addFinalizer + Update done)")
 		Eventually(func(g Gomega) {
 			resp, err := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: vnId}.Build())

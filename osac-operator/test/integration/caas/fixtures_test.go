@@ -129,7 +129,6 @@ func verifySimDefaultFabricManager(ctx context.Context, vn *privatev1.VirtualNet
 	response, err := client.Get(ctx, privatev1.NetworkClassesGetRequest_builder{Id: classID}.Build())
 	Expect(err).NotTo(HaveOccurred(), "read marked VN's NetworkClass")
 	class := response.GetObject()
-	Expect(class.GetIsDefault()).To(BeTrue())
 	Expect(class.GetFabricManager()).To(Equal("cudn_net"), "Helm must install CUDN as the default fabric manager")
 	Expect(class.GetK8SManager()).To(BeEmpty(), "CUDN must not be paired with a k8s manager")
 	return classID

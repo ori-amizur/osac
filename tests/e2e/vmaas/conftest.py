@@ -83,7 +83,7 @@ def default_networking(grpc: GRPCClient, k8s_hub_client: K8sClient, test_run_id:
             "subnet_cr_name": subnet_cr_name,
         }
     finally:
-        print(f"\nCleaning up test networking resources: {test_run_id}")
+        print("\nCleaning up test networking resources")
         if subnet_id and subnet_cr_name:
             try:
                 print(f"Deleting Subnet {subnet_id}...")

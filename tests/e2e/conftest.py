@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core.caas_versions import ensure_caas_disk_image_version
 from tests.e2e.core.grpc_client import PRIVATE_API, GRPCClient
 from tests.e2e.core.k8s_client import K8sClient
 from tests.e2e.core.keycloak import get_jwt
@@ -38,7 +39,7 @@ def default_storage_tier() -> str:
 def _requires_serial_xdist(args: list[str]) -> bool:
     """True when CLI targets a suite that must run sequentially.
 
-    BMaaS serial/full and enablement suites require ``-n 0``.
+    CaaS, BMaaS serial/full, and enablement suites require ``-n 0``.
     Broader invocations like ``pytest tests/`` are not detected.
     """
     normalized = [str(a).replace("\\", "/").rstrip("/") for a in args]
@@ -50,6 +51,8 @@ def _requires_serial_xdist(args: list[str]) -> bool:
         or a.endswith("tests/e2e/bmaas")
         or a.endswith("/e2e/bmaas")
         or a == "e2e/bmaas"
+        or a.endswith("e2e/caas")
+        or "/e2e/caas/" in (a + "/")
         or a.endswith("e2e/enablement")
         or "/e2e/enablement/" in (a + "/")
         for a in normalized
@@ -169,6 +172,12 @@ def private_grpc(fulfillment_private_address: str, namespace: str, service_accou
     return GRPCClient(address=fulfillment_private_address, token=token)
 
 
+@pytest.fixture(scope="session")
+def caas_disk_image_version(private_grpc: GRPCClient) -> str:
+    """Explicit backed version for positive bare-metal CaaS scenarios."""
+    return ensure_caas_disk_image_version(private_grpc)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def ensure_tenants(ensure_k8s_only_network_class: None, private_grpc: GRPCClient) -> None:
     for name in ("tenant1", "tenant2"):
@@ -216,8 +225,10 @@ def setup_organization_memberships(ensure_tenants: None, keycloak_url: str, keyc
     org_users = {"tenant1": ["tenant1_user", "tenant1_admin"], "tenant2": ["tenant2_user", "tenant2_admin"]}
 
     for org_name, usernames in org_users.items():
+        admin_token = get_admin_token(keycloak_url=keycloak_url, username="admin", password=keycloak_admin_password)
         # Wait for the organization to be synced to Keycloak by the tenant controller
         org_id = wait_for_organization(keycloak_url=keycloak_url, admin_token=admin_token, org_name=org_name)
+        admin_token = get_admin_token(keycloak_url=keycloak_url, username="admin", password=keycloak_admin_password)
 
         # Add each user to the organization
         for username in usernames:

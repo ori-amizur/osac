@@ -429,13 +429,13 @@ func (t *task) addExplicitFields(ctx context.Context, spec *osacv1alpha1.Cluster
 		attachment := clusterSpec.GetNetworkAttachment()
 		orderAttachment := &osacv1alpha1.ClusterNetworkAttachment{}
 		if attachment.HasSubnet() {
-			orderAttachment.SubnetRef = controllers.RefKeyStr(attachment.GetSubnet())
+			orderAttachment.SubnetRef = attachment.GetSubnet().GetName()
 		}
 		sgRefs := attachment.GetSecurityGroups()
 		if len(sgRefs) > 0 {
 			sgNames := make([]string, 0, len(sgRefs))
 			for _, sg := range sgRefs {
-				sgNames = append(sgNames, controllers.RefKeyStr(sg))
+				sgNames = append(sgNames, sg.GetName())
 			}
 			orderAttachment.SecurityGroupRefs = sgNames
 		}

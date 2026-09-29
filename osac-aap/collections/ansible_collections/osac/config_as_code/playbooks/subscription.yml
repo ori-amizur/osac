@@ -73,4 +73,4 @@
           ansible.builtin.file:
             path: "{{ _license_manifest_tempfile.path }}"
             state: absent
-          when: _license_manifest_tempfile is defined
+          when: _license_manifest_tempfile.path is defined

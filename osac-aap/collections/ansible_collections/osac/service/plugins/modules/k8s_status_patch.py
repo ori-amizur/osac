@@ -94,6 +94,8 @@ def patch_status(api_client, api_version, kind, plural, namespace, name, body):
             "Custom resources require api_version in '<group>/<version>' form"
         )
     group, version = api_version.split("/", 1)
+    # This generated endpoint already sets application/merge-patch+json and
+    # rejects `_content_type` as an unsupported keyword argument.
     return client.CustomObjectsApi(api_client).patch_namespaced_custom_object_status(
         group=group,
         version=version,
@@ -101,7 +103,6 @@ def patch_status(api_client, api_version, kind, plural, namespace, name, body):
         plural=plural,
         name=name,
         body=body,
-        _content_type="application/merge-patch+json",
     )
 
 

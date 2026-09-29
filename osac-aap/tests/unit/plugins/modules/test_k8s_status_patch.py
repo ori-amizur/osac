@@ -99,5 +99,4 @@ def test_patches_custom_resource_status():
         plural="ipamclaims",
         name="subnet-example",
         body=body,
-        _content_type="application/merge-patch+json",
     )

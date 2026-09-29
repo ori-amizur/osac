@@ -440,7 +440,9 @@ def test_cluster_create(
         poll_until(
             fn=_bmis_removed_with_snapshot,
             until=lambda value: value is True,
-            retries=60,
+            # CAP-Agent unbinding has a 30-minute operator timeout; allow the
+            # CAPI hooks and BMaaS deprovision to finish after it starts.
+            retries=480,
             delay=5,
             description=f"{co_name} CaaS worker BMI removal",
         )

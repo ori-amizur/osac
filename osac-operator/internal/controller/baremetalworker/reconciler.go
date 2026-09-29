@@ -293,15 +293,19 @@ func (r *Reconciler) handleClusterDeletion(ctx context.Context, co *v1alpha1.Clu
 	workers := co.Status.Workers
 	changed := false
 	for i := range workers {
-		if workers[i].Kind != workerKindBMI {
+		if workers[i].Kind != workerKindBMI || workers[i].Phase == workerPhaseUnbinding || workers[i].Phase == workerPhaseDeleting {
 			continue
 		}
-		if workers[i].Phase != workerPhaseDeleting {
-			workers[i].Phase = workerPhaseDeleting
-			changed = true
-		}
+		workers[i].Phase = workerPhaseUnbinding
+		now := metav1.Now()
+		workers[i].LastFailureTime = &now
+		changed = true
 	}
 
+	// CAP-Agent must unbind the Agent and release its Machine pre-terminate hook
+	// before BMaaS tears down the host. Agents that never registered proceed to
+	// Deleting immediately; bound Agents are deleted only after unbinding.
+	workers = r.handleUnbindingWorkers(ctx, co, workers)
 	workers = r.handleDeletingWorkers(ctx, co, workers)
 
 	if changed || !workerSlicesEqual(co.Status.Workers, workers) {

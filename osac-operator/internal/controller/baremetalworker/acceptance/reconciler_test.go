@@ -20,6 +20,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -2937,6 +2938,41 @@ var _ = Describe("BareMetalWorkerReconciler cluster deletion", func() {
 		// The reconciler returning NotFound is the expected terminal state.
 		_, err = runReconcile("bmw-del-all")
 		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("waits for CAP-Agent to unbind a bound worker before deleting its Agent and BMI", func() {
+		provisionWorkers("bmw-del-bound", 1)
+		co := getClusterOrder("bmw-del-bound")
+		worker := co.Status.Workers[0]
+		Expect(sim.RegisterAgent(ctx, envsim.AgentOptions{
+			Name: "bmw-del-bound-agent", Namespace: testNamespace, MAC: "aa:bb:cc:dd:ee:01",
+			ClusterDeploymentName: co.Name,
+		})).To(Succeed())
+		agent := &unstructured.Unstructured{}
+		agent.SetGroupVersionKind(agentGVK)
+		key := types.NamespacedName{Name: "bmw-del-bound-agent", Namespace: testNamespace}
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		agent.SetLabels(map[string]string{
+			"osac.openshift.io/cluster-order": co.Name,
+			"osac.openshift.io/worker-name":   worker.Name,
+		})
+		Expect(k8sClient.Update(ctx, agent)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, agent) })
+
+		Expect(k8sClient.Delete(ctx, co)).To(Succeed())
+		_, err := runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fc.DeleteCalls()).To(BeEmpty(), "BMI must remain until CAP-Agent unbinds the worker")
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed(), "OSAC must not delete the bound Agent")
+		co = getClusterOrder(co.Name)
+		Expect(co.Status.Workers[0].Phase).To(Equal("Unbinding"))
+		Expect(controllerutil.ContainsFinalizer(co, bmWorkerFinalizer)).To(BeTrue())
+
+		Expect(sim.UnbindAgent(ctx, agent.GetName(), testNamespace)).To(Succeed())
+		_, err = runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fc.DeleteCalls()).To(ContainElement(worker.ResourceID))
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, agent))).To(BeTrue())
 	})
 
 	It("holds the finalizer while workers are still being deleted", func() {

@@ -1,3 +1,41 @@
+# Leave the HostedCluster, guest credentials and ManagedCluster in place while
+# CAPI drains Machines and CAP-Agent unbinds their Agents. The baremetalworker
+# controller only deletes each worker BMI after its Agent has unbound.
+- name: Delete NodePool resources
+  kubernetes.core.k8s:
+    state: absent
+    api_version: hypershift.openshift.io/v1beta1
+    kind: NodePool
+    namespace: "{{ hosted_cluster_namespace }}"
+    name: "nodepool-{{ hosted_cluster_name }}-{{ item.bareMetal.instanceType }}"
+  loop: "{{ hosted_cluster_node_requests }}"
+  loop_control:
+    label: "Delete NodePool nodepool-{{ hosted_cluster_name }}-{{ item.bareMetal.instanceType }}"
+
+- name: Wait for NodePool resources to finish deleting
+  kubernetes.core.k8s_info:
+    api_version: hypershift.openshift.io/v1beta1
+    kind: NodePool
+    namespace: "{{ hosted_cluster_namespace }}"
+  register: remaining_nodepools
+  until: remaining_nodepools.resources | length == 0
+  retries: 210
+  delay: 10
+
+- name: Wait for baremetalworker to finish deleting workers
+  kubernetes.core.k8s_info:
+    api_version: osac.openshift.io/v1alpha1
+    kind: ClusterOrder
+    namespace: "{{ cluster_order.metadata.namespace }}"
+    name: "{{ hosted_cluster_name }}"
+  register: worker_clusterorder
+  until: >-
+    (worker_clusterorder.resources | length == 0) or
+    ('osac.openshift.io/baremetalworker-finalizer' not in
+     (worker_clusterorder.resources[0].metadata.finalizers | default([])))
+  retries: 210
+  delay: 10
+
 - name: Delete Secret resource containing pull-secret
   kubernetes.core.k8s:
     state: absent
@@ -30,17 +68,6 @@
     kind: HostedCluster
     namespace: "{{ hosted_cluster_namespace }}"
     name: "{{ hosted_cluster_name }}"
-
-- name: Delete NodePool resources
-  kubernetes.core.k8s:
-    state: absent
-    api_version: hypershift.openshift.io/v1beta1
-    kind: NodePool
-    namespace: "{{ hosted_cluster_namespace }}"
-    name: "nodepool-{{ hosted_cluster_name }}-{{ item.bareMetal.instanceType }}"
-  loop: "{{ hosted_cluster_node_requests }}"
-  loop_control:
-    label: "Delete NodePool nodepool-{{ hosted_cluster_name }}-{{ item.bareMetal.instanceType }}"
 
 # Wait for the HostedCluster to delete before we proceed; this ensures that we
 # don't prematurely destroy infrastructure resources required for the clean

@@ -77,8 +77,28 @@ def test_snapshot_reports_blockers_without_dumping_resource_data(monkeypatch: py
                         "annotations": {
                             "pre-terminate.delete.hook.machine.cluster.x-k8s.io/agentmachine": "secret-value"
                         },
-                    }
+                    },
+                    "status": {
+                        "conditions": [
+                            {
+                                "type": "Deleting",
+                                "status": "True",
+                                "reason": "WaitingForPreTerminateHook",
+                                "message": "secret-value",
+                            }
+                        ]
+                    },
                 }
+            ],
+            "agents.agent-install.openshift.io": [
+                {
+                    "metadata": {"labels": {"infraenvs.agent-install.openshift.io": "order-x-infraenv"}},
+                    "status": {"debugInfo": {"state": "installed", "message": "secret-value"}},
+                },
+                {
+                    "metadata": {"labels": {"infraenvs.agent-install.openshift.io": "order-x-infraenv"}},
+                    "status": {"debugInfo": {"state": "secret-value"}},
+                },
             ],
             "agentclusters.capi-provider.agent-install.openshift.io": [
                 {
@@ -101,12 +121,37 @@ def test_snapshot_reports_blockers_without_dumping_resource_data(monkeypatch: py
     assert "capi-cluster count=1 terminating=0" in output
     assert "machineset count=1 terminating=0" in output
     assert "machine count=1 terminating=1 preterminate_hook=1" in output
+    assert "machine deletion condition=Deleting status=True reason=WaitingForPreTerminateHook" in output
+    assert "agent state=installed count=1" in output
+    assert "agent state=omitted count=1" in output
     assert "agentcluster count=1 deprovision_finalizer=1" in output
     assert "infraenv present=True" in output
     assert "namespace control-plane present=True terminating=True" in output
     assert "secret-value" not in output
     assert all("patch" not in args and "delete" not in args for args in calls)
     assert any("osac-e2e-ci-order-x-order-x" in args for args in calls)
+
+
+def test_snapshot_omits_untrusted_agent_state_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(*args: str, timeout: int = 300) -> tuple[str, int]:
+        resource = args[args.index("get") + 1]
+        if resource == "agents.agent-install.openshift.io":
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {"labels": {"infraenvs.agent-install.openshift.io": "order-x-infraenv"}},
+                            "status": {"debugInfo": {"state": ["secret-value"]}},
+                        }
+                    ]
+                }
+            ), 0
+        return json.dumps({"items": []}), 0
+
+    monkeypatch.setattr(deletion_diagnostics, "run_unchecked", fake_run)
+    lines = deletion_diagnostics.snapshot_cluster_deletion(K8sClient(namespace="osac-e2e-ci"), "order-x")
+    assert "agent state=omitted count=1" in lines
+    assert "secret-value" not in "\n".join(lines)
 
 
 def test_snapshot_suppresses_kubectl_errors_and_untrusted_output(monkeypatch: pytest.MonkeyPatch) -> None:

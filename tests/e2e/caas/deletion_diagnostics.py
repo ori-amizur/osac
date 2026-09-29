@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections import Counter
 from typing import Any
 
 from tests.e2e.core.k8s_client import K8sClient
@@ -18,6 +19,27 @@ _HYPERSHIFT_FINALIZER = "hypershift.openshift.io/finalizer"
 _AGENTCLUSTER_FINALIZER = "agentclustercapi-provider.agent-install.openshift.io/deprovision"
 _MACHINE_HOOK = "pre-terminate.delete.hook.machine.cluster.x-k8s.io/agentmachine"
 _SAFE_CONDITION_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
+_AGENT_STATES = frozenset(
+    {
+        "installed",
+        "unbinding-pending-user-action",
+        "known-unbound",
+        "discovering-unbound",
+        "disconnected-unbound",
+        "insufficient-unbound",
+        "disabled-unbound",
+        "error",
+    }
+)
+_MACHINE_DELETE_REASONS = frozenset(
+    {
+        "WaitingForPreTerminateHook",
+        "WaitingForPreDrainHook",
+        "WaitingForNodeDrain",
+        "WaitingForVolumeDetach",
+        "Deleting",
+    }
+)
 
 
 def _safe_condition_token(value: object) -> str:
@@ -132,6 +154,29 @@ def snapshot_cluster_deletion(k8s: K8sClient, name: str) -> list[str]:
             f"machine count={len(machines)} terminating={sum(_terminating(m) for m in machines)} "
             f"preterminate_hook={sum(_MACHINE_HOOK in m.get('metadata', {}).get('annotations', {}) for m in machines)}"
         )
+        for machine in machines[:8]:
+            conditions = machine.get("status", {}).get("conditions", [])
+            deleting = next((c for c in conditions if isinstance(c, dict) and c.get("type") == "Deleting"), None)
+            if deleting is not None:
+                state = deleting.get("status")
+                state = state if state in ("True", "False", "Unknown") else "omitted"
+                reason = deleting.get("reason")
+                reason = reason if isinstance(reason, str) and reason in _MACHINE_DELETE_REASONS else "omitted"
+                lines.append(f"machine deletion condition=Deleting status={state} reason={reason}")
+
+    worker_agents = _items(k8s, "agents.agent-install.openshift.io", ns)
+    if worker_agents is None:
+        lines.append("agent unavailable")
+    else:
+        states = Counter()
+        for agent in worker_agents:
+            labels = agent.get("metadata", {}).get("labels") or {}
+            if labels.get("infraenvs.agent-install.openshift.io") != f"{name}-infraenv":
+                continue
+            state = agent.get("status", {}).get("debugInfo", {}).get("state")
+            states[state if isinstance(state, str) and state in _AGENT_STATES else "omitted"] += 1
+        for state, count in sorted(states.items()):
+            lines.append(f"agent state={state} count={count}")
 
     agents = _items(k8s, "agentclusters.capi-provider.agent-install.openshift.io", cp_ns)
     if agents is None:

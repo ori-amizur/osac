@@ -4,10 +4,12 @@ import contextlib
 import logging
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 import pytest
 
+from tests.e2e.caas.deletion_diagnostics import snapshot_cluster_deletion
 from tests.e2e.core.grpc_client import GRPCClient
 from tests.e2e.core.helpers import (
     unique_name,
@@ -414,22 +416,52 @@ def test_cluster_create(
         wait_for_cluster_deleting(k8s=k8s_hub_client, name=co_name)
         wait_for_cluster_grpc_deleting_or_archived(grpc=grpc, uuid=uuid)
 
+        # Temporary diagnostic only: sample the unmodified deletion path before
+        # wait_for_cluster_deletion applies its existing HyperShift workarounds.
+        last_snapshot = time.monotonic() - 60
+
+        def _log_deletion_snapshot() -> None:
+            nonlocal last_snapshot
+            last_snapshot = time.monotonic()
+            try:
+                for line in snapshot_cluster_deletion(k8s_hub_client, co_name):
+                    logger.info("CaaS deletion snapshot: %s", line)
+            except Exception:  # Diagnostics must not change test outcomes.
+                logger.warning("CaaS deletion snapshot unavailable")
+
+        def _snapshot_if_due() -> None:
+            if time.monotonic() - last_snapshot >= 60:
+                _log_deletion_snapshot()
+
+        def _bmis_removed_with_snapshot() -> bool:
+            _snapshot_if_due()
+            return run_owned_bmi_ids.isdisjoint(set(grpc.list_baremetal_instance_ids(filter_expr=bmi_filter)))
+
         poll_until(
-            fn=lambda: run_owned_bmi_ids.isdisjoint(set(grpc.list_baremetal_instance_ids(filter_expr=bmi_filter))),
+            fn=_bmis_removed_with_snapshot,
             until=lambda value: value is True,
             retries=60,
             delay=5,
             description=f"{co_name} CaaS worker BMI removal",
         )
         assert infra_env_name is not None
-        poll_until(
-            fn=lambda: k8s_hub_client.is_absent(resource="infraenv.agent-install.openshift.io", name=infra_env_name),
-            until=lambda value: value is True,
-            retries=60,
-            delay=5,
-            description=f"{infra_env_name} InfraEnv removal",
-            retry_on_error=True,
-        )
+
+        def _infraenv_absent_with_snapshot() -> bool:
+            _snapshot_if_due()
+            return k8s_hub_client.is_absent(resource="infraenv.agent-install.openshift.io", name=infra_env_name)
+
+        try:
+            poll_until(
+                fn=_infraenv_absent_with_snapshot,
+                until=lambda value: value is True,
+                retries=60,
+                delay=5,
+                description=f"{infra_env_name} InfraEnv removal",
+                retry_on_error=True,
+            )
+        except TimeoutError:
+            _log_deletion_snapshot()
+            raise
 
         wait_for_cluster_deletion(k8s=k8s_hub_client, name=co_name)
         assert not k8s_hub_client.is_present(resource="clusterorder", name=co_name)

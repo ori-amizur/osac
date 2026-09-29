@@ -271,6 +271,7 @@ var _ = Describe("Public clusters", func() {
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
 					Template:          publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
+					NodeSets:          testClusterNodeSets(bmitName, 3),
 					NetworkAttachment: network.clusterAttachment(),
 				}.Build(),
 			}.Build(),

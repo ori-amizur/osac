@@ -9,6 +9,12 @@
     bare_metal_pool_namespace: "{{ bare_metal_pool.metadata.namespace }}"
     template_id: "{{ bare_metal_pool.metadata.annotations['osac.openshift.io/templateID'] }}"
 
+  pre_tasks:
+    - name: Materialize OpenStack clouds configuration
+      ansible.builtin.include_role:
+        name: osac.service.common
+        tasks_from: materialize_openstack_clouds.yaml
+
   tasks:
     - name: Call the selected bare metal pool template for deletion
       when: template_id != "" and template_id != "noop"

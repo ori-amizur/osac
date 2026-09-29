@@ -6,6 +6,43 @@
   vars:
     bcm_api_endpoint: "{{ bcm_api_url }}/json"
 
+  pre_tasks:
+    - name: Validate that the injected BCM certificate and key are provided together
+      ansible.builtin.assert:
+        that:
+          - (lookup('env', 'BCM_CERTIFICATE_PEM') | length > 0) == (lookup('env', 'BCM_PRIVATE_KEY_PEM') | length > 0)
+        fail_msg: BCM certificate and private key must both be configured.
+      no_log: true
+
+    - name: Create private directory for injected BCM credentials
+      ansible.builtin.file:
+        path: "/tmp/osac-bcm-certs-{{ lookup('env', 'POD_UID') | default('local', true) }}"
+        state: directory
+        mode: "0700"
+      when: lookup('env', 'BCM_CERTIFICATE_PEM') | length > 0
+
+    - name: Write injected BCM client certificate
+      ansible.builtin.copy:
+        content: "{{ lookup('env', 'BCM_CERTIFICATE_PEM') }}"
+        dest: "/tmp/osac-bcm-certs-{{ lookup('env', 'POD_UID') | default('local', true) }}/tls.crt"
+        mode: "0600"
+      no_log: true
+      when: lookup('env', 'BCM_CERTIFICATE_PEM') | length > 0
+
+    - name: Write injected BCM client private key
+      ansible.builtin.copy:
+        content: "{{ lookup('env', 'BCM_PRIVATE_KEY_PEM') }}"
+        dest: "/tmp/osac-bcm-certs-{{ lookup('env', 'POD_UID') | default('local', true) }}/tls.key"
+        mode: "0600"
+      no_log: true
+      when: lookup('env', 'BCM_PRIVATE_KEY_PEM') | length > 0
+
+    - name: Use materialized BCM client credentials
+      ansible.builtin.set_fact:
+        bcm_cert_path: "/tmp/osac-bcm-certs-{{ lookup('env', 'POD_UID') | default('local', true) }}/tls.crt"
+        bcm_key_path: "/tmp/osac-bcm-certs-{{ lookup('env', 'POD_UID') | default('local', true) }}/tls.key"
+      when: lookup('env', 'BCM_CERTIFICATE_PEM') | length > 0
+
   tasks:
     # =========================================================================
     # Phase 1: Fetch inventory from BCM API

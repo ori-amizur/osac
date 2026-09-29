@@ -34,6 +34,8 @@ where applicable):
 | `AAP_PROJECT_ARCHIVE_URI` | Optional archive URL instead of git (e.g. tarball) | — |
 | `AAP_EE_IMAGE` | Registry URL of the execution environment image | `ghcr.io/osac/osac-aap:latest` |
 | `LICENSE_MANIFEST_PATH` | Path to the license manifest file to register the AAP instance ([Red Hat account](https://access.redhat.com/management/subscription_allocations)) | `/var/secrets/config-as-code-manifest/license.zip` |
+| `LICENSE_MANIFEST_SECRET_NAME` | Kubernetes Secret read by config-as-code jobs when the manifest is not mounted | `config-as-code-manifest-ig` |
+| `LICENSE_MANIFEST_SECRET_KEY` | Key in that Secret containing the license ZIP | `license.zip` |
 | `REMOTE_CLUSTER_KUBECONFIG_SECRET_NAME` | Name of the secret holding the kubeconfig for the remote cluster (cluster fulfillment only) | — |
 | `REMOTE_CLUSTER_KUBECONFIG_SECRET_KEY` | Key within that secret for the kubeconfig file | `kubeconfig` |
 | `OSAC_PUBLISH_TEMPLATES_ENABLED` | Whether the periodic **publish-templates** schedule is enabled in Controller (`true`/`false`) | `true` |
@@ -45,9 +47,20 @@ The content of license manifest file must be set in a secret named
 `config-as-code-manifest-ig` as `license.zip` in the namespace where AAP is
 deployed.
 
+The bootstrap Job mounts this Secret directly. Periodic config-as-code jobs
+cannot mount Kubernetes Secrets in an AAP container-group `pod_spec_override`,
+so they read only this Secret through the `osac-aap-config-as-code` ServiceAccount
+(a Role restricted to `get` on the configured Secret), decode the manifest into
+a temporary private file, and remove that file after licensing. Remote cluster
+kubeconfig, BCM certificate/key, and OpenStack clouds configuration values are
+likewise injected through Secret-backed environment variables and materialized
+to mode-0600 temporary files only when the relevant playbook runs.
+
 Note: since the container group is configured to run in the same namespace as
 the AAP instance, the admin credentials to log against AAP are injected into the
-pod.
+pod. Kubernetes automatically mounts the selected ServiceAccount token; AAP
+rejects manually projected service-account tokens and Secret volumes in
+container-group PodSpec overrides.
 
 ### Cluster fulfillment environment variables
 

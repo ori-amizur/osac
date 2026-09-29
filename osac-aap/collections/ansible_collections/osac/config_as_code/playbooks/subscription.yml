@@ -7,10 +7,70 @@
     - vars/config.yml
 
   tasks:
-    - name: Enable AAP license
-      ansible.controller.license:
-        controller_host: "{{ aap_hostname }}"
-        controller_username: "{{ aap_username }}"
-        controller_password: "{{ aap_password }}"
-        validate_certs: "{{ aap_validate_certs }}"
-        manifest: "{{ license_manifest_path }}"
+    - name: Find a license manifest already mounted by the bootstrap Job
+      ansible.builtin.stat:
+        path: "{{ license_manifest_path }}"
+      register: _license_manifest_stat
+
+    - name: Acquire the license manifest if it is not already mounted
+      when: not _license_manifest_stat.stat.exists
+      block:
+        - name: Read the license Secret using the narrowly scoped in-cluster identity
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Secret
+            name: "{{ license_manifest_secret_name }}"
+            namespace: "{{ current_namespace }}"
+          register: _license_manifest_secret
+          no_log: true
+
+        - name: Verify the license Secret contains the configured manifest key
+          ansible.builtin.assert:
+            that:
+              - _license_manifest_secret.resources | length == 1
+              - license_manifest_secret_key in _license_manifest_secret.resources[0].data
+            fail_msg: >-
+              The configured AAP license Secret or manifest key was not found.
+
+        - name: Allocate a private temporary license manifest file
+          ansible.builtin.tempfile:
+            state: file
+            suffix: .zip
+          register: _license_manifest_tempfile
+
+        - name: Decode the Kubernetes Secret data into the temporary manifest file
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "import base64, pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes(base64.b64decode(sys.stdin.buffer.read()))"
+              - "{{ _license_manifest_tempfile.path }}"
+            stdin: "{{ _license_manifest_secret.resources[0].data[license_manifest_secret_key] }}"
+            stdin_add_newline: false
+          no_log: true
+          changed_when: true
+
+        - name: Use the temporary license manifest file
+          ansible.builtin.set_fact:
+            _license_manifest_path_for_activation: "{{ _license_manifest_tempfile.path }}"
+
+    - name: Use the mounted license manifest when available
+      ansible.builtin.set_fact:
+        _license_manifest_path_for_activation: "{{ license_manifest_path }}"
+      when: _license_manifest_stat.stat.exists
+
+    - name: Activate AAP with the license manifest
+      block:
+        - name: Enable AAP license
+          ansible.controller.license:
+            controller_host: "{{ aap_hostname }}"
+            controller_username: "{{ aap_username }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: "{{ aap_validate_certs }}"
+            manifest: "{{ _license_manifest_path_for_activation }}"
+      always:
+        - name: Remove the temporary license manifest
+          ansible.builtin.file:
+            path: "{{ _license_manifest_tempfile.path }}"
+            state: absent
+          when: _license_manifest_tempfile is defined

@@ -1,0 +1,8 @@
+---
+- name: Materialize OpenStack cloud configuration from its injected Secret value
+  ansible.builtin.copy:
+    content: "{{ lookup('env', 'OSAC_OS_CLOUDS_YAML') }}"
+    dest: /tmp/osac-clouds.yaml
+    mode: "0600"
+  no_log: true
+  when: lookup('env', 'OSAC_OS_CLOUDS_YAML') | length > 0

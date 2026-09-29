@@ -7,6 +7,11 @@
     bare_metal_instance: "{{ osac_job_vars.resource }}"
 
   pre_tasks:
+    - name: Materialize OpenStack clouds configuration
+      ansible.builtin.include_role:
+        name: osac.service.common
+        tasks_from: materialize_openstack_clouds.yaml
+
     - name: Display bare metal instance information
       ansible.builtin.debug:
         msg:

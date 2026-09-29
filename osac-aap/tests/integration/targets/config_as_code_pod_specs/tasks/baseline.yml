@@ -51,6 +51,16 @@
           - "_pod_spec is search('storage-operations-ig')"
         fail_msg: Expected storage-operations-ig references in pod spec
 
+    - name: Assert compute-instance pod spec passes AAP's volume restrictions
+      ansible.builtin.assert:
+        that:
+          - "_pod_spec is not search('secretName:')"
+          - "_pod_spec is not search('serviceAccountToken:')"
+          - "_pod_spec is not search('automountServiceAccountToken: true')"
+        fail_msg: >-
+          AAP instance-group PodSpecs cannot mount Secrets or project a service
+          account token directly; Kubernetes must perform the default token mount.
+
 - name: Compute-instance pod spec with remote kubeconfig
   hosts: localhost
   gather_facts: false
@@ -66,9 +76,76 @@
       ansible.builtin.set_fact:
         _pod_spec_remote: "{{ lookup('ansible.builtin.template', _template_path) }}"
 
-    - name: Assert remote kubeconfig volume is present when configured
+    - name: Assert remote kubeconfig is injected through an allowed Secret key reference
       ansible.builtin.assert:
         that:
-          - "_pod_spec_remote is search('remote-cluster-kubeconfig')"
-          - "_pod_spec_remote is search('OSAC_REMOTE_CLUSTER_KUBECONFIG')"
-        fail_msg: Expected remote cluster kubeconfig mount when secret name is set
+          - "_pod_spec_remote is search('OSAC_REMOTE_CLUSTER_KUBECONFIG_CONTENT')"
+          - "_pod_spec_remote is search('secretKeyRef:')"
+          - "_pod_spec_remote is not search('secretName:')"
+          - "_pod_spec_remote is not search('serviceAccountToken:')"
+        fail_msg: Expected remote kubeconfig Secret keyRef without a forbidden PodSpec volume
+
+- name: Networking pod spec with remote kubeconfig
+  hosts: localhost
+  gather_facts: false
+  vars:
+    aap_ee_image: ghcr.io/osac-project/osac-aap:latest
+    remote_cluster_kubeconfig_secret_name: remote-cluster-kubeconfig
+    remote_cluster_kubeconfig_secret_key: kubeconfig
+    _template_path: >-
+      {{ playbook_dir }}/../../../../../collections/ansible_collections/osac/config_as_code/roles/aap/templates/networking-operations-ig.j2
+
+  tasks:
+    - name: Render networking-operations pod spec
+      ansible.builtin.set_fact:
+        _pod_spec: "{{ lookup('ansible.builtin.template', _template_path) }}"
+
+    - name: Assert networking pod spec has no AAP-rejected volume overrides
+      ansible.builtin.assert:
+        that:
+          - "_pod_spec is search('OSAC_REMOTE_CLUSTER_KUBECONFIG_CONTENT')"
+          - "_pod_spec is not search('secretName:')"
+          - "_pod_spec is not search('serviceAccountToken:')"
+          - "_pod_spec is not search('automountServiceAccountToken: true')"
+        fail_msg: Networking pod spec contains a volume rejected by AAP.
+
+- name: Storage pod spec
+  hosts: localhost
+  gather_facts: false
+  vars:
+    aap_ee_image: ghcr.io/osac-project/osac-aap:latest
+    _template_path: >-
+      {{ playbook_dir }}/../../../../../collections/ansible_collections/osac/config_as_code/roles/aap/templates/storage-operations-ig.j2
+
+  tasks:
+    - name: Render storage-operations pod spec
+      ansible.builtin.set_fact:
+        _pod_spec: "{{ lookup('ansible.builtin.template', _template_path) }}"
+
+    - name: Assert storage pod spec has no AAP-rejected volume overrides
+      ansible.builtin.assert:
+        that:
+          - "_pod_spec is not search('secretName:')"
+          - "_pod_spec is not search('serviceAccountToken:')"
+          - "_pod_spec is not search('automountServiceAccountToken: true')"
+        fail_msg: Storage pod spec contains a volume rejected by AAP.
+
+- name: Static AAP instance-group pod specs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _controller_vars_path: >-
+      {{ playbook_dir }}/../../../../../collections/ansible_collections/osac/config_as_code/roles/aap/vars/controller.yml
+
+  tasks:
+    - name: Read static instance-group definitions
+      ansible.builtin.set_fact:
+        _controller_vars: "{{ lookup('ansible.builtin.file', _controller_vars_path) }}"
+
+    - name: Assert static instance-group PodSpecs avoid AAP-rejected volume sources
+      ansible.builtin.assert:
+        that:
+          - "_controller_vars is not search('secretName:')"
+          - "_controller_vars is not search('serviceAccountToken:')"
+          - "_controller_vars is not search('automountServiceAccountToken: true')"
+        fail_msg: A static AAP instance-group PodSpec contains a rejected volume source.

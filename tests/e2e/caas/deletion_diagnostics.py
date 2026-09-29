@@ -7,6 +7,7 @@ exception text: CI logs are uploaded as artifacts.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import Any
 
@@ -16,6 +17,15 @@ from tests.e2e.core.runner import run_unchecked
 _HYPERSHIFT_FINALIZER = "hypershift.openshift.io/finalizer"
 _AGENTCLUSTER_FINALIZER = "agentclustercapi-provider.agent-install.openshift.io/deprovision"
 _MACHINE_HOOK = "pre-terminate.delete.hook.machine.cluster.x-k8s.io/agentmachine"
+_SAFE_CONDITION_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
+
+
+def _safe_condition_token(value: object) -> str:
+    return value if isinstance(value, str) and _SAFE_CONDITION_TOKEN.fullmatch(value) else "omitted"
+
+
+def _safe_generation(value: object) -> str:
+    return str(value) if type(value) is int and value >= 0 else "unknown"
 
 
 def _read(k8s: K8sClient, resource: str, namespace: str, name: str | None = None) -> dict[str, Any] | None:
@@ -95,6 +105,24 @@ def snapshot_cluster_deletion(k8s: K8sClient, name: str) -> list[str]:
                 f"{label} count={len(resources)} terminating={sum(_terminating(item) for item in resources)} "
                 f"finalizers={sum(len(item.get('metadata', {}).get('finalizers') or []) for item in resources)}"
             )
+            if label == "hostedcontrolplane":
+                for hcp in resources:
+                    if hcp.get("metadata", {}).get("name") != name:
+                        continue
+                    generation = _safe_generation(hcp.get("metadata", {}).get("generation"))
+                    conditions = hcp.get("status", {}).get("conditions", [])
+                    for condition in conditions[:32] if isinstance(conditions, list) else []:
+                        if not isinstance(condition, dict):
+                            continue
+                        condition_type = _safe_condition_token(condition.get("type"))
+                        state = condition.get("status")
+                        state = state if state in ("True", "False", "Unknown") else "omitted"
+                        reason = _safe_condition_token(condition.get("reason"))
+                        observed = _safe_generation(condition.get("observedGeneration"))
+                        lines.append(
+                            f"hcp generation={generation} condition={condition_type} "
+                            f"status={state} reason={reason} observed={observed}"
+                        )
 
     machines = _items(k8s, "machines.cluster.x-k8s.io", cp_ns)
     if machines is None:

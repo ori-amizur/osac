@@ -46,7 +46,26 @@ def test_snapshot_reports_blockers_without_dumping_resource_data(monkeypatch: py
                 {"metadata": {"name": "nodepool-order-x-worker", "deletionTimestamp": "2026-01-01T00:00:00Z"}}
             ],
             "hostedcontrolplanes.hypershift.openshift.io": [
-                {"metadata": {"name": "order-x", "deletionTimestamp": "2026-01-01T00:00:00Z"}}
+                {
+                    "metadata": {"name": "order-x", "deletionTimestamp": "2026-01-01T00:00:00Z", "generation": 5},
+                    "status": {
+                        "conditions": [
+                            {
+                                "type": "Available",
+                                "status": "False",
+                                "reason": "WaitingForPods",
+                                "message": "secret-value",
+                                "observedGeneration": 4,
+                            },
+                            {
+                                "type": "Degraded",
+                                "status": "True",
+                                "reason": "secret-value with spaces",
+                                "message": "secret-value",
+                            },
+                        ]
+                    },
+                }
             ],
             "clusters.cluster.x-k8s.io": [{"metadata": {"name": "capi-x"}}],
             "machinesets.cluster.x-k8s.io": [{"metadata": {"name": "machineset-x"}}],
@@ -77,6 +96,8 @@ def test_snapshot_reports_blockers_without_dumping_resource_data(monkeypatch: py
     output = "\n".join(lines)
     assert "hostedcluster present=True terminating=True finalizers=1 hypershift_finalizer=True" in output
     assert "hostedcontrolplane count=1 terminating=1" in output
+    assert "hcp generation=5 condition=Available status=False reason=WaitingForPods observed=4" in output
+    assert "hcp generation=5 condition=Degraded status=True reason=omitted" in output
     assert "capi-cluster count=1 terminating=0" in output
     assert "machineset count=1 terminating=0" in output
     assert "machine count=1 terminating=1 preterminate_hook=1" in output

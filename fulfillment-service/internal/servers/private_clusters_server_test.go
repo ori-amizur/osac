@@ -88,7 +88,11 @@ func seedAddOnOperatorObject(ctx context.Context, object *privatev1.AddOnOperato
 	Expect(err).ToNot(HaveOccurred())
 }
 
-func createClusterWithAddOnOperators(ctx context.Context, server *PrivateClustersServer,
+type clusterCreator interface {
+	Create(context.Context, *privatev1.ClustersCreateRequest) (*privatev1.ClustersCreateResponse, error)
+}
+
+func createClusterWithAddOnOperators(ctx context.Context, server clusterCreator,
 	operators []*privatev1.AddOnOperatorReference) (*privatev1.Cluster, error) {
 	response, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
 		Object: privatev1.Cluster_builder{

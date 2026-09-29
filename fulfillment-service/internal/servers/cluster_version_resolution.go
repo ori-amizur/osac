@@ -98,14 +98,14 @@ func buildClusterVersionReference(cv *privatev1.ClusterVersion) *privatev1.Clust
 }
 
 // resolveDefaultClusterVersion looks up the system default ClusterVersion (spec.is_default == true),
-// validates it is usable, and returns a ClusterVersionReference. When disk images are required,
-// defaults without a non-empty DiskImage reference are excluded before selection.
+// validates it is usable, and returns it. When disk images are required, defaults without a non-empty
+// DiskImage reference are excluded before selection.
 func resolveDefaultClusterVersion(
 	ctx context.Context,
 	logger *slog.Logger,
 	clusterVersionsDao *dao.GenericDAO[*privatev1.ClusterVersion],
 	requireDiskImage bool,
-) (*privatev1.ClusterVersionReference, error) {
+) (*privatev1.ClusterVersion, error) {
 	filter := "this.spec.is_default == true && !has(this.metadata.deletion_timestamp)"
 	if requireDiskImage {
 		filter += ` && has(this.spec.disk_image) && (this.spec.disk_image.id != "" || this.spec.disk_image.name != "")`
@@ -139,5 +139,5 @@ func resolveDefaultClusterVersion(
 	if err := validateResolvedClusterVersion(cv, versionName, ""); err != nil {
 		return nil, err
 	}
-	return buildClusterVersionReference(cv), nil
+	return cv, nil
 }

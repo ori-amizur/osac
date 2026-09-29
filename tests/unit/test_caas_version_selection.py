@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import subprocess
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -36,9 +35,7 @@ def test_reference_fixture_does_not_select_first_unbacked_version(monkeypatch: p
     )
 
 
-def test_light_deletion_create_supplies_backed_version(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    ssh_key = Path(tmp_path) / "id.pub"
-    ssh_key.write_text("ssh-ed25519 test")
+def test_light_deletion_create_supplies_backed_version(monkeypatch: pytest.MonkeyPatch) -> None:
     cli = Mock()
     cli.create_cluster.return_value = "cluster-id"
     private = Mock()
@@ -53,8 +50,8 @@ def test_light_deletion_create_supplies_backed_version(monkeypatch: pytest.Monke
         private_grpc=private,
         k8s_hub_client=Mock(),
         cluster_template="template",
-        pull_secret_path="/tmp/unused-secret",
-        ssh_public_key_path=str(ssh_key),
+        pull_secret_name="test-pull-secret",
+        ssh_public_key_path="/tmp/id.pub",
     )
     scenario = deletion.test_cluster_delete_reports_deleting_state_without_provisioning
     if "caas_disk_image_version" in inspect.signature(scenario).parameters:
@@ -62,6 +59,8 @@ def test_light_deletion_create_supplies_backed_version(monkeypatch: pytest.Monke
     with pytest.raises(StopAfterCreate):
         deletion.test_cluster_delete_reports_deleting_state_without_provisioning(**params)
     assert cli.create_cluster.call_args.kwargs["version"] == "4-22-0-e2e-references"
+    assert cli.create_cluster.call_args.kwargs["pull_secret"] == "test-pull-secret"
+    assert cli.create_cluster.call_args.kwargs["ssh_public_key_file"] == "/tmp/id.pub"
 
 
 def test_configured_version_without_disk_image_fails_early(monkeypatch: pytest.MonkeyPatch) -> None:

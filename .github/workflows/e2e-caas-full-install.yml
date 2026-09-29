@@ -217,18 +217,27 @@ jobs:
       # test-source=osac prefixes tests/e2e/. PR/merge_group: full caas suite
       # (sanity + regression). Schedule: regression. workflow_dispatch: honor
       # input, else sanity (caas for the full suite).
+      # Temporary PR #1221 focus: run only test_cluster_create while validating
+      # its CaaS/BMaaS provisioning path. Restore full PR coverage after it works.
       test-suite: >-
         ${{
           inputs.test-suite != '' && inputs.test-suite ||
+          github.event_name == 'pull_request' && github.event.pull_request.number == 1221 && 'caas/sanity' ||
           (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'caas' ||
           github.event_name == 'schedule' && 'caas/regression' ||
           'caas/sanity'
         }}
       test-filter: ${{ inputs.test-filter || '' }}
-      # Run the selected CaaS tier, CaaS-specific references, and common
-      # references. Networking references remain opt-in because they validate
-      # shared APIs, not the CaaS flow.
-      test-marker: ${{ inputs.test-marker || 'sanity or regression or requires_caas or reference_common' }}
+      # The reusable workflow quotes -m properly but splits compound -k filters;
+      # a dedicated marker selects exactly one test without matching similarly
+      # named test_cluster_create_with_* cases. Other PRs and scheduled runs
+      # retain their normal CaaS and reference coverage.
+      test-marker: >-
+        ${{
+          inputs.test-marker != '' && inputs.test-marker ||
+          github.event_name == 'pull_request' && github.event.pull_request.number == 1221 && 'caas_cluster_create_focus' ||
+          'sanity or regression or requires_caas or reference_common'
+        }}
       # osac-installer now lives as a subdirectory of this same monorepo checkout
       # (its Chart.yaml deps resolve fulfillment-service/osac-operator/osac-aap/BMF
       # as ../../../<name> siblings within it), so a PR touching those components

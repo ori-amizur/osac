@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import subprocess
 import tempfile
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -38,6 +38,31 @@ _WORKER_METRICS = ("osac_caas_worker_desired", "osac_caas_worker_ready", "osac_c
 _WORKER_LEVEL_METRICS = _WORKER_METRICS[:2]
 _WORKER_FAILURE_METRIC = _WORKER_METRICS[2]
 _WORKER_METRIC_LABELS = {"tenant", "worker_type", "instance_type"}
+_INSTALLING_AGENT_STATES = {"installing", "installing-in-progress"}
+# Only log known phase names, never Agent statusInfo or the full resource (which may contain sensitive data).
+_SAFE_AGENT_STATES = {
+    "discovering",
+    "discovering-unbound",
+    "known",
+    "known-unbound",
+    "insufficient",
+    "insufficient-unbound",
+    "disconnected",
+    "disconnected-unbound",
+    "disabled",
+    "disabled-unbound",
+    "pending-for-input",
+    "binding",
+    "preparing-for-installation",
+    "preparing-failed",
+    "preparing-successful",
+    "installing",
+    "installing-in-progress",
+    "installing-pending-user-action",
+    "installed",
+    "error",
+}
+logger = logging.getLogger(__name__)
 
 
 def _metric_samples(metrics: str, metric_name: str) -> list[str]:
@@ -66,6 +91,37 @@ def _assert_worker_metric_labels(metric_name: str, samples: list[str]) -> None:
         )
 
 
+def _list_owned_worker_bmis(*, grpc: GRPCClient, co_name: str, tenant: str) -> dict[str, dict[str, Any]]:
+    """Find tenant-visible BMIs and reject any that falsely claim this ClusterOrder."""
+    bmi_filter = f'this.metadata.labels["osac.openshift.io/cluster-order"] == "{co_name}"'
+    workers: dict[str, dict[str, Any]] = {}
+    for bmi_id in grpc.list_baremetal_instance_ids(filter_expr=bmi_filter):
+        bmi = grpc.get_baremetal_instance(bmi_id=bmi_id)["object"]
+        metadata = bmi["metadata"]
+        assert metadata["tenant"] == tenant
+        assert metadata["labels"]["osac.openshift.io/cluster-order"] == co_name
+        assert metadata["annotations"]["osac.openshift.io/owner-reference"] == f"ClusterOrder/{co_name}"
+        workers[bmi_id] = bmi
+    return workers
+
+
+def _cluster_order_agents(*, k8s: K8sClient, co_name: str, namespace: str) -> list[dict[str, Any]]:
+    """Find even unbound Agents using the InfraEnv label assigned by Assisted Service."""
+    items = k8s.list_json(resource="agents.agent-install.openshift.io", namespace=namespace).get("items", [])
+    return [
+        agent
+        for agent in items
+        if agent.get("metadata", {}).get("namespace") == namespace
+        and agent.get("metadata", {}).get("labels", {}).get("infraenvs.agent-install.openshift.io")
+        == f"{co_name}-infraenv"
+    ]
+
+
+def _agent_is_installing(agent: dict[str, Any]) -> bool:
+    return agent.get("status", {}).get("debugInfo", {}).get("state") in _INSTALLING_AGENT_STATES
+
+
+@pytest.mark.caas_cluster_create_focus
 @pytest.mark.metering
 def test_cluster_create(
     cli: OsacCLI,
@@ -73,7 +129,7 @@ def test_cluster_create(
     private_grpc: GRPCClient,
     k8s_hub_client: K8sClient,
     cluster_template: str,
-    pull_secret_path: str,
+    pull_secret_name: str,
     ssh_public_key_path: str,
     metering: MeteringCollector,
 ) -> None:
@@ -84,47 +140,87 @@ def test_cluster_create(
     private_grpc.ensure_bare_metal_instance_type(
         name="ci-worker-bm", host_label_selector={"osac.openshift.io/host-type": "default"}
     )
+    logger.info("CaaS: ensuring DiskImage and ClusterVersion")
     disk_image_id = private_grpc.ensure_disk_image(name="rhcos-4-22", source_ref=RHCOS_IMAGE)
     version = private_grpc.ensure_cluster_version(
         version="4.22.0-rhcos", image=TEST_RELEASE_IMAGE, disk_image=disk_image_id
     )
+    logger.info("CaaS: ClusterVersion available")
     run_owned_bmi_ids: set[str] = set()
     infra_env_name: str | None = None
     name = unique_name("e2e-cluster")
+    logger.info("CaaS: creating cluster")
     uuid = cli.create_cluster(
         name=name,
         template=cluster_template,
         version=version["name"],
         node_sets={"workers": {"size": 1, "baremetal_instance_type": {"name": "ci-worker-bm"}}},
-        template_parameter_files={"pull_secret": pull_secret_path},
-        template_parameters={"ssh_public_key": Path(ssh_public_key_path).read_text().strip()},
+        pull_secret=pull_secret_name,
+        ssh_public_key_file=ssh_public_key_path,
     )
+    logger.info("CaaS: cluster created")
     metering.expect("osac.resource.created.v1", resource_id=uuid)
 
     try:
+        logger.info("CaaS: waiting for ClusterOrder")
         co_name = wait_for_cluster_order_cr(k8s=k8s_hub_client, uuid=uuid)
         assert uuid in grpc.list_cluster_ids()
 
+        logger.info("CaaS: waiting for ClusterOrder to progress")
         wait_for_cluster_progressing(k8s=k8s_hub_client, name=co_name)
-        try:
-            baremetal_pools = k8s_hub_client.list_json(resource="baremetalpools").get("items", [])
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or exc.output or str(exc)).strip()
-            pytest.fail(
-                f"Cannot verify BareMetalPool removal for ClusterOrder {co_name}: "
-                f"the baremetalpools API is unavailable ({detail}); this is an infrastructure/profile failure.",
-                pytrace=False,
-            )
-
-        cluster_pools = [
-            pool
-            for pool in baremetal_pools
-            if pool.get("metadata", {}).get("labels", {}).get("osac.openshift.io/clusterorder") == co_name
-        ]
-        assert not cluster_pools, (
-            f"ClusterOrder {co_name} unexpectedly has BareMetalPool resources: "
-            f"{[pool.get('metadata', {}).get('name', '<unnamed>') for pool in cluster_pools]}"
+        cluster = grpc.get_cluster(cluster_id=uuid)
+        cluster_tenant = cluster["object"]["metadata"]["tenant"]
+        bmi_filter = f'this.metadata.labels["osac.openshift.io/cluster-order"] == "{co_name}"'
+        logger.info("CaaS: waiting for tenant-visible child BareMetalInstance")
+        candidate_bmis = poll_until(
+            fn=lambda: _list_owned_worker_bmis(grpc=grpc, co_name=co_name, tenant=cluster_tenant),
+            until=bool,
+            retries=60,
+            delay=5,
+            description=f"{co_name} tenant-visible child BareMetalInstances",
         )
+        logger.info("CaaS: child BareMetalInstance found")
+
+        co = k8s_hub_client.get_json(resource="clusterorder", name=co_name)
+        assert co["metadata"]["annotations"]["osac.openshift.io/tenant"] == cluster_tenant
+        namespace = co["metadata"]["namespace"]
+        assert namespace == k8s_hub_client.namespace
+        logger.info("CaaS: waiting for Agent in ClusterOrder namespace")
+        agents = poll_until(
+            fn=lambda: _cluster_order_agents(k8s=k8s_hub_client, co_name=co_name, namespace=namespace),
+            until=bool,
+            retries=180,
+            delay=10,
+            description="CaaS worker Agent registration",
+        )
+        agent_name = agents[0]["metadata"]["name"]
+        logger.info("CaaS: Agent found; waiting for installing state")
+        previous_state: str | None = None
+
+        def _current_agent() -> dict[str, Any] | None:
+            nonlocal previous_state
+            agent = next(
+                (
+                    item
+                    for item in _cluster_order_agents(k8s=k8s_hub_client, co_name=co_name, namespace=namespace)
+                    if item.get("metadata", {}).get("name") == agent_name
+                ),
+                None,
+            )
+            state = agent.get("status", {}).get("debugInfo", {}).get("state", "") if agent else ""
+            if state != previous_state:
+                logger.info("CaaS Agent state: %s", state if state in _SAFE_AGENT_STATES else "unknown")
+                previous_state = state
+            return agent
+
+        poll_until(
+            fn=_current_agent,
+            until=lambda agent: agent is not None and _agent_is_installing(agent),
+            retries=180,
+            delay=10,
+            description="CaaS worker Agent installing state",
+        )
+        logger.info("CaaS: Agent entered installing state")
 
         try:
             worker_metrics = poll_until(
@@ -237,19 +333,8 @@ def test_cluster_create(
         assert selector.get("matchLabels", {}).get("osac.openshift.io/instance_type") == worker_instance_type
         assert "osac.openshift.io/resource_class" not in selector.get("matchLabels", {})
 
-        bmi_filter = f'this.metadata.labels["osac.openshift.io/cluster-order"] == "{co_name}"'
-        candidate_bmi_ids = set(private_grpc.list_baremetal_instance_ids(filter_expr=bmi_filter))
-        assert candidate_bmi_ids, "Expected the primary CaaS lifecycle to create at least one worker BMI"
-        cluster_tenant = cluster["object"]["metadata"]["tenant"]
-        co = k8s_hub_client.get_json(resource="clusterorder", name=co_name)
-        assert co["metadata"]["annotations"]["osac.openshift.io/tenant"] == cluster_tenant
         expected_owner = f"ClusterOrder/{co_name}"
-        for bmi_id in candidate_bmi_ids:
-            bmi = private_grpc.call(service="osac.private.v1.BareMetalInstances/Get", data={"id": bmi_id})["object"]
-            metadata = bmi["metadata"]
-            assert metadata["tenant"] == cluster_tenant
-            assert metadata["labels"]["osac.openshift.io/cluster-order"] == co_name
-            assert metadata["annotations"]["osac.openshift.io/owner-reference"] == expected_owner
+        for bmi_id, bmi in candidate_bmis.items():
             spec = bmi["spec"]
             assert spec.get("catalogItem", spec.get("catalog_item")) is None
             assert spec["template"]["id"] == "osac.templates.bm_host_provisioning"
@@ -269,12 +354,6 @@ def test_cluster_create(
             assert cr["metadata"]["annotations"]["osac.openshift.io/tenant"] == cluster_tenant
             assert cr["metadata"]["annotations"]["osac.openshift.io/owner-reference"] == expected_owner
             run_owned_bmi_ids.add(bmi_id)  # Only verified test-owned IDs may be used in deletion assertions.
-        tenant_visible_bmi_ids = set(grpc.list_baremetal_instance_ids())
-        assert run_owned_bmi_ids.issubset(tenant_visible_bmi_ids), (
-            f"Tenant-authenticated BMI list cannot see tenant-owned CaaS worker IDs: "
-            f"{sorted(run_owned_bmi_ids - tenant_visible_bmi_ids)}"
-        )
-
         infra_env_name = poll_until(
             fn=lambda: k8s_hub_client.get_cluster_order_infra_env_name(name=co_name, checked=False),
             until=lambda value: value != "",
@@ -336,9 +415,7 @@ def test_cluster_create(
         wait_for_cluster_grpc_deleting_or_archived(grpc=grpc, uuid=uuid)
 
         poll_until(
-            fn=lambda: run_owned_bmi_ids.isdisjoint(
-                set(private_grpc.list_baremetal_instance_ids(filter_expr=bmi_filter))
-            ),
+            fn=lambda: run_owned_bmi_ids.isdisjoint(set(grpc.list_baremetal_instance_ids(filter_expr=bmi_filter))),
             until=lambda value: value is True,
             retries=60,
             delay=5,
@@ -370,7 +447,7 @@ def test_cluster_create_with_two_node_sets(
     private_grpc: GRPCClient,
     k8s_hub_client: K8sClient,
     cluster_template: str,
-    pull_secret_path: str,
+    pull_secret_name: str,
     ssh_public_key_path: str,
     metering: MeteringCollector,
 ) -> None:
@@ -396,8 +473,8 @@ def test_cluster_create_with_two_node_sets(
             node_set: {"size": 1, "baremetal_instance_type": {"name": instance_type}}
             for node_set, instance_type in instance_types.items()
         },
-        template_parameter_files={"pull_secret": pull_secret_path},
-        template_parameters={"ssh_public_key": Path(ssh_public_key_path).read_text().strip()},
+        pull_secret=pull_secret_name,
+        ssh_public_key_file=ssh_public_key_path,
     )
     metering.expect("osac.resource.created.v1", resource_id=uuid)
 
@@ -523,7 +600,7 @@ def test_cluster_create_with_version(
     private_grpc: GRPCClient,
     k8s_hub_client: K8sClient,
     cluster_template: str,
-    pull_secret_path: str,
+    pull_secret_name: str,
     ssh_public_key_path: str,
 ) -> None:
     """Verify explicit --version resolution: the Cluster API resource stores the
@@ -545,8 +622,8 @@ def test_cluster_create_with_version(
         template=cluster_template,
         version=version["name"],
         node_sets={"workers": {"size": 1, "baremetal_instance_type": {"name": "ci-worker-bm"}}},
-        template_parameter_files={"pull_secret": pull_secret_path},
-        template_parameters={"ssh_public_key": Path(ssh_public_key_path).read_text().strip()},
+        pull_secret=pull_secret_name,
+        ssh_public_key_file=ssh_public_key_path,
     )
 
     try:

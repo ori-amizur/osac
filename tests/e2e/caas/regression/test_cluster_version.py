@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -32,7 +31,7 @@ def test_cluster_create_with_version(
     private_grpc: GRPCClient,
     k8s_hub_client: K8sClient,
     cluster_template: str,
-    pull_secret_path: str,
+    pull_secret_name: str,
     ssh_public_key_path: str,
 ) -> None:
     """Verify explicit version resolution and reference protection."""
@@ -51,8 +50,8 @@ def test_cluster_create_with_version(
             template=cluster_template,
             version=version["name"],
             node_sets={"workers": {"size": 1, "baremetal_instance_type": {"name": "ci-worker-bm"}}},
-            template_parameter_files={"pull_secret": pull_secret_path},
-            template_parameters={"ssh_public_key": Path(ssh_public_key_path).read_text().strip()},
+            pull_secret=pull_secret_name,
+            ssh_public_key_file=ssh_public_key_path,
         )
 
         co_name = wait_for_cluster_order_cr(k8s=k8s_hub_client, uuid=uuid)

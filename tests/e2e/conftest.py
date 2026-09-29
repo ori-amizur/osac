@@ -11,6 +11,7 @@ import pytest
 
 from tests.e2e.core.caas_versions import ensure_caas_disk_image_version
 from tests.e2e.core.grpc_client import PRIVATE_API, GRPCClient
+from tests.e2e.core.helpers import unique_name
 from tests.e2e.core.k8s_client import K8sClient
 from tests.e2e.core.keycloak import get_jwt
 from tests.e2e.core.keycloak_admin import (
@@ -86,6 +87,7 @@ def pytest_configure(config: pytest.Config) -> None:
     e2e.log artifact.
     """
     config.addinivalue_line("markers", "metering: test verifies metering events via the test adapter HTTP API")
+    config.addinivalue_line("markers", "caas_cluster_create_focus: temporarily isolate the primary CaaS PR E2E")
     config.addinivalue_line("markers", "requires_caas: test requires the CaaS service to be enabled")
     config.addinivalue_line("markers", "requires_bmaas: test requires the BMaaS service to be enabled")
     config.addinivalue_line("markers", "requires_vmaas: test requires the VMaaS service to be enabled")
@@ -314,6 +316,17 @@ def cli(
     )
     yield instance
     instance.close()
+
+
+@pytest.fixture
+def pull_secret_name(cli: OsacCLI, pull_secret_path: str) -> Iterator[str]:
+    """Create a tenant-scoped pull Secret for a CaaS cluster, then remove it."""
+    name = unique_name("e2e-pull-secret")
+    cli.create_secret(name=name, from_files={".dockerconfigjson": pull_secret_path}, secret_type="pull-secret")
+    try:
+        yield name
+    finally:
+        cli.delete_secret(name=name)
 
 
 @pytest.fixture(scope="session")

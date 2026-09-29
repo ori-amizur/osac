@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -29,7 +28,7 @@ def test_cluster_delete_reports_deleting_state_without_provisioning(
     k8s_hub_client: K8sClient,
     cluster_template: str,
     caas_disk_image_version: str,
-    pull_secret_path: str,
+    pull_secret_name: str,
     ssh_public_key_path: str,
 ) -> None:
     """Verify that cluster deletion transitions through DELETING state
@@ -45,8 +44,8 @@ def test_cluster_delete_reports_deleting_state_without_provisioning(
         template=cluster_template,
         version=caas_disk_image_version,
         node_sets=node_sets,
-        template_parameter_files={"pull_secret": pull_secret_path},
-        template_parameters={"ssh_public_key": Path(ssh_public_key_path).read_text().strip()},
+        pull_secret=pull_secret_name,
+        ssh_public_key_file=ssh_public_key_path,
     )
 
     try:

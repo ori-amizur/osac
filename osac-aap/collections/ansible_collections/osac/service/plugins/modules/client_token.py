@@ -2,6 +2,7 @@ from ansible.module_utils.basic import AnsibleModule
 from kubernetes import client, config
 
 import durationpy
+import os
 
 
 DOCUMENTATION = r'''
@@ -49,6 +50,37 @@ token:
 '''
 
 
+def build_core_v1_api():
+    """Build a Kubernetes client from explicit AAP credentials or local config.
+
+    AAP container-group pods disable service-account token automount. When the
+    Kubernetes API credential variables are supplied, use them directly rather
+    than asking the Kubernetes client to read an in-cluster token file.
+    """
+    bearer_token = os.environ.get('K8S_AUTH_API_KEY')
+    if bearer_token:
+        host = os.environ.get('K8S_AUTH_HOST')
+        if not host:
+            raise ValueError('K8S_AUTH_HOST is required when K8S_AUTH_API_KEY is set')
+
+        configuration = client.Configuration()
+        configuration.host = host
+        configuration.api_key = {'authorization': bearer_token}
+        configuration.api_key_prefix = {'authorization': 'Bearer'}
+        configuration.verify_ssl = os.environ.get('K8S_AUTH_VERIFY_SSL', 'true').lower() not in {
+            'false', 'no', '0'
+        }
+        ca_cert = os.environ.get('K8S_AUTH_SSL_CA_CERT')
+        if ca_cert:
+            configuration.ssl_ca_cert = ca_cert
+
+        api_client = client.ApiClient(configuration=configuration)
+        return client.CoreV1Api(api_client=api_client)
+
+    config.load_config()
+    return client.CoreV1Api()
+
+
 def run():
     module_args = dict(
         audience=dict(type='list', default=['https://kubernetes.default.svc']),
@@ -82,8 +114,7 @@ def run():
     if module.check_mode:
         module.exit_json(changed=True, token="[token would be created]")
 
-    config.load_config()
-    client_api = client.CoreV1Api()
+    client_api = build_core_v1_api()
     token_response = client_api.create_namespaced_service_account_token(
         service_account,
         namespace,

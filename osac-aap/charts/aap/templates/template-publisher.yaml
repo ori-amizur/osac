@@ -6,6 +6,8 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "osac-aap.labels" . | nindent 4 }}
+secrets:
+  - name: {{ .Values.serviceAccounts.templatePublisher }}-token
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -35,3 +37,14 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccounts.templatePublisher }}
     namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.serviceAccounts.templatePublisher }}-token
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "osac-aap.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/service-account.name: {{ .Values.serviceAccounts.templatePublisher | quote }}
+type: kubernetes.io/service-account-token

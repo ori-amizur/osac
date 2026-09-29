@@ -56,11 +56,17 @@ kubeconfig, BCM certificate/key, and OpenStack clouds configuration values are
 likewise injected through Secret-backed environment variables and materialized
 to mode-0600 temporary files only when the relevant playbook runs.
 
-Note: since the container group is configured to run in the same namespace as
-the AAP instance, the admin credentials to log against AAP are injected into the
-pod. Kubernetes automatically mounts the selected ServiceAccount token; AAP
-rejects manually projected service-account tokens and Secret volumes in
-container-group PodSpec overrides.
+AAP disables automatic ServiceAccount token mounting on container-group job
+pods. Each instance-group PodSpec therefore injects its selected identity's
+Kubernetes-managed service-account-token Secret using an allowed
+`secretKeyRef` (`K8S_AUTH_API_KEY`) and mounts the namespace's
+`kube-root-ca.crt` ConfigMap for TLS verification. The `osac-sa` identity used
+by cluster, network, compute, storage, and bare-metal jobs is bound to
+`cluster-admin`; config-as-code and template-publisher retain their narrower
+RBAC. The token Secrets are long-lived credentials: restrict access to the
+`osac` namespace and rotate them if exposed. AAP rejects direct Secret volumes
+and projected service-account-token volumes in container-group PodSpec
+overrides.
 
 ### Cluster fulfillment environment variables
 
@@ -77,15 +83,16 @@ use case, e.g.:
 These variables must be defined in a secret named: `cluster-fulfillment-ig` in
 the namespace where AAP is deployed.
 
-The cluster fulfillment needs to access the Kube API of the cluster it runs on,
-so we expect a service account `osac-sa` to exists with enough rights.
+The cluster fulfillment needs Kubernetes API access. Its container-group pod
+uses the `osac-sa` service-account token injected from the chart-managed token
+Secret; this account is bound to `cluster-admin` in this cluster.
 
 ### Compute instance operations environment variables
 
 Compute instance (VMaaS) job templates run in the
 `compute-instance-operations-ig` instance group. The default KubeVirt path
-(`ocp_virt_vm`) uses the in-cluster `osac-sa` service account and does not
-require credentials in a dedicated secret.
+(`ocp_virt_vm`) uses the `osac-sa` Kubernetes identity and does not require
+credentials in a dedicated workload secret.
 
 The pod spec optionally mounts a secret named
 `compute-instance-operations-ig`. Create it only when a deployment-specific

@@ -61,28 +61,14 @@
     router_pod_lsp_switch_name: "{{ router_pod_lsp_network_name | replace('-', '.') }}_ovn_layer2_switch"
 
 - name: Require the CUDN logical switch to exist before the live attachment
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - "{{ ovn_kubernetes_namespace }}"
-      - "{{ router_pod_lsp_ovnkube_name }}"
-      - -c
-      - "{{ ovnkube_node_nbdb_container }}"
-      - --
-      - ovn-nbctl
-      - --bare
-      - --columns=name
-      - find
-      - logical_switch
-      - "name={{ router_pod_lsp_switch_name }}"
-  environment: >-
-    {{
-      {'KUBECONFIG': remote_cluster_kubeconfig}
-      if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
-      else {}
-    }}
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    pod: "{{ router_pod_lsp_ovnkube_name }}"
+    container: "{{ ovnkube_node_nbdb_container }}"
+    command: >-
+      {{ ['ovn-nbctl', '--bare', '--columns=name', 'find', 'logical_switch',
+          'name=' ~ router_pod_lsp_switch_name] | map('quote') | join(' ') }}
   register: router_pod_lsp_switch_result
   changed_when: false
   until:
@@ -92,52 +78,31 @@
   delay: 2
 
 - name: Create the router Pod CUDN logical switch port before live CNI ADD
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - "{{ ovn_kubernetes_namespace }}"
-      - "{{ router_pod_lsp_ovnkube_name }}"
-      - -c
-      - "{{ ovnkube_node_nbdb_container }}"
-      - --
-      - ovn-nbctl
-      - --may-exist
-      - lsp-add
-      - "{{ router_pod_lsp_switch_name }}"
-      - "{{ router_pod_lsp_name }}"
-  environment: >-
-    {{
-      {'KUBECONFIG': remote_cluster_kubeconfig}
-      if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
-      else {}
-    }}
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    pod: "{{ router_pod_lsp_ovnkube_name }}"
+    container: "{{ ovnkube_node_nbdb_container }}"
+    command: >-
+      {{ ['ovn-nbctl', '--may-exist', 'lsp-add', router_pod_lsp_switch_name,
+          router_pod_lsp_name] | map('quote') | join(' ') }}
   register: router_pod_lsp_create_result
   changed_when: false
+  failed_when: router_pod_lsp_create_result.rc != 0
 
 - name: Set the router Pod CUDN logical switch port address
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - "{{ ovn_kubernetes_namespace }}"
-      - "{{ router_pod_lsp_ovnkube_name }}"
-      - -c
-      - "{{ ovnkube_node_nbdb_container }}"
-      - --
-      - ovn-nbctl
-      - lsp-set-addresses
-      - "{{ router_pod_lsp_name }}"
-      - "{{ router_pod_lsp_mac | trim }} {{ subnet_gateway_address }}"
-  environment: >-
-    {{
-      {'KUBECONFIG': remote_cluster_kubeconfig}
-      if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
-      else {}
-    }}
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    pod: "{{ router_pod_lsp_ovnkube_name }}"
+    container: "{{ ovnkube_node_nbdb_container }}"
+    command: >-
+      {{ ['ovn-nbctl', 'lsp-set-addresses', router_pod_lsp_name,
+          (router_pod_lsp_mac | trim) ~ ' ' ~ subnet_gateway_address]
+         | map('quote') | join(' ') }}
+  register: router_pod_lsp_address_result
   changed_when: false
+  failed_when: router_pod_lsp_address_result.rc != 0
 
 - name: Report the prepared live router logical switch port
   ansible.builtin.debug:

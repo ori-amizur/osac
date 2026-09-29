@@ -24,6 +24,16 @@ spec:
         - ansible-runner
         - worker
         - '--private-data-dir=/runner'
+      env:
+        - name: K8S_AUTH_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: osac-sa-token
+              key: token
+        - name: K8S_AUTH_HOST
+          value: https://kubernetes.default.svc
+        - name: K8S_AUTH_SSL_CA_CERT
+          value: /var/run/osac-kube-api/ca.crt
       envFrom:
         - secretRef:
             name: storage-operations-ig
@@ -35,3 +45,14 @@ spec:
         - configMapRef:
             name: storage-operations-ig
             optional: true
+      volumeMounts:
+        - name: kube-api-ca
+          mountPath: /var/run/osac-kube-api
+          readOnly: true
+  volumes:
+    - name: kube-api-ca
+      configMap:
+        name: kube-root-ca.crt
+        items:
+          - key: ca.crt
+            path: ca.crt

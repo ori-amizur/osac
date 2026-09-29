@@ -19,6 +19,19 @@
       ansible.builtin.set_fact:
         _pod: "{{ _pod_spec | from_yaml }}"
 
+    - name: Assert compute pod receives the API token and CA exactly once
+      ansible.builtin.assert:
+        that:
+          - >-
+            _pod.spec.containers[0].env
+            | selectattr('name', 'equalto', 'K8S_AUTH_API_KEY') | list | length == 1
+          - >-
+            _pod.spec.containers[0].volumeMounts
+            | selectattr('name', 'equalto', 'kube-api-ca') | list | length == 1
+          - >-
+            _pod.spec.volumes
+            | selectattr('name', 'equalto', 'kube-api-ca') | list | length == 1
+
     - name: Extract compute-instance secretRef from envFrom
       ansible.builtin.set_fact:
         _compute_secret_ref: >-
@@ -51,15 +64,19 @@
           - "_pod_spec is search('storage-operations-ig')"
         fail_msg: Expected storage-operations-ig references in pod spec
 
-    - name: Assert compute-instance pod spec passes AAP's volume restrictions
+    - name: Assert compute-instance pod spec uses explicit API credentials without forbidden volumes
       ansible.builtin.assert:
         that:
           - "_pod_spec is not search('secretName:')"
           - "_pod_spec is not search('serviceAccountToken:')"
           - "_pod_spec is not search('automountServiceAccountToken: true')"
+          - "_pod_spec is search('K8S_AUTH_API_KEY')"
+          - "_pod_spec is search('osac-sa-token')"
+          - "_pod_spec is search('kube-root-ca.crt')"
         fail_msg: >-
-          AAP instance-group PodSpecs cannot mount Secrets or project a service
-          account token directly; Kubernetes must perform the default token mount.
+          AAP disables token automount for container-group pods. The pod must
+          use an allowed token Secret keyRef and CA ConfigMap, not a Secret or
+          projected-token volume.
 
 - name: Compute-instance pod spec with remote kubeconfig
   hosts: localhost
@@ -76,6 +93,10 @@
       ansible.builtin.set_fact:
         _pod_spec_remote: "{{ lookup('ansible.builtin.template', _template_path) }}"
 
+    - name: Parse compute pod spec with remote cluster
+      ansible.builtin.set_fact:
+        _pod_remote: "{{ _pod_spec_remote | from_yaml }}"
+
     - name: Assert remote kubeconfig is injected through an allowed Secret key reference
       ansible.builtin.assert:
         that:
@@ -83,6 +104,8 @@
           - "_pod_spec_remote is search('secretKeyRef:')"
           - "_pod_spec_remote is not search('secretName:')"
           - "_pod_spec_remote is not search('serviceAccountToken:')"
+          - "_pod_spec_remote is search('K8S_AUTH_API_KEY')"
+          - "_pod_spec_remote is search('osac-sa-token')"
         fail_msg: Expected remote kubeconfig Secret keyRef without a forbidden PodSpec volume
 
 - name: Networking pod spec with remote kubeconfig
@@ -100,6 +123,10 @@
       ansible.builtin.set_fact:
         _pod_spec: "{{ lookup('ansible.builtin.template', _template_path) }}"
 
+    - name: Parse networking pod spec
+      ansible.builtin.set_fact:
+        _pod: "{{ _pod_spec | from_yaml }}"
+
     - name: Assert networking pod spec has no AAP-rejected volume overrides
       ansible.builtin.assert:
         that:
@@ -107,6 +134,12 @@
           - "_pod_spec is not search('secretName:')"
           - "_pod_spec is not search('serviceAccountToken:')"
           - "_pod_spec is not search('automountServiceAccountToken: true')"
+          - "_pod_spec is search('K8S_AUTH_API_KEY')"
+          - "_pod_spec is search('osac-sa-token')"
+          - "_pod_spec is search('kube-root-ca.crt')"
+          - >-
+            _pod.spec.containers[0].env
+            | selectattr('name', 'equalto', 'K8S_AUTH_API_KEY') | list | length == 1
         fail_msg: Networking pod spec contains a volume rejected by AAP.
 
 - name: Storage pod spec
@@ -122,12 +155,22 @@
       ansible.builtin.set_fact:
         _pod_spec: "{{ lookup('ansible.builtin.template', _template_path) }}"
 
+    - name: Parse storage pod spec
+      ansible.builtin.set_fact:
+        _pod: "{{ _pod_spec | from_yaml }}"
+
     - name: Assert storage pod spec has no AAP-rejected volume overrides
       ansible.builtin.assert:
         that:
           - "_pod_spec is not search('secretName:')"
           - "_pod_spec is not search('serviceAccountToken:')"
           - "_pod_spec is not search('automountServiceAccountToken: true')"
+          - "_pod_spec is search('K8S_AUTH_API_KEY')"
+          - "_pod_spec is search('osac-sa-token')"
+          - "_pod_spec is search('kube-root-ca.crt')"
+          - >-
+            _pod.spec.containers[0].env
+            | selectattr('name', 'equalto', 'K8S_AUTH_API_KEY') | list | length == 1
         fail_msg: Storage pod spec contains a volume rejected by AAP.
 
 - name: Static AAP instance-group pod specs
@@ -148,4 +191,9 @@
           - "_controller_vars is not search('secretName:')"
           - "_controller_vars is not search('serviceAccountToken:')"
           - "_controller_vars is not search('automountServiceAccountToken: true')"
+          - "_controller_vars is search('K8S_AUTH_API_KEY')"
+          - "_controller_vars is search('osac-sa-token')"
+          - "_controller_vars is search('osac-aap-config-as-code-token')"
+          - "_controller_vars is search('template-publisher-token')"
+          - "_controller_vars is search('kube-root-ca.crt')"
         fail_msg: A static AAP instance-group PodSpec contains a rejected volume source.

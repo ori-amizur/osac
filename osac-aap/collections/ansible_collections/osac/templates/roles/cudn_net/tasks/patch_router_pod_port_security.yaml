@@ -142,15 +142,6 @@
   ansible.builtin.set_fact:
     ovnkube_node_pod_name: "{{ ovnkube_node_pod_info.resources[0].metadata.name }}"
 
-- name: Build the environment for kubectl exec against the target cluster
-  ansible.builtin.set_fact:
-    router_pod_exec_environment: >-
-      {{
-        {'KUBECONFIG': remote_cluster_kubeconfig}
-        if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
-        else {}
-      }}
-
 - name: Look up all ovnkube-node pods for remote-zone router port convergence
   kubernetes.core.k8s_info:
     kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
@@ -178,23 +169,14 @@
       refusing to converge router logical switch ports across OVN zones.
 
 - name: Read the router node's OVN chassis name
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - "{{ ovn_kubernetes_namespace }}"
-      - "{{ ovnkube_node_pod_name }}"
-      - -c
-      - sbdb
-      - --
-      - ovn-sbctl
-      - --bare
-      - --columns=name
-      - find
-      - chassis
-      - "hostname={{ router_pod_node_name }}"
-  environment: "{{ router_pod_exec_environment }}"
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    pod: "{{ ovnkube_node_pod_name }}"
+    container: sbdb
+    command: >-
+      {{ ['ovn-sbctl', '--bare', '--columns=name', 'find', 'chassis',
+          'hostname=' ~ router_pod_node_name] | map('quote') | join(' ') }}
   register: router_pod_chassis_name_result
   changed_when: false
   until:
@@ -204,24 +186,18 @@
   delay: 2
 
 - name: Read the router pod's stable interface identity
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - "{{ ovn_kubernetes_namespace }}"
-      - "{{ ovnkube_node_pod_name }}"
-      - -c
-      - "{{ ovnkube_node_nbdb_container }}"
-      - --
-      - ovn-nbctl
-      - get
-      - logical_switch_port
-      - "{{ subnet_vn_name }}_{{ router_pod_actual_name }}"
-      - options
-  environment: "{{ router_pod_exec_environment }}"
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    pod: "{{ ovnkube_node_pod_name }}"
+    container: "{{ ovnkube_node_nbdb_container }}"
+    command: >-
+      {{ ['ovn-nbctl', 'get', 'logical_switch_port',
+          subnet_vn_name ~ '_' ~ router_pod_actual_name, 'options']
+         | map('quote') | join(' ') }}
   register: router_pod_default_lsp_options_result
   changed_when: false
+  failed_when: router_pod_default_lsp_options_result.rc != 0
 
 - name: Set router port convergence facts
   ansible.builtin.set_fact:
@@ -241,22 +217,14 @@
     router_pod_lsp_suffix: "_{{ subnet_vn_name }}_{{ router_pod_actual_name }}"
 
 - name: List logical switch ports matching the router pod's stable name suffix
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - "{{ ovn_kubernetes_namespace }}"
-      - "{{ ovnkube_node_pod_name }}"
-      - -c
-      - "{{ ovnkube_node_nbdb_container }}"
-      - --
-      - ovn-nbctl
-      - --bare
-      - --columns=name
-      - find
-      - logical_switch_port
-  environment: "{{ router_pod_exec_environment }}"
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    namespace: "{{ ovn_kubernetes_namespace }}"
+    pod: "{{ ovnkube_node_pod_name }}"
+    container: "{{ ovnkube_node_nbdb_container }}"
+    command: >-
+      {{ ['ovn-nbctl', '--bare', '--columns=name', 'find', 'logical_switch_port']
+         | map('quote') | join(' ') }}
   register: router_pod_lsp_list_result
   changed_when: false
   until:

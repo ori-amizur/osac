@@ -1,8 +1,11 @@
 ---
 # Repair a replacement router Pod without changing the Deployment template or
 # causing another restart. The Subnet CRs and their persistent IPAMClaims are
-# authoritative. The router ConfigMap is only a generated runtime projection
-# and must not be used as recovery input after a restart.
+# authoritative for explicit Kubernetes-owned attachments. The VN-scoped
+# transit CUDN, when supported and present, is an implicit primary attachment
+# rather than a Subnet CR and is discovered from the replacement Pod's OVN
+# annotations. The router ConfigMap is only a generated runtime projection and
+# must not be used as recovery input after a restart.
 
 - name: Initialize router recovery lock state
   ansible.builtin.set_fact:
@@ -106,6 +109,66 @@
         # interface; only Kubernetes-owned Subnets belong in this attachment
         # set and in the generated gateway configuration.
         - item.metadata.annotations['osac.openshift.io/subnet-implementation-role'] | default('') == 'k8s'
+
+    - name: Read the optional implicit transit CUDN from the replacement Pod
+      ansible.builtin.set_fact:
+        router_recovery_ovn_networks: >-
+          {{
+            (router_recovery_pod.metadata.annotations | default({}))
+              .get('k8s.ovn.org/pod-networks', '{}') | from_json
+          }}
+        router_recovery_primary_udn_ipamclaim: >-
+          {{
+            (router_recovery_pod.metadata.annotations | default({}))
+              .get('k8s.ovn.org/primary-udn-ipamclaim', '')
+          }}
+
+    - name: Identify the optional implicit transit CUDN attachment
+      ansible.builtin.set_fact:
+        router_recovery_transit_network_names: >-
+          {{
+            router_recovery_ovn_networks
+            | dict2items
+            | selectattr('key', 'match', '^' ~ subnet_vn_name ~ '/')
+            | selectattr('value.role', 'defined')
+            | selectattr('value.role', 'equalto', 'primary')
+            | map(attribute='key')
+            | map('regex_replace', '^' ~ subnet_vn_name ~ '/', '')
+            | list
+          }}
+
+    - name: Require at most one implicit transit CUDN attachment
+      ansible.builtin.assert:
+        that:
+          - router_recovery_transit_network_names | length <= 1
+        fail_msg: >-
+          Found multiple primary CUDN attachments for VirtualNetwork '{{ subnet_vn_name }}':
+          {{ router_recovery_transit_network_names | join(', ') }}.
+          Refusing to guess which transit port requires recovery.
+
+    - name: Build the optional transit port-security attachment
+      ansible.builtin.set_fact:
+        router_recovery_transit_networks: >-
+          {{
+            [{
+              'name': router_recovery_transit_network_names[0],
+              'interface': 'transit',
+              'ipam-claim-reference': router_recovery_primary_udn_ipamclaim
+            }]
+            if (
+              router_recovery_transit_network_names | length == 1
+              and router_recovery_primary_udn_ipamclaim | length > 0
+            ) else []
+          }}
+
+    - name: Build the complete port-security recovery attachment set
+      ansible.builtin.set_fact:
+        # Keep the implicit transit attachment out of router configuration and
+        # Multus annotation generation. It is already supplied by the primary
+        # UDN/IPAMClaim; it only needs the same OVN port-security convergence
+        # as the explicit subnet attachments.
+        router_recovery_port_security_networks: >-
+          {{ router_pod_networks + router_recovery_transit_networks }}
 
     - name: Read persistent gateway claims for generated router attachments
       kubernetes.core.k8s_info:
@@ -245,24 +308,12 @@
       delay: "{{ cudn_net_router_recovery_poll_interval_seconds }}"
 
     - name: Wait for the router agent to apply the durable configuration
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - exec
-          - -n
-          - "{{ subnet_vn_name }}"
-          - "{{ router_recovery_pod_name }}"
-          - -c
-          - router
-          - --
-          - cat
-          - "{{ router_pod_status_file }}"
-      environment: >-
-        {{
-          {'KUBECONFIG': remote_cluster_kubeconfig}
-          if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
-          else {}
-        }}
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        namespace: "{{ subnet_vn_name }}"
+        pod: "{{ router_recovery_pod_name }}"
+        container: router
+        command: "cat {{ router_pod_status_file }}"
       register: router_recovery_agent_status
       until:
         - router_recovery_agent_status.rc == 0
@@ -278,7 +329,8 @@
       ansible.builtin.include_tasks: patch_router_pod_port_security.yaml
       vars:
         router_pod_expected_uid: "{{ router_pod_recovery_uid }}"
-      when: router_pod_networks | length > 0
+        router_pod_networks: "{{ router_recovery_port_security_networks }}"
+      when: router_recovery_port_security_networks | length > 0
   always:
     - name: Release the router recovery lock
       ansible.builtin.include_role:

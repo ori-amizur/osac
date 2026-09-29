@@ -50,6 +50,7 @@ importBcmAgents:
 
 serviceAccounts:
   osacSa: "osac-sa"
+  configAsCode: "osac-aap-config-as-code"
   templatePublisher: "template-publisher"
 
 apiToken:

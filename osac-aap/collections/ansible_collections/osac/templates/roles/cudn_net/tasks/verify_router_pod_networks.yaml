@@ -11,26 +11,14 @@
 
 - name: Wait for the live router Pod interface mutation
   when: cudn_net_router_wait_for_network_status | bool
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - "{{ subnet_vn_name }}"
-      - "{{ router_pod_live_attach_name }}"
-      - --
-      - ip
-      - -j
-      - address
-      - show
-      - dev
-      - "{{ router_pod_live_attach_network_name }}"
-  environment: >-
-    {{
-      {'KUBECONFIG': remote_cluster_kubeconfig}
-      if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
-      else {}
-    }}
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+    namespace: "{{ subnet_vn_name }}"
+    pod: "{{ router_pod_live_attach_name }}"
+    container: router
+    command: >-
+      {{ ['ip', '-j', 'address', 'show', 'dev', router_pod_live_attach_network_name]
+         | map('quote') | join(' ') }}
   register: router_pod_live_attach_interface_info
   changed_when: false
   failed_when: false

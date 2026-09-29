@@ -31,6 +31,15 @@ spec:
         - secretRef:
             name: network-fulfillment-ig
       env:
+        - name: K8S_AUTH_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: osac-sa-token
+              key: token
+        - name: K8S_AUTH_HOST
+          value: https://kubernetes.default.svc
+        - name: K8S_AUTH_SSL_CA_CERT
+          value: /var/run/osac-kube-api/ca.crt
         - name: POD_NAMESPACE
           valueFrom:
             fieldRef:
@@ -42,3 +51,14 @@ spec:
               name: {{ remote_cluster_kubeconfig_secret_name }}
               key: {{ remote_cluster_kubeconfig_secret_key }}
 {% endif %}
+      volumeMounts:
+        - name: kube-api-ca
+          mountPath: /var/run/osac-kube-api
+          readOnly: true
+  volumes:
+    - name: kube-api-ca
+      configMap:
+        name: kube-root-ca.crt
+        items:
+          - key: ca.crt
+            path: ca.crt

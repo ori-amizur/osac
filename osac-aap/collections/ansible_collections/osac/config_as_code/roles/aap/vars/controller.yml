@@ -702,9 +702,10 @@ controller_execution_environments: # noqa: var-naming[no-role-prefix]
 # credentials when the template are run, that way Kubernetes is the source
 # of truth for the secrets, and we don't need to sync credentials into AAP
 controller_instance_groups: # noqa: var-naming[no-role-prefix]
-  # For cluster-fulfillment use cases, the worker runs as osac-sa. Kubernetes
-  # automatically mounts that ServiceAccount's API token. Other credentials
-  # required by playbooks are injected as environment variables from Secrets.
+  # AAP disables service-account-token automount in container-group pods. Keep
+  # the job's existing ServiceAccount/RBAC identity, but explicitly inject its
+  # controller-managed token Secret through an allowed secretKeyRef. The CA is
+  # mounted from the namespace's kube-root-ca ConfigMap.
   - name: "{{ aap_prefix }}-cluster-fulfillment-ig"
     is_container_group: true
     pod_spec_override: |
@@ -734,6 +735,9 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
               - worker
               - '--private-data-dir=/runner'
             volumeMounts:
+              - name: kube-api-ca
+                mountPath: /var/run/osac-kube-api
+                readOnly: true
               - name: import-agents-inventory
                 mountPath: /var/config/import-agents
                 readOnly: true
@@ -741,6 +745,15 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
                 mountPath: /var/config/agentless-net
                 readOnly: true
             env:
+              - name: K8S_AUTH_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: osac-sa-token
+                    key: token
+              - name: K8S_AUTH_HOST
+                value: https://kubernetes.default.svc
+              - name: K8S_AUTH_SSL_CA_CERT
+                value: /var/run/osac-kube-api/ca.crt
               - name: POD_NAMESPACE
                 valueFrom:
                   fieldRef:
@@ -772,6 +785,12 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
               - secretRef:
                   name: cluster-fulfillment-ig
         volumes:
+        - name: kube-api-ca
+          configMap:
+            name: kube-root-ca.crt
+            items:
+              - key: ca.crt
+                path: ca.crt
         - name: import-agents-inventory
           configMap:
             name: import-agents-inventory
@@ -810,11 +829,24 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
               - ansible-runner
               - worker
               - '--private-data-dir=/runner'
+            volumeMounts:
+              - name: kube-api-ca
+                mountPath: /var/run/osac-kube-api
+                readOnly: true
             envFrom:
               - secretRef:
                   name: config-as-code-ig
                   optional: true
             env:
+              - name: K8S_AUTH_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: osac-aap-config-as-code-token
+                    key: token
+              - name: K8S_AUTH_HOST
+                value: https://kubernetes.default.svc
+              - name: K8S_AUTH_SSL_CA_CERT
+                value: /var/run/osac-kube-api/ca.crt
               - name: NAMESPACE
                 valueFrom:
                   fieldRef:
@@ -826,6 +858,13 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
                     key: password
               - name: LICENSE_MANIFEST_PATH
                 value: /var/secrets/config-as-code/license.zip
+        volumes:
+          - name: kube-api-ca
+            configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
   - name: "{{ aap_prefix }}-publish-templates-ig"
     is_container_group: true
     pod_spec_override: |
@@ -857,11 +896,23 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
             volumeMounts:
               - name: cas
                 mountPath: /certs
+              - name: kube-api-ca
+                mountPath: /var/run/osac-kube-api
+                readOnly: true
             envFrom:
               - configMapRef:
                   name: publish-templates-ig
                   optional: true
             env:
+              - name: K8S_AUTH_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: template-publisher-token
+                    key: token
+              - name: K8S_AUTH_HOST
+                value: https://kubernetes.default.svc
+              - name: K8S_AUTH_SSL_CA_CERT
+                value: /var/run/osac-kube-api/ca.crt
               - name: OSAC_PUBLISH_TEMPLATES_NAMESPACE_DEFAULT
                 valueFrom:
                   fieldRef:
@@ -872,8 +923,51 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
           - name: cas
             configMap:
               name: ca-bundle
+          - name: kube-api-ca
+            configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
   - name: "{{ aap_prefix }}-create-hosted-cluster-post-install-ig"
     is_container_group: true
+    pod_spec_override: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        labels:
+          ansible_job: ''
+      spec:
+        serviceAccountName: osac-sa
+        containers:
+          - image: >-
+              registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8@sha256:d8400a472e769d0f3d591dafaad318522009c583b08e881c23b6d57a27cc10ed
+            name: worker
+            args:
+              - ansible-runner
+              - worker
+              - '--private-data-dir=/runner'
+            env:
+              - name: K8S_AUTH_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: osac-sa-token
+                    key: token
+              - name: K8S_AUTH_HOST
+                value: https://kubernetes.default.svc
+              - name: K8S_AUTH_SSL_CA_CERT
+                value: /var/run/osac-kube-api/ca.crt
+            volumeMounts:
+              - name: kube-api-ca
+                mountPath: /var/run/osac-kube-api
+                readOnly: true
+        volumes:
+          - name: kube-api-ca
+            configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
 
   - name: "{{ aap_prefix }}-compute-instance-operations-ig"
     is_container_group: true
@@ -912,6 +1006,15 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
               - worker
               - '--private-data-dir=/runner'
             env:
+              - name: K8S_AUTH_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: osac-sa-token
+                    key: token
+              - name: K8S_AUTH_HOST
+                value: https://kubernetes.default.svc
+              - name: K8S_AUTH_SSL_CA_CERT
+                value: /var/run/osac-kube-api/ca.crt
               - name: POD_NAMESPACE
                 valueFrom:
                   fieldRef:
@@ -928,6 +1031,17 @@ controller_instance_groups: # noqa: var-naming[no-role-prefix]
               - secretRef:
                   name: bare-metal-fulfillment-ig
                   optional: true
+            volumeMounts:
+              - name: kube-api-ca
+                mountPath: /var/run/osac-kube-api
+                readOnly: true
+        volumes:
+          - name: kube-api-ca
+            configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
   - name: "{{ aap_prefix }}-storage-operations-ig"
     is_container_group: true
     pod_spec_override: "{{ lookup('ansible.builtin.template', 'storage-operations-ig.j2') }}"

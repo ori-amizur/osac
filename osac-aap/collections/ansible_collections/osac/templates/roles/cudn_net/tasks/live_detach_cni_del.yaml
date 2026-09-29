@@ -66,15 +66,6 @@
   ansible.builtin.set_fact:
     live_detach_nad_present: "{{ live_detach_nad_info.resources | length == 1 }}"
 
-- name: Build the environment for kubectl exec against the target cluster
-  ansible.builtin.set_fact:
-    live_detach_exec_environment: >-
-      {{
-        {'KUBECONFIG': remote_cluster_kubeconfig}
-        if (remote_cluster_kubeconfig is defined and remote_cluster_kubeconfig | length > 0)
-        else {}
-      }}
-
 - name: Perform the direct CNI DEL
   when: live_detach_nad_present | bool
   block:
@@ -151,22 +142,24 @@
       delay: "{{ cudn_net_live_detach_helper_wait_poll_interval_seconds }}"
 
     - name: Resolve the router Pod's sandbox via crictl
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - exec
-          - -n
-          - "{{ cudn_net_live_detach_helper_namespace }}"
-          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
-          - --
-          - /usr/local/bin/crictl
-          - --runtime-endpoint=unix:///var/run/crio/crio.sock
-          - pods
-          - -o
-          - json
-      environment: "{{ live_detach_exec_environment }}"
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+        pod: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+        container: helper
+        command: >-
+          {{
+            [
+              '/usr/local/bin/crictl',
+              '--runtime-endpoint=unix:///var/run/crio/crio.sock',
+              'pods',
+              '-o',
+              'json'
+            ] | map('quote') | join(' ')
+          }}
       register: live_detach_crictl_pods_result
       changed_when: false
+      failed_when: live_detach_crictl_pods_result.rc | int != 0
 
     - name: Extract the router Pod's sandbox ID
       ansible.builtin.set_fact:
@@ -180,23 +173,25 @@
           }}
 
     - name: Inspect the sandbox to find its network namespace
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - exec
-          - -n
-          - "{{ cudn_net_live_detach_helper_namespace }}"
-          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
-          - --
-          - /usr/local/bin/crictl
-          - --runtime-endpoint=unix:///var/run/crio/crio.sock
-          - inspectp
-          - -o
-          - json
-          - "{{ live_detach_sandbox_id }}"
-      environment: "{{ live_detach_exec_environment }}"
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+        pod: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+        container: helper
+        command: >-
+          {{
+            [
+              '/usr/local/bin/crictl',
+              '--runtime-endpoint=unix:///var/run/crio/crio.sock',
+              'inspectp',
+              '-o',
+              'json',
+              live_detach_sandbox_id
+            ] | map('quote') | join(' ')
+          }}
       register: live_detach_crictl_inspectp_result
       changed_when: false
+      failed_when: live_detach_crictl_inspectp_result.rc | int != 0
 
     - name: Set the sandbox network namespace path
       # crictl inspectp does not expose the sandbox's PID -- the network namespace
@@ -233,48 +228,53 @@
           }}
 
     - name: Write the direct CNI DEL request into the helper Pod
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - exec
-          - -i
-          - -n
-          - "{{ cudn_net_live_detach_helper_namespace }}"
-          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
-          - --
-          - sh
-          - -c
-          - "cat > /tmp/del-request.json"
-      environment: "{{ live_detach_exec_environment }}"
-      args:
-        stdin: "{{ live_detach_request }}"
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+        pod: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+        container: helper
+        # k8s_exec does not expose stdin. Base64 keeps the serialized request
+        # opaque to shell parsing while still using the authenticated exec API.
+        command: >-
+          {{
+            [
+              'sh',
+              '-c',
+              "printf '%s' '" ~ (live_detach_request | b64encode)
+              ~ "' | base64 -d > /tmp/del-request.json"
+            ] | map('quote') | join(' ')
+          }}
+      register: live_detach_write_request_result
       changed_when: true
+      failed_when: live_detach_write_request_result.rc | int != 0
 
     - name: Send the direct CNI DEL request to Multus
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - exec
-          - -n
-          - "{{ cudn_net_live_detach_helper_namespace }}"
-          - "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
-          - --
-          - curl
-          - -s
-          - -X
-          - POST
-          - --unix-socket
-          - /run/multus/socket/multus.sock
-          - -H
-          - "Content-Type: application/json"
-          - -d
-          - "@/tmp/del-request.json"
-          - -w
-          - "\nHTTP_STATUS:%{http_code}\n"
-          - http://dummy/delegate
-      environment: "{{ live_detach_exec_environment }}"
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ remote_cluster_kubeconfig | default(omit) }}"
+        namespace: "{{ cudn_net_live_detach_helper_namespace }}"
+        pod: "osac-live-detach-{{ subnet_id | default(subnet_name) }}"
+        container: helper
+        command: >-
+          {{
+            [
+              'curl',
+              '-sS',
+              '-X',
+              'POST',
+              '--unix-socket',
+              '/run/multus/socket/multus.sock',
+              '-H',
+              'Content-Type: application/json',
+              '-d',
+              '@/tmp/del-request.json',
+              '-w',
+              '\nHTTP_STATUS:%{http_code}\n',
+              'http://dummy/delegate'
+            ] | map('quote') | join(' ')
+          }}
       register: live_detach_curl_result
       changed_when: true
+      failed_when: live_detach_curl_result.rc | int != 0
 
     - name: Determine whether the direct CNI DEL succeeded via HTTP status
       ansible.builtin.set_fact:

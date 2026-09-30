@@ -333,8 +333,16 @@
         },
         "controllers": {
           "type": "object",
-          "description": "Enable or disable shared-infrastructure operator controllers (service-tier controllers are driven by global.services.*)",
+          "description": "Enable or disable operator controllers. Service-tier controllers default to global.services.* unless explicitly overridden.",
           "properties": {
+            "computeInstance": {
+              "type": "boolean",
+              "description": "Override the VMaaS ComputeInstance controller toggle"
+            },
+            "bareMetalInstance": {
+              "type": "boolean",
+              "description": "Override the BMaaS BareMetalInstance controller toggle"
+            },
             "tenant": {
               "type": "boolean",
               "description": "Enable Tenant controller",
@@ -500,9 +508,9 @@
               "default": "20m",
               "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
             },
-            "workersJoiningByHostType": {
+            "workersJoiningByInstanceType": {
               "type": "object",
-              "description": "Per-host-type overrides for the WorkersJoining stall threshold. Keys are host-type labels, values are Go duration strings.",
+              "description": "Per-BareMetalInstanceType overrides for the WorkersJoining stall threshold. Keys are exact instance type names, values are Go duration strings.",
               "additionalProperties": {
                 "type": "string",
                 "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
@@ -1050,16 +1058,6 @@
               "type": "string",
               "description": "Git branch for config-as-code project"
             },
-            "importAgentsEnabled": {
-              "type": "boolean",
-              "description": "Enable ConfigMap-based bare metal agent import. Sets OSAC_IMPORT_AGENTS_ENABLED=true in the config-as-code-ig Secret and gates the import-agents-inventory ConfigMap.",
-              "default": false
-            },
-            "importBcmAgentsEnabled": {
-              "type": "boolean",
-              "description": "Enable BCM inventory backend. Sets OSAC_IMPORT_BCM_AGENTS_ENABLED=true in the config-as-code-ig Secret and gates the bcm-certs Secret.",
-              "default": false
-            },
             "eeImagePull": {
               "type": "string",
               "description": "Execution environment image pull specification for config-as-code"
@@ -1079,79 +1077,6 @@
                 }
               },
               "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
-        },
-        "importAgents": {
-          "type": "object",
-          "description": "Server inventory for bare metal agent import. Enable via aap.configAsCode.importAgentsEnabled.",
-          "properties": {
-            "servers": {
-              "type": "array",
-              "description": "Server inventory for bare metal agent import. Each entry provisions a BareMetalHost CR.",
-              "items": {
-                "type": "object",
-                "required": [
-                  "name",
-                  "bmc_url",
-                  "bmc_username",
-                  "bmc_password",
-                  "boot_mac",
-                  "netris_server_name",
-                  "resource_class"
-                ],
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "description": "Server hostname, used as the BareMetalHost CR name"
-                  },
-                  "bmc_url": {
-                    "type": "string",
-                    "description": "Redfish BMC address for virtual media boot"
-                  },
-                  "bmc_username": {
-                    "type": "string",
-                    "description": "BMC username. The playbook creates a Kubernetes Secret named {name}-bmc-secret with these credentials."
-                  },
-                  "bmc_password": {
-                    "type": "string",
-                    "description": "BMC password. The playbook creates a Kubernetes Secret named {name}-bmc-secret with these credentials."
-                  },
-                  "boot_mac": {
-                    "type": "string",
-                    "description": "Boot NIC MAC address"
-                  },
-                  "netris_server_name": {
-                    "type": "string",
-                    "description": "Netris server name label for the Agent"
-                  },
-                  "resource_class": {
-                    "type": "string",
-                    "description": "Hardware type label for the Agent"
-                  },
-                  "disable_bmc_cert_verification": {
-                    "type": "boolean",
-                    "description": "Per-server override for BMC TLS certificate verification"
-                  }
-                },
-                "additionalProperties": false
-              }
-            }
-          },
-          "additionalProperties": false
-        },
-        "importBcmAgents": {
-          "type": "object",
-          "description": "BCM mTLS client credentials. Enable via aap.configAsCode.importBcmAgentsEnabled.",
-          "properties": {
-            "cert": {
-              "type": "string",
-              "description": "PEM-encoded client certificate for BCM mTLS authentication"
-            },
-            "key": {
-              "type": "string",
-              "description": "PEM-encoded client private key for BCM mTLS authentication"
             }
           },
           "additionalProperties": false
@@ -1279,45 +1204,6 @@
                     "PARKING_VNET_NAME": {
                       "type": "string",
                       "description": "Name of the parking V-Net where idle CaaS agents sit before cluster assignment (effective default: idle-agents-network)"
-                    },
-                    "IMPORT_AGENTS_NAMESPACE": {
-                      "type": "string",
-                      "description": "Namespace for BareMetalHost, Agent, and InfraEnv CRs (effective default: hardware-inventory)"
-                    },
-                    "IMPORT_AGENTS_INFRAENV_NAME": {
-                      "type": "string",
-                      "description": "InfraEnv CR name for agent discovery (effective default: infraenv)"
-                    },
-                    "IMPORT_AGENTS_PULL_SECRET_NAME": {
-                      "type": "string",
-                      "description": "Pull secret name for InfraEnv discovery ISO (effective default: pull-secret)"
-                    },
-                    "IMPORT_AGENTS_DISABLE_BMC_CERT_VERIFICATION": {
-                      "type": "string",
-                      "description": "Default BMC TLS certificate verification skip (effective default: true)"
-                    },
-                    "BCM_API_URL": {
-                      "type": "string",
-                      "pattern": "^$|^https?://[^/\\s:]+[^\\s]*$",
-                      "description": "BCM head node API endpoint (e.g., https://bcm-head:8081)"
-                    },
-                    "BCM_VALIDATE_CERTS": {
-                      "type": "string",
-                      "enum": [
-                        "",
-                        "true",
-                        "false"
-                      ],
-                      "description": "Verify BCM TLS certificates (effective default: true)"
-                    },
-                    "BCM_DISABLE_BMC_CERT_VERIFICATION": {
-                      "type": "string",
-                      "enum": [
-                        "",
-                        "true",
-                        "false"
-                      ],
-                      "description": "Skip BMC TLS certificate verification during BCM system discovery (effective default: false)"
                     },
                     "NETRIS_CONTROLLER_URL": {
                       "type": "string",

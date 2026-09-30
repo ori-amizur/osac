@@ -2975,6 +2975,125 @@ var _ = Describe("BareMetalWorkerReconciler cluster deletion", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, agent))).To(BeTrue())
 	})
 
+	It("releases a known-unbound worker only after reclaim and detachment", func() {
+		provisionWorkers("bmw-del-known-unbound", 1)
+		co := getClusterOrder("bmw-del-known-unbound")
+		worker := co.Status.Workers[0]
+		key := types.NamespacedName{Name: "bmw-del-known-unbound-agent", Namespace: testNamespace}
+		Expect(sim.RegisterAgent(ctx, envsim.AgentOptions{
+			Name: key.Name, Namespace: key.Namespace, MAC: "aa:bb:cc:dd:ee:02",
+			ClusterDeploymentName: co.Name,
+		})).To(Succeed())
+		agent := &unstructured.Unstructured{}
+		agent.SetGroupVersionKind(agentGVK)
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		agent.SetLabels(map[string]string{
+			"osac.openshift.io/cluster-order": co.Name,
+			"osac.openshift.io/worker-name":   worker.Name,
+			"agentMachineRef":                 "machine-0",
+			"clusterdeployment-namespace":     testNamespace,
+		})
+		Expect(k8sClient.Update(ctx, agent)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, agent) })
+
+		Expect(k8sClient.Delete(ctx, co)).To(Succeed())
+		_, err := runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fc.DeleteCalls()).To(BeEmpty())
+		Expect(getClusterOrder(co.Name).Status.Workers[0].Phase).To(Equal("Unbinding"))
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+
+		Expect(unstructured.SetNestedField(agent.Object, "reclaiming", "status", "debugInfo", "state")).To(Succeed())
+		Expect(k8sClient.Update(ctx, agent)).To(Succeed())
+		_, err = runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fc.DeleteCalls()).To(BeEmpty(), "BMI must remain while the Agent is reclaiming")
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		Expect(getClusterOrder(co.Name).Status.Workers[0].Phase).To(Equal("Unbinding"))
+
+		Expect(sim.UnbindAgent(ctx, key.Name, key.Namespace)).To(Succeed())
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		labels := agent.GetLabels()
+		delete(labels, "agentMachineRef")
+		agent.SetLabels(labels)
+		Expect(unstructured.SetNestedField(agent.Object, "reclaiming-rebooting", "status", "debugInfo", "state")).To(Succeed())
+		Expect(k8sClient.Update(ctx, agent)).To(Succeed())
+		_, err = runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fc.DeleteCalls()).To(BeEmpty(), "detachment alone is not enough while reclaiming")
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		Expect(getClusterOrder(co.Name).Status.Workers[0].Phase).To(Equal("Unbinding"))
+
+		Expect(unstructured.SetNestedField(agent.Object, "known-unbound", "status", "debugInfo", "state")).To(Succeed())
+		Expect(k8sClient.Update(ctx, agent)).To(Succeed())
+		_, err = runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, agent))).To(BeTrue())
+		Expect(fc.DeleteCalls()).To(ContainElement(worker.ResourceID))
+		_, err = runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(co), co))).To(BeTrue(),
+			"worker finalizer must clear after BMI deletion is confirmed")
+	})
+
+	It("holds a known-unbound worker when its Agent still has a binding reference", func() {
+		provisionWorkers("bmw-del-stale-binding", 1)
+		co := getClusterOrder("bmw-del-stale-binding")
+		worker := co.Status.Workers[0]
+		key := types.NamespacedName{Name: "bmw-del-stale-binding-agent", Namespace: testNamespace}
+		Expect(sim.RegisterAgent(ctx, envsim.AgentOptions{
+			Name: key.Name, Namespace: key.Namespace, MAC: "aa:bb:cc:dd:ee:03",
+			ClusterDeploymentName: co.Name,
+		})).To(Succeed())
+		agent := &unstructured.Unstructured{}
+		agent.SetGroupVersionKind(agentGVK)
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		agent.SetLabels(map[string]string{
+			"osac.openshift.io/cluster-order": co.Name,
+			"osac.openshift.io/worker-name":   worker.Name,
+		})
+		Expect(unstructured.SetNestedField(agent.Object, "known-unbound", "status", "debugInfo", "state")).To(Succeed())
+		Expect(k8sClient.Update(ctx, agent)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, agent) })
+		Expect(k8sClient.Delete(ctx, co)).To(Succeed())
+		_, err := runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fc.DeleteCalls()).To(BeEmpty())
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		co = getClusterOrder(co.Name)
+		Expect(co.Status.Workers[0].Phase).To(Equal("Unbinding"))
+		Expect(controllerutil.ContainsFinalizer(co, bmWorkerFinalizer)).To(BeTrue())
+	})
+
+	It("holds a known-unbound worker while its AgentMachine reference label remains", func() {
+		provisionWorkers("bmw-del-stale-machine", 1)
+		co := getClusterOrder("bmw-del-stale-machine")
+		worker := co.Status.Workers[0]
+		key := types.NamespacedName{Name: "bmw-del-stale-machine-agent", Namespace: testNamespace}
+		Expect(sim.RegisterAgent(ctx, envsim.AgentOptions{
+			Name: key.Name, Namespace: key.Namespace, MAC: "aa:bb:cc:dd:ee:04",
+		})).To(Succeed())
+		agent := &unstructured.Unstructured{}
+		agent.SetGroupVersionKind(agentGVK)
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		agent.SetLabels(map[string]string{
+			"osac.openshift.io/cluster-order": co.Name,
+			"osac.openshift.io/worker-name":   worker.Name,
+			"agentMachineRef":                 "machine-0",
+		})
+		Expect(unstructured.SetNestedField(agent.Object, "known-unbound", "status", "debugInfo", "state")).To(Succeed())
+		Expect(k8sClient.Update(ctx, agent)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, agent) })
+		Expect(k8sClient.Delete(ctx, co)).To(Succeed())
+		_, err := runReconcile(co.Name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fc.DeleteCalls()).To(BeEmpty())
+		Expect(k8sClient.Get(ctx, key, agent)).To(Succeed())
+		co = getClusterOrder(co.Name)
+		Expect(co.Status.Workers[0].Phase).To(Equal("Unbinding"))
+		Expect(controllerutil.ContainsFinalizer(co, bmWorkerFinalizer)).To(BeTrue())
+	})
+
 	It("holds the finalizer while workers are still being deleted", func() {
 		provisionWorkers("bmw-del-hold", 1)
 

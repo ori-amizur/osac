@@ -139,8 +139,9 @@ func deletionPriority(phase string) int {
 }
 
 // handleUnbindingWorkers processes workers in Unbinding phase: finds matching Agents via the
-// worker-name label, waits for the Agent to enter unbinding-pending-user-action, then deletes
-// the Agent CR. Transitions to Deleting after Agent deletion. Checks for unbinding timeout (30 min).
+// worker-name label, waits for unbinding-pending-user-action or a fully detached known-unbound
+// Agent, then deletes the Agent CR. Transitions to Deleting after Agent deletion. Checks for
+// unbinding timeout (30 min).
 func (r *Reconciler) handleUnbindingWorkers(
 	ctx context.Context, co *v1alpha1.ClusterOrder,
 	workers []v1alpha1.WorkerStatus,
@@ -177,7 +178,10 @@ func (r *Reconciler) processUnbindingWorker(
 	}
 
 	state, _, _ := unstructured.NestedString(agent.Object, "status", "debugInfo", "state")
-	if state != agentUnbindingState {
+	// CAP-Agent may reclaim a worker straight to known-unbound without visiting
+	// unbinding-pending-user-action. Only treat that state as safe once both the
+	// ClusterDeployment and AgentMachine binding references are gone.
+	if state != agentUnbindingState && !isDetachedKnownUnbound(agent, state) {
 		r.checkUnbindingTimeout(co, w, agent, now)
 		return
 	}
@@ -188,6 +192,18 @@ func (r *Reconciler) processUnbindingWorker(
 	}
 	log.Info("deleted agent CR", "worker", w.Name, "agent", agent.GetName())
 	w.Phase = workerPhaseDeleting
+}
+
+func isDetachedKnownUnbound(agent *unstructured.Unstructured, state string) bool {
+	if state != "known-unbound" {
+		return false
+	}
+	_, boundToCluster, err := unstructured.NestedFieldNoCopy(agent.Object, "spec", "clusterDeploymentName")
+	if err != nil || boundToCluster {
+		return false
+	}
+	_, boundToMachine := agent.GetLabels()["agentMachineRef"]
+	return !boundToMachine
 }
 
 func (r *Reconciler) checkUnbindingTimeout(

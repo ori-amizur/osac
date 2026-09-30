@@ -22,6 +22,8 @@ _SAFE_CONDITION_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 _AGENT_STATES = frozenset(
     {
         "installed",
+        "added-to-existing-cluster",
+        "unbinding",
         "unbinding-pending-user-action",
         "known-unbound",
         "discovering-unbound",
@@ -156,13 +158,16 @@ def snapshot_cluster_deletion(k8s: K8sClient, name: str) -> list[str]:
         )
         for machine in machines[:8]:
             conditions = machine.get("status", {}).get("conditions", [])
-            deleting = next((c for c in conditions if isinstance(c, dict) and c.get("type") == "Deleting"), None)
-            if deleting is not None:
-                state = deleting.get("status")
-                state = state if state in ("True", "False", "Unknown") else "omitted"
-                reason = deleting.get("reason")
-                reason = reason if isinstance(reason, str) and reason in _MACHINE_DELETE_REASONS else "omitted"
-                lines.append(f"machine deletion condition=Deleting status={state} reason={reason}")
+            for condition_type in ("Deleting", "PreTerminateDeleteHookSucceeded"):
+                condition = next(
+                    (c for c in conditions if isinstance(c, dict) and c.get("type") == condition_type), None
+                )
+                if condition is not None:
+                    state = condition.get("status")
+                    state = state if state in ("True", "False", "Unknown") else "omitted"
+                    reason = condition.get("reason")
+                    reason = reason if isinstance(reason, str) and reason in _MACHINE_DELETE_REASONS else "omitted"
+                    lines.append(f"machine deletion condition={condition_type} status={state} reason={reason}")
 
     worker_agents = _items(k8s, "agents.agent-install.openshift.io", ns)
     if worker_agents is None:

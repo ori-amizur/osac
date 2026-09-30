@@ -85,7 +85,13 @@ def test_snapshot_reports_blockers_without_dumping_resource_data(monkeypatch: py
                                 "status": "True",
                                 "reason": "WaitingForPreTerminateHook",
                                 "message": "secret-value",
-                            }
+                            },
+                            {
+                                "type": "PreTerminateDeleteHookSucceeded",
+                                "status": "False",
+                                "reason": "WaitingForPreTerminateHook",
+                                "message": "secret-value",
+                            },
                         ]
                     },
                 }
@@ -94,6 +100,14 @@ def test_snapshot_reports_blockers_without_dumping_resource_data(monkeypatch: py
                 {
                     "metadata": {"labels": {"infraenvs.agent-install.openshift.io": "order-x-infraenv"}},
                     "status": {"debugInfo": {"state": "installed", "message": "secret-value"}},
+                },
+                {
+                    "metadata": {"labels": {"infraenvs.agent-install.openshift.io": "order-x-infraenv"}},
+                    "status": {"debugInfo": {"state": "added-to-existing-cluster", "message": "secret-value"}},
+                },
+                {
+                    "metadata": {"labels": {"infraenvs.agent-install.openshift.io": "order-x-infraenv"}},
+                    "status": {"debugInfo": {"state": "unbinding", "message": "secret-value"}},
                 },
                 {
                     "metadata": {"labels": {"infraenvs.agent-install.openshift.io": "order-x-infraenv"}},
@@ -122,6 +136,12 @@ def test_snapshot_reports_blockers_without_dumping_resource_data(monkeypatch: py
     assert "machineset count=1 terminating=0" in output
     assert "machine count=1 terminating=1 preterminate_hook=1" in output
     assert "machine deletion condition=Deleting status=True reason=WaitingForPreTerminateHook" in output
+    assert (
+        "machine deletion condition=PreTerminateDeleteHookSucceeded status=False reason=WaitingForPreTerminateHook"
+        in output
+    )
+    assert "agent state=added-to-existing-cluster count=1" in output
+    assert "agent state=unbinding count=1" in output
     assert "agent state=installed count=1" in output
     assert "agent state=omitted count=1" in output
     assert "agentcluster count=1 deprovision_finalizer=1" in output

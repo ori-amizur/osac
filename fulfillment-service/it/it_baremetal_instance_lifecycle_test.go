@@ -29,7 +29,6 @@ import (
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	bmfov1alpha1 "github.com/osac-project/osac/bare-metal-fulfillment-operator/api/v1alpha1"
-	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/kubernetes/labels"
 	"github.com/osac-project/osac/fulfillment-service/internal/uuid"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
@@ -135,7 +134,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 			Object: privatev1.BareMetalInstanceType_builder{
 				Metadata: privatev1.Metadata_builder{
 					Name:   fmt.Sprintf("test-instance-type-%s", uuid.New()[24:32]),
-					Tenant: auth.SharedTenant,
+					Tenant: usersGroup,
 				}.Build(),
 				Spec: privatev1.BareMetalInstanceTypeSpec_builder{
 					Hardware: privatev1.BareMetalHardwareSpec_builder{
@@ -184,7 +183,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:  publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					SshPublicKey: new(bmiTestSSHPublicKey),
 					DiskImage:    publicv1.DiskImageReference_builder{Id: defaultDiskImageId}.Build(),
 				}.Build(),
@@ -256,7 +255,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:  publicv1.BareMetalInstanceCatalogItemReference_builder{Id: "non-existent-catalog-item"}.Build(),
-					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					SshPublicKey: new(bmiTestSSHPublicKey),
 				}.Build(),
 			}.Build(),
@@ -276,7 +275,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:        publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType:       publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType:       publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					SshPublicKey:       new(bmiTestSSHPublicKey),
 					DiskImage:          publicv1.DiskImageReference_builder{Id: defaultDiskImageId}.Build(),
 					NetworkAttachments: []*publicv1.BareMetalNetworkAttachment{network.bareMetalInstanceAttachment()},
@@ -422,7 +421,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:  publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					SshPublicKey: new(bmiTestSSHPublicKey),
 					NetworkAttachments: []*publicv1.BareMetalNetworkAttachment{
 						publicv1.BareMetalNetworkAttachment_builder{
@@ -468,7 +467,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:  publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					SshPublicKey: new(bmiTestSSHPublicKey),
 					DiskImage:    publicv1.DiskImageReference_builder{Id: diskImageId}.Build(),
 				}.Build(),
@@ -507,11 +506,6 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 			g.Expect(err).ToNot(HaveOccurred())
 			bmi := resp.GetObject()
 			state := bmi.GetStatus().GetState()
-			hub := bmi.GetStatus().GetHub()
-			finalizers := bmi.GetMetadata().GetFinalizers()
-			// Debug: print BMI state on each poll so we can see controller progress
-			fmt.Fprintf(GinkgoWriter, "[DEBUG] BMI id=%s state=%s hub=%q finalizers=%v\n",
-				bareMetalInstanceId, state, hub, finalizers)
 			g.Expect(state).ToNot(
 				Equal(privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_UNSPECIFIED),
 				"controller should reconcile the BMI and set state")
@@ -526,7 +520,6 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 					labels.BareMetalInstanceUuid: bareMetalInstanceId,
 				})
 				g.Expect(err).ToNot(HaveOccurred())
-				fmt.Fprintf(GinkgoWriter, "[DEBUG] BMFO CR count=%d\n", len(bmiList.Items))
 				g.Expect(bmiList.Items).To(HaveLen(1))
 				kubeObject = &bmiList.Items[0]
 			},
@@ -552,7 +545,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:  publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					SshPublicKey: new(bmiTestSSHPublicKey),
 				}.Build(),
 			}.Build(),
@@ -569,7 +562,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:  publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					SshPublicKey: new(bmiTestSSHPublicKey),
 					DiskImage:    publicv1.DiskImageReference_builder{Id: defaultDiskImageId}.Build(),
 				}.Build(),
@@ -601,7 +594,6 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 			}.Build())
 			g.Expect(err).ToNot(HaveOccurred())
 			state := resp.GetObject().GetStatus().GetState()
-			fmt.Fprintf(GinkgoWriter, "[DEBUG] BMI id=%s state=%s\n", bareMetalInstanceId, state)
 			g.Expect(state).ToNot(
 				Equal(privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_UNSPECIFIED),
 				"controller should reconcile the BMI and set state")
@@ -616,7 +608,6 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				labels.BareMetalInstanceUuid: bareMetalInstanceId,
 			})
 			g.Expect(err).ToNot(HaveOccurred())
-			fmt.Fprintf(GinkgoWriter, "[DEBUG] BMFO CR count=%d\n", len(bmiList.Items))
 			g.Expect(bmiList.Items).To(HaveLen(1))
 			kubeObject = &bmiList.Items[0]
 		}, time.Minute, time.Second).Should(Succeed())
@@ -633,7 +624,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:    publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType:   publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+					InstanceType:   publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 					RestartTrigger: 1,
 				}.Build(),
 			}.Build(),
@@ -652,7 +643,6 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(bmiList.Items).To(HaveLen(1))
 			trigger := bmiList.Items[0].Spec.RestartTrigger
-			fmt.Fprintf(GinkgoWriter, "[DEBUG] BMFO CR RestartTrigger=%d\n", trigger)
 			g.Expect(trigger).To(Equal(int64(1)),
 				"controller should propagate restart_trigger=1 to CR spec")
 		}, time.Minute, time.Second).Should(Succeed())
@@ -891,7 +881,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 					}.Build(),
 					Spec: publicv1.BareMetalInstanceSpec_builder{
 						Template:     publicv1.BareMetalInstanceTemplateReference_builder{Id: directTemplateId}.Build(),
-						InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
+						InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId}.Build(),
 						SshPublicKey: new(bmiTestSSHPublicKey),
 						DiskImage:    publicv1.DiskImageReference_builder{Id: diskImageId}.Build(),
 					}.Build(),
@@ -934,7 +924,6 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 				}.Build())
 				g.Expect(err).ToNot(HaveOccurred())
 				state := resp.GetObject().GetStatus().GetState()
-				fmt.Fprintf(GinkgoWriter, "[DEBUG] BMI id=%s state=%s\n", bareMetalInstanceId, state)
 				g.Expect(state).ToNot(
 					Equal(privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_UNSPECIFIED),
 					"controller should reconcile the BMI and set state")
@@ -948,7 +937,6 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 					labels.BareMetalInstanceUuid: bareMetalInstanceId,
 				})
 				g.Expect(err).ToNot(HaveOccurred())
-				fmt.Fprintf(GinkgoWriter, "[DEBUG] BMFO CR count=%d\n", len(bmiList.Items))
 				g.Expect(bmiList.Items).To(HaveLen(1))
 				kubeObject = &bmiList.Items[0]
 			}, time.Minute, time.Second).Should(Succeed())

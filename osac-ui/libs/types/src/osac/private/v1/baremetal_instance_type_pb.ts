@@ -211,9 +211,10 @@ export type BareMetalInstanceSpec = Message<"osac.private.v1.BareMetalInstanceSp
 
   /**
    * Reference to a BareMetalInstanceType. Optional; immutable after creation.
-   * When set, the system resolves this to the instance type's host_label_selector and maps it
-   * to the CRD's Selector.HostSelector for host selection. When omitted, host selection falls
-   * back to the catalog item's template host_type.
+   * By default the type belongs to the instance's tenant and project. Set shared to
+   * select a type in the shared tenant instead. When set, the system maps the type's
+   * host_label_selector to the CRD's Selector.HostSelector for host selection. When
+   * omitted, host selection falls back to the catalog item's template host_type.
    *
    * @generated from field: osac.private.v1.BareMetalInstanceTypeReference instance_type = 11;
    */

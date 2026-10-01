@@ -15,6 +15,11 @@ argument_specs:
         type: list
         elements: dict
         default: []
+      cluster_network_network_attachment:
+        type: dict
+        required: false
+        default: {}
+        description: "Network attachment extracted from ClusterOrder.spec.networkAttachment"
       cluster_working_namespace:
         type: str
         required: true

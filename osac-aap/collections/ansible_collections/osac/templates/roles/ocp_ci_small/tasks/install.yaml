@@ -32,6 +32,10 @@
   ansible.builtin.set_fact:
     normalized_node_requests: "{{ cluster_order.spec.nodeRequests }}"
 
+- name: Extract network attachment (tolerates absence)
+  ansible.builtin.set_fact:
+    _network_attachment: "{{ cluster_order.spec.networkAttachment | default({}) }}"
+
 - name: Step - Create hosted cluster
   ansible.builtin.include_role:
     name: "{{ (install_step_hosted_cluster_override | default(install_step_hosted_cluster_default)).name }}"
@@ -47,6 +51,7 @@
       # network has a 1500-byte uplink, so the OVN tunnel MTU is 1400.
       ovn_kubernetes_mtu: 1400
     hosted_cluster_node_requests: "{{ normalized_node_requests }}"
+    hosted_cluster_network_attachment: "{{ _network_attachment }}"
     hosted_cluster_state: present
     hosted_cluster_infrastructure_availability_policy: "{{ lookup('env', 'HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY', default='SingleReplica') }}"
 
@@ -60,6 +65,7 @@
     cluster_network_namespace: "{{ cluster_working_namespace }}"
     cluster_network_infraenv_name: "{{ cluster_order.metadata.name }}-infraenv"
     cluster_network_node_requests: "{{ normalized_node_requests }}"
+    cluster_network_network_attachment: "{{ _network_attachment }}"
 
 - name: Step - Configure port forwarding
   ansible.builtin.include_role:
@@ -69,7 +75,7 @@
     external_access_name: "{{ cluster_order.metadata.name }}"
     external_access_state: present
     external_access_namespace: "{{ cluster_working_namespace }}"
-    external_access_ingress_internal_network: "network-{{ cluster_order.metadata.name }}"
+    external_access_ingress_internal_network: "{{ _network_attachment.subnetRef | default('network-' + cluster_order.metadata.name) }}"
     # The guest network DaemonSets cannot schedule until the Agent NodePool
     # installs its first worker, so waiting here would deadlock CI provisioning.
     external_access_skip_network_operator_wait: true

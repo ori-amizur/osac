@@ -2515,4 +2515,30 @@ var _ = Describe("ensureClusterSecrets", func() {
 		Expect(nrs[0].BareMetal).ToNot(BeNil())
 		Expect(nrs[0].BareMetal.InstanceType).To(Equal("ci-worker-bm"))
 	})
+
+	It("should pass FabricInterface from nodeSet to NodeRequest", func() {
+		cluster := makeCluster(privatev1.ClusterState_CLUSTER_STATE_PROGRESSING)
+		cluster.GetSpec().SetNodeSets(map[string]*privatev1.ClusterNodeSet{
+			"workers": privatev1.ClusterNodeSet_builder{
+				Size: proto.Int32(3),
+				BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{
+					Name: "gpu.gb200",
+				}.Build(),
+				FabricInterface: "data-0",
+			}.Build(),
+		})
+
+		t := &task{
+			r: &function{
+				logger: logger,
+			},
+			cluster: cluster,
+		}
+
+		nrs := t.prepareNodeRequests()
+		Expect(nrs).To(HaveLen(1))
+		Expect(nrs[0].FabricInterface).To(Equal("data-0"))
+		Expect(nrs[0].BareMetal.InstanceType).To(Equal("gpu.gb200"))
+		Expect(nrs[0].NumberOfNodes).To(Equal(3))
+	})
 })

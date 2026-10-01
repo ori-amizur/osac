@@ -529,8 +529,9 @@ func (t *task) prepareNodeRequests() []osacv1alpha1.NodeRequest {
 func (t *task) prepareNodeRequest(nodeSet *privatev1.ClusterNodeSet) osacv1alpha1.NodeRequest {
 	bmitName := nodeSet.GetBaremetalInstanceType().GetName()
 	return osacv1alpha1.NodeRequest{
-		NumberOfNodes: int(nodeSet.GetSize()),
-		BareMetal:     &osacv1alpha1.BareMetalNodeSpec{InstanceType: bmitName},
+		NumberOfNodes:   int(nodeSet.GetSize()),
+		BareMetal:       &osacv1alpha1.BareMetalNodeSpec{InstanceType: bmitName},
+		FabricInterface: nodeSet.GetFabricInterface(),
 	}
 }
 

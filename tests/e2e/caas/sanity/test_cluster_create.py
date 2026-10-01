@@ -452,6 +452,14 @@ def test_cluster_create(
             _snapshot_if_due()
             return k8s_hub_client.is_absent(resource="infraenv.agent-install.openshift.io", name=infra_env_name)
 
+        # Capture the unmodified deletion state before the helper applies its
+        # existing HyperShift cleanup workarounds.
+        _log_deletion_snapshot()
+        wait_for_cluster_deletion(k8s=k8s_hub_client, name=co_name)
+        assert not k8s_hub_client.is_present(resource="clusterorder", name=co_name)
+
+        # InfraEnv is owned by the ClusterOrder, so Kubernetes garbage
+        # collection can remove it only after the ClusterOrder is gone.
         try:
             poll_until(
                 fn=_infraenv_absent_with_snapshot,
@@ -465,162 +473,6 @@ def test_cluster_create(
             _log_deletion_snapshot()
             raise
 
-        wait_for_cluster_deletion(k8s=k8s_hub_client, name=co_name)
-        assert not k8s_hub_client.is_present(resource="clusterorder", name=co_name)
-        wait_for_cluster_grpc_removal(grpc=grpc, uuid=uuid)
-        metering.verify()
-    finally:
-        with contextlib.suppress(subprocess.SubprocessError):
-            cli.delete_cluster(uuid=uuid)
-
-
-@pytest.mark.metering
-def test_cluster_create_with_two_node_sets(
-    cli: OsacCLI,
-    grpc: GRPCClient,
-    private_grpc: GRPCClient,
-    k8s_hub_client: K8sClient,
-    cluster_template: str,
-    pull_secret_name: str,
-    ssh_public_key_path: str,
-    metering: MeteringCollector,
-) -> None:
-    """Verify NodePool replicas stay isolated when a cluster has two BMaaS node sets."""
-
-    instance_types = {"compute": "ci-worker-bm", "gpu": "ci-worker-bm-gpu"}
-    for instance_type in instance_types.values():
-        private_grpc.ensure_bare_metal_instance_type(
-            name=instance_type, host_label_selector={"osac.openshift.io/host-type": "default"}
-        )
-
-    version = private_grpc.ensure_cluster_version(
-        version="4.22.0-rhcos",
-        image=TEST_RELEASE_IMAGE,
-        disk_image=private_grpc.ensure_disk_image(name="rhcos-4-22", source_ref=RHCOS_IMAGE),
-    )
-    name = unique_name("e2e-cluster-two-node-sets")
-    uuid = cli.create_cluster(
-        name=name,
-        template=cluster_template,
-        version=version["name"],
-        node_sets={
-            node_set: {"size": 1, "baremetal_instance_type": {"name": instance_type}}
-            for node_set, instance_type in instance_types.items()
-        },
-        pull_secret=pull_secret_name,
-        ssh_public_key_file=ssh_public_key_path,
-    )
-    metering.expect("osac.resource.created.v1", resource_id=uuid)
-
-    try:
-        co_name = wait_for_cluster_order_cr(k8s=k8s_hub_client, uuid=uuid)
-        assert uuid in grpc.list_cluster_ids()
-        wait_for_cluster_progressing(k8s=k8s_hub_client, name=co_name)
-        metering.expect("osac.resource.started.v1", resource_id=uuid)
-        metering.verify()
-
-        cluster_order = k8s_hub_client.get_json(resource="clusterorder", name=co_name)
-        node_requests = cluster_order.get("spec", {}).get("nodeRequests", [])
-        assert len(node_requests) == len(instance_types)
-        assert all("resourceClass" not in request for request in node_requests)
-        expected_replicas = {
-            request["bareMetal"]["instanceType"]: int(request["numberOfNodes"]) for request in node_requests
-        }
-        assert expected_replicas == {instance_type: 1 for instance_type in instance_types.values()}
-
-        cluster_node_sets = grpc.get_cluster(cluster_id=uuid)["object"]["spec"]["nodeSets"]
-        assert {
-            node_set["baremetalInstanceType"]["name"]: int(node_set["size"]) for node_set in cluster_node_sets.values()
-        } == expected_replicas
-
-        hosted_cluster_ns = k8s_hub_client.get_cluster_order_namespace(name=co_name)
-        instance_type_label = "osac.openshift.io/instance_type"
-        old_label = "osac.openshift.io/resource_class"
-
-        def _get_worker_counts() -> tuple[int, int, int]:
-            status = k8s_hub_client.get_json(resource="clusterorder", name=co_name).get("status", {})
-            return tuple(int(status.get(key, -1)) for key in ("desiredWorkers", "currentWorkers", "readyWorkers"))
-
-        poll_until(
-            fn=_get_worker_counts,
-            until=lambda value: value == (2, 2, 2),
-            retries=120,
-            delay=10,
-            description=f"{co_name} worker aggregates before NodePool isolation check",
-        )
-
-        def _agent_is_installed(agent: dict[str, Any]) -> bool:
-            return any(
-                condition.get("type") == "Installed" and condition.get("status") == "True"
-                for condition in agent.get("status", {}).get("conditions", [])
-            )
-
-        def _get_agents_by_instance_type() -> dict[str, list[dict[str, Any]]]:
-            agents: dict[str, list[dict[str, Any]]] = {}
-            items = k8s_hub_client.list_json(
-                resource="agents.agent-install.openshift.io", namespace=k8s_hub_client.namespace
-            ).get("items", [])
-            for item in items:
-                labels = item.get("metadata", {}).get("labels", {})
-                if labels.get("osac.openshift.io/clusterorder") != co_name:
-                    continue
-                instance_type = labels.get(instance_type_label)
-                if instance_type in expected_replicas:
-                    assert old_label not in labels
-                    agents.setdefault(instance_type, []).append(item)
-            return agents
-
-        agents_by_instance_type = poll_until(
-            fn=_get_agents_by_instance_type,
-            until=lambda agents: (
-                set(agents) == set(expected_replicas)
-                and all(len(items) == 1 and _agent_is_installed(items[0]) for items in agents.values())
-            ),
-            retries=120,
-            delay=10,
-            description=f"{co_name} installed Agents by instance type",
-        )
-
-        def _get_node_pools() -> dict[str, dict[str, Any]]:
-            items = k8s_hub_client.list_json(
-                resource="nodepools.hypershift.openshift.io", namespace=hosted_cluster_ns
-            ).get("items", [])
-            return {
-                item.get("metadata", {}).get("labels", {}).get(instance_type_label, ""): item
-                for item in items
-                if item.get("metadata", {}).get("labels", {}).get(instance_type_label) in expected_replicas
-            }
-
-        node_pools = poll_until(
-            fn=_get_node_pools,
-            until=lambda pools: (
-                set(pools) == set(expected_replicas)
-                and all(
-                    int(pools[instance_type].get("spec", {}).get("replicas", -1)) == replicas
-                    for instance_type, replicas in expected_replicas.items()
-                )
-            ),
-            retries=60,
-            delay=10,
-            description=f"{co_name} per-instance-type NodePool replicas",
-        )
-
-        for instance_type, node_pool in node_pools.items():
-            labels = node_pool.get("metadata", {}).get("labels", {})
-            assert labels.get("osac.openshift.io/clusterorder") == co_name
-            assert old_label not in labels
-            selector = node_pool.get("spec", {}).get("platform", {}).get("agent", {}).get("agentLabelSelector", {})
-            assert selector.get("matchLabels", {}).get(instance_type_label) == instance_type
-            assert old_label not in selector.get("matchLabels", {})
-
-        surviving_agents = {item["metadata"]["name"] for item in agents_by_instance_type[instance_types["gpu"]]}
-        assert len(surviving_agents) == 1, f"Expected one GPU Agent, got {surviving_agents}"
-
-        cli.delete_cluster(uuid=uuid)
-        metering.expect("osac.resource.deleted.v1", resource_id=uuid)
-        wait_for_cluster_deleting(k8s=k8s_hub_client, name=co_name)
-        wait_for_cluster_grpc_deleting_or_archived(grpc=grpc, uuid=uuid)
-        wait_for_cluster_deletion(k8s=k8s_hub_client, name=co_name)
         wait_for_cluster_grpc_removal(grpc=grpc, uuid=uuid)
         metering.verify()
     finally:

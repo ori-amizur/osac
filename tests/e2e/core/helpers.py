@@ -637,6 +637,26 @@ def wait_for_cluster_deletion(*, k8s: K8sClient, name: str) -> None:
     )
 
 
+def wait_for_cluster_deletion_with_deadline(*, k8s: K8sClient, name: str, deadline: float) -> None:
+    """Wait for ClusterOrder deletion using the remaining time from a shared deadline."""
+    remaining = max(deadline - time.monotonic(), 0)
+    retries = max(int(remaining // 10) + 1, 1)
+
+    def _check_deleted() -> bool:
+        _force_cleanup_agentcluster_finalizers(k8s=k8s, name=name)
+        _force_cleanup_agent_labels(k8s=k8s, name=name)
+        _force_cleanup_machine_preterminate_hooks(k8s=k8s, name=name)
+        return k8s.get_cluster_order_phase(name=name, checked=False) is None
+
+    poll_until(
+        fn=_check_deleted,
+        until=lambda value: value is True,
+        retries=retries,
+        delay=10,
+        description=f"{name} ClusterOrder deletion (deadline-aware)",
+    )
+
+
 def _force_cleanup_agentcluster_finalizers(*, k8s: K8sClient, name: str) -> None:
     # HCP namespace: {osac-ns}-{co-name}-{hc-name}, where hc-name == co-name
     hc_ns = f"{k8s.namespace}-{name}"
@@ -721,6 +741,54 @@ def _force_cleanup_machine_preterminate_hooks(*, k8s: K8sClient, name: str) -> N
         return
     for machine_name in output.strip().split():
         run_unchecked(*base_args, "annotate", f"machines.cluster.x-k8s.io/{machine_name}", "-n", cp_ns, f"{hook}-")
+
+
+def wait_for_agent_available(*, k8s: K8sClient, co_name: str, timeout: int = 600, poll: int = 10) -> None:
+    """Wait for a ClusterOrder's Agents to return to the available pool.
+
+    Agents still labeled for ``co_name`` must be in an unbound ready state and
+    have no ClusterDeployment namespace label. If the controller has already
+    removed the ClusterOrder label, there are no remaining Agents to reclaim.
+    """
+    if timeout < 0:
+        raise ValueError("timeout must be non-negative")
+    if poll <= 0:
+        raise ValueError("poll must be positive")
+
+    available_states = {"known-unbound", "known", "discovering-unbound"}
+    clusterorder_label = "osac.openshift.io/clusterorder"
+    clusterdeployment_namespace_label = "agent-install.openshift.io/clusterdeployment-namespace"
+
+    def _agents_for_cluster_order() -> list[dict[str, Any]]:
+        items = k8s.list_json(resource="agents.agent-install.openshift.io", namespace="hardware-inventory").get(
+            "items", []
+        )
+        return [
+            agent for agent in items if agent.get("metadata", {}).get("labels", {}).get(clusterorder_label) == co_name
+        ]
+
+    def _all_available(agents: list[dict[str, Any]]) -> bool:
+        for agent in agents:
+            metadata = agent.get("metadata", {})
+            labels = metadata.get("labels", {})
+            status = agent.get("status", {})
+            spec = agent.get("spec", {})
+            state = status.get("debugInfo", {}).get("state", "")
+            if (
+                state not in available_states
+                or labels.get(clusterdeployment_namespace_label)
+                or spec.get("clusterDeploymentName")
+            ):
+                return False
+        return True
+
+    poll_until(
+        fn=_agents_for_cluster_order,
+        until=_all_available,
+        retries=max(timeout // poll + 1, 1),
+        delay=poll,
+        description=f"Agents for ClusterOrder {co_name} to return to the available pool",
+    )
 
 
 def wait_for_cluster_deleting(*, k8s: K8sClient, name: str) -> None:

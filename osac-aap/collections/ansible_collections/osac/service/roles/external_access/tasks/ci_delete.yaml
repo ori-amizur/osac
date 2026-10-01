@@ -1,6 +1,6 @@
 ---
 # CI-specific external access deletion.
-# Inlined from ci.steps.external_access — handles DNS record cleanup.
+# Handles DNS record cleanup for the CaaS CI flow.
 
 - name: Delete DNS records
   when: >-

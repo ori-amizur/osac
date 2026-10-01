@@ -55,10 +55,8 @@ func newInfraEnv(name string) *unstructured.Unstructured {
 	return u
 }
 
-// The bare-metal worker acceptance suite. It wires the fake private API + ignition endpoint
-// (OSAC-4149) and the environment simulator (OSAC-4150) into an envtest harness. The controller
-// behavior each scenario asserts is implemented by later slices; those scenarios are pending
-// (PIt) and carry the slice reference that will make them active.
+// The bare-metal worker acceptance suite wires the fake private API + ignition endpoint
+// (OSAC-4149) and the environment simulator (OSAC-4150) into an envtest harness.
 var _ = Describe("Bare-metal worker provisioning", func() {
 	var (
 		fc  *fake.FulfillmentClient
@@ -114,15 +112,16 @@ var _ = Describe("Bare-metal worker provisioning", func() {
 
 	// --- Pending feature scenarios (green-with-pending until their slice lands) ---
 	// Each body sketches arrange/act/assert with existing harness helpers; the "act = reconcile"
-	// step is a comment because the BareMetalWorkerReconciler is OSAC-4152.
+	// step drives the BareMetalWorkerReconciler through the fake fulfillment and Agent seams.
 
 	// Tier-1 end-to-end: drives the whole provisioning-start arc through the real reconciler
 	// (InfraEnv -> discovery ignition -> BMI creation -> WaitingForAgent -> agent registration ->
 	// Binding) and then asserts the flow STALLS at Binding, which is exactly where a real cluster
 	// blocks until the fabric/MetalLB network (OSAC-1436) lets the host install RHCOS and join the
-	// HostedCluster. It reuses the seams the fake private API + environment simulator provide, so it
-	// needs no hardware, no HyperShift, and no real network. The full path to Ready stays PIt below.
-	It("starts worker provisioning and stalls at Binding without networking [OSAC-1436 seam]", func() {
+	// HostedCluster. After asserting the stall, it marks both simulated Agents installed and verifies
+	// that the controller advances their workers to Ready. Real network and hardware behavior remains
+	// covered by the BMF controller and deployed CaaS E2E suites.
+	It("stalls at Binding until Agents report installed, then reaches Ready [OSAC-1436 seam]", func() {
 		const (
 			clusterUUID    = "provstart-cluster-uuid"
 			cvID           = "4.18.0"
@@ -301,12 +300,11 @@ var _ = Describe("Bare-metal worker provisioning", func() {
 		}, agentObj)).To(Succeed())
 		Expect(agentObj.GetLabels()).To(HaveKeyWithValue("osac.openshift.io/worker-name", coName+"-worker-0"))
 
-		// --- Phase C: the stall (assert the boundary; do NOT cross it) ---
+		// --- Phase C: assert the install gate before reporting the simulated network outcome ---
 
-		// We deliberately DO NOT set the bound agent's status.debugInfo.state="installed". That step
-		// is the simulated stand-in for the OSAC-1436-dependent RHCOS install + node join over the
-		// fabric/MetalLB network; setting it here would falsely advance past the real-world block.
-		// So reconciling again must hold at Binding and never reach Ready.
+		// Without an installed signal, the bound worker remains at Binding and the other worker waits
+		// for its Agent. This is the point at which a real host is waiting for the network handoff,
+		// RHCOS installation, and HostedCluster join.
 		_, err = runReconcile()
 		Expect(err).ToNot(HaveOccurred())
 
@@ -316,13 +314,59 @@ var _ = Describe("Bare-metal worker provisioning", func() {
 		Expect(workerByName(co, coName+"-worker-1").Phase).To(Equal("WaitingForAgent"))
 		Expect(co.Status.ReadyWorkers).ToNot(BeNil())
 		Expect(*co.Status.ReadyWorkers).To(Equal(int32(0)), "no worker reaches Ready without networking")
-	})
 
-	PIt("provisions a bare-metal cluster to Ready [OSAC-4152/OSAC-4159/OSAC-4160 + OSAC-1436]", func() {
-		// The full happy path to Ready additionally requires the OSAC-1436 fabric/MetalLB network so
-		// the host can install RHCOS and join the HostedCluster (Binding -> Ready gate). Stays pending
-		// until OSAC-1436 lands in OSAC-2135; the acceptance analogue would drive the agent's
-		// status.debugInfo.state="installed" step that the tier-1 test above intentionally omits.
+		// Once the simulated network/install path completes, worker-0 advances to Ready while
+		// worker-1 binds but remains at Binding until its own Agent reports installed.
+		agent0 := &unstructured.Unstructured{}
+		agent0.SetGroupVersionKind(agentGVK)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: coName + "-agent-0", Namespace: testNamespace,
+		}, agent0)).To(Succeed())
+		Expect(unstructured.SetNestedField(agent0.Object, "installed", "status", "debugInfo", "state")).To(Succeed())
+		Expect(k8sClient.Update(ctx, agent0)).To(Succeed())
+
+		co = get()
+		worker1 := workerByName(co, coName+"-worker-1")
+		fc.SetHostMAC(worker1.ResourceID, "aa:bb:cc:00:00:01")
+		Expect(sim.RegisterAgent(ctx, envsim.AgentOptions{
+			Name: coName + "-agent-1", Namespace: testNamespace, MAC: "aa:bb:cc:00:00:01",
+		})).To(Succeed())
+		agent1 := &unstructured.Unstructured{}
+		agent1.SetGroupVersionKind(agentGVK)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: coName + "-agent-1", Namespace: testNamespace,
+		}, agent1)).To(Succeed())
+		labels := agent1.GetLabels()
+		if labels == nil {
+			labels = make(map[string]string)
+		}
+		labels["osac.openshift.io/cluster-order"] = coName
+		agent1.SetLabels(labels)
+		Expect(k8sClient.Update(ctx, agent1)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, agent1) })
+
+		_, err = runReconcile()
+		Expect(err).ToNot(HaveOccurred())
+		co = get()
+		Expect(workerByName(co, coName+"-worker-0").Phase).To(Equal("Ready"))
+		Expect(workerByName(co, coName+"-worker-1").Phase).To(Equal("Binding"))
+		Expect(co.Status.ReadyWorkers).ToNot(BeNil())
+		Expect(*co.Status.ReadyWorkers).To(Equal(int32(1)))
+
+		// After the second host completes installation, every worker reaches Ready.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: coName + "-agent-1", Namespace: testNamespace,
+		}, agent1)).To(Succeed())
+		Expect(unstructured.SetNestedField(agent1.Object, "installed", "status", "debugInfo", "state")).To(Succeed())
+		Expect(k8sClient.Update(ctx, agent1)).To(Succeed())
+		_, err = runReconcile()
+		Expect(err).ToNot(HaveOccurred())
+
+		co = get()
+		Expect(workerByName(co, coName+"-worker-0").Phase).To(Equal("Ready"))
+		Expect(workerByName(co, coName+"-worker-1").Phase).To(Equal("Ready"))
+		Expect(co.Status.ReadyWorkers).ToNot(BeNil())
+		Expect(*co.Status.ReadyWorkers).To(Equal(int32(2)))
 	})
 
 	PIt("creates BMIs with correct fields and keeps them tenant-invisible [OSAC-4159]", func() {

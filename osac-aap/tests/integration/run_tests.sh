@@ -62,6 +62,7 @@ ROLE_TESTS=(
   "finalizer"
   "lease"
   "agentless_net_stub"
+  "netris_dhcp_range"
 )
 
 ROLE_SCENARIO_TESTS=(

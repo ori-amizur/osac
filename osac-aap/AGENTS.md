@@ -45,6 +45,7 @@ See [suite boundaries and coverage gaps](../docs/INTEGRATION-TESTING.md#osac-aap
 |---|---|---|
 | Filters, variable transforms, and isolated plugin logic | Unit | `uv run pytest tests/unit` |
 | Ansible roles, workflow tasks, hooks, leases, finalizers, or Kubernetes resources | Component integration | `make test` or the focused target command |
+| Netris subnet gateway/DHCP calculation and VIP-range exclusion | Focused component integration | From `tests/integration/`: `uv run ansible-playbook -i inventory targets/netris_dhcp_range/tasks/baseline.yml` |
 | Execution-environment definition or dependency inputs | Build/package validation plus applicable integration tests | `make execution-environment-build`, then `make test` |
 | AAP, OpenStack, KubeVirt/RHACM, or provider provisioning | Contract or real-provider integration | Use the qualifying [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) suite |
 | Storage-provider behavior | Component integration (focused) plus real-provider coverage when required | `STORAGE_TESTS_ENABLED=true make test` (or the relevant storage target and provider suite) |

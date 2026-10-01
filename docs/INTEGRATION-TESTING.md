@@ -189,6 +189,7 @@ Touched-area requirements: [component guide](../bare-metal-fulfillment-operator/
 
 - **Pure inventory, selection, validation, or client logic:** Cover success, no-match, and provider-error paths.
 - **Reconciliation, finalizers, allocation, or status transitions:** Use the public reconciler behavior and the appropriate CRD fixtures.
+- **Tenant network handoff:** The unit suite verifies provisioning-before-move and move-before-reboot-before-DHCP-discovery. The CaaS E2E verifies worker status reports the requested Subnet and an address in its CIDR; it requires deployed AAP/BMF, hardware, and a configured network backend.
 - **Controller deployment, CRDs, pool flows, or Kubernetes wiring:** Envtest alone does not prove the deployed controller path.
 - **Metal3, BCM, Ironic, BMC, power, or hardware semantics:** Static CRDs and HTTP test doubles do not satisfy a real-boundary requirement.
 - **Generated CRDs or Helm CRDs:** Keep generated artifacts synchronized.
@@ -223,7 +224,8 @@ applicable integration tests separately to validate workflow behavior.
 ### Coverage notes
 
 - **Filters, variable transforms, and isolated plugin logic:** Include invalid input and default handling.
-- **Ansible roles, workflow tasks, hooks, leases, finalizers, or Kubernetes resources:** The test must exercise the role/playbook through Ansible against Kind.
+- **Ansible roles, workflow tasks, hooks, leases, finalizers, or Kubernetes resources:** The test must exercise the role/playbook through Ansible. Use Kind when the behavior depends on the Kubernetes API; focused targets may use localhost for isolated task logic.
+- **Netris subnet DHCP/VIP range:** Unit coverage checks CIDR boundary validation; `tests/integration/targets/netris_dhcp_range/tasks/baseline.yml` executes the production addressing tasks and asserts reserved-range exclusion. It uses Ansible locally and does not call Kubernetes or Netris.
 - **Execution-environment definition or dependency inputs:** Image success does not prove the workflow boundary.
 - **AAP, OpenStack, KubeVirt/RHACM, or provider provisioning:** Kind-only tests with mocks cannot claim provider coverage.
 - **Storage-provider behavior:** The mock VMS server validates role logic, not the provider API.
@@ -344,7 +346,9 @@ uv run pytest tests/e2e/caas/regression/networking/test_caas_networking.py::Test
   ClusterOrder journey including networking resource attachment, provisioning
   event assertions, and deletion with force-cleanup of HyperShift teardown
   artifacts (AgentCluster finalizers, Agent labels, Machine pre-terminate
-  hooks).
+  hooks). For every Ready CaaS worker, it checks that the primary attachment
+  references the requested tenant Subnet and its discovered address is in that
+  Subnet CIDR.
 - **Agent reuse after deletion:** `test_agent_reuse_after_cluster_deletion`
   verifies that Agents reach available state after ClusterOrder deletion and
   can be reused for a subsequent cluster without pool exhaustion.
@@ -356,6 +360,11 @@ uv run pytest tests/e2e/caas/regression/networking/test_caas_networking.py::Test
 - **Negative networking tests:** `test_reject_nonexistent_subnet` and
   `test_reject_sg_from_wrong_vn` verify that invalid networking
   configurations are rejected by the fulfillment API.
+- **BM worker network handoff:** The BMF controller unit test
+  `completes provisioning, tenant network handoff, reboot, then IP discovery`
+  verifies the stage order. The CaaS E2E worker-IP assertions verify the real
+  deployed outcome when run with hardware and a network backend. Unit tests
+  mock provider calls; they do not verify the Netris API contract.
 
 ### Real-versus-simulated boundaries
 

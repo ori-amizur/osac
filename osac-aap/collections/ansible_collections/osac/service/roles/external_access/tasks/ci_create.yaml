@@ -1,8 +1,8 @@
 ---
 # CI-specific external access creation.
-# Inlined from ci.steps.external_access — handles DNS record creation,
-# kubeconfig retrieval, and cluster readiness checks. Networking CRs
-# (ExternalIP, etc.) are handled by the Networking API dispatcher.
+# Handles DNS record creation, kubeconfig retrieval, and cluster readiness
+# checks for the CaaS CI flow. Networking CRs (ExternalIP, etc.) are
+# handled by the Networking API dispatcher.
 
 - name: Set DNS names
   ansible.builtin.set_fact:

@@ -5,14 +5,14 @@
 # --- Service Enablement ---
 global:
   osacDeploymentId: "ci/osac"
-  # Keep clusterFulfillment NETWORK_STEPS_COLLECTION=ci.steps authoritative.
-  # The CUDN CaaS profile requires the explicit ci.steps pairing.
-  # Do not derive Netris/agentless AAP steps (see docs/aap-configuration.md).
-  expertOverrides:
-    aap: true
   networking:
-    fabricManager: cudn_net
-    k8sManager: ""
+    fabricManager: ""
+    k8sManager: k8s_only
+    networkClass:
+      title: "CI K8s-only networking"
+      description: >-
+        CI overlay without a physical fabric. VirtualNetwork/Subnet use CUDN,
+        SecurityGroup uses NetworkPolicy, ExternalIP uses MetalLB L2.
   services:
     caas:
       enabled: true
@@ -55,9 +55,6 @@ operator:
     enabled: true
   networkManagers:
     enabled: true
-    fabricManagers:
-      cudn_net:
-        enabled: true
   tenants:
   - name: shared
   - name: osac-e2e-ci
@@ -172,8 +169,6 @@ aap:
     clusterFulfillment:
       enabled: true
       config:
-        NETWORK_CLASS: "ci"
-        NETWORK_STEPS_COLLECTION: "ci.steps"
         HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: "SingleReplica"
         HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: "SingleReplica"
     networkFulfillment:

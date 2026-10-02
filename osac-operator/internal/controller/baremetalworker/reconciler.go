@@ -153,6 +153,7 @@ func (r *Reconciler) SetMACResolver(resolver MACResolver) {
 
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=clusterorders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=clusterorders/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=osac.openshift.io,resources=subnets;securitygroups,verbs=get
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=infraenvs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents,verbs=get;list;watch;patch;delete
@@ -940,7 +941,10 @@ func (r *Reconciler) ensureBMI(
 	ctx context.Context, co *v1alpha1.ClusterOrder, tenant string, nodeSet v1alpha1.NodeRequest,
 	workerName string, image *privatev1.DiskImageReference, ignitionRaw, filter, fabricInterface string,
 ) (*privatev1.BareMetalInstance, ctrl.Result, error) {
-	req := r.buildBMICreateRequest(co, tenant, nodeSet, workerName, image, ignitionRaw, fabricInterface)
+	req, err := r.buildBMICreateRequest(ctx, co, tenant, nodeSet, workerName, image, ignitionRaw, fabricInterface)
+	if err != nil {
+		return nil, ctrl.Result{}, fmt.Errorf("building BMI request for %s: %w", workerName, err)
+	}
 	created, err := r.fulfillment.CreateBareMetalInstance(ctx, req)
 	if err == nil {
 		return created, ctrl.Result{}, nil
@@ -1025,22 +1029,35 @@ func bmisByName(bmis []*privatev1.BareMetalInstance) map[string]*privatev1.BareM
 }
 
 func (r *Reconciler) buildBMICreateRequest(
-	co *v1alpha1.ClusterOrder, tenant string, nodeSet v1alpha1.NodeRequest, workerName string,
+	ctx context.Context, co *v1alpha1.ClusterOrder, tenant string, nodeSet v1alpha1.NodeRequest, workerName string,
 	image *privatev1.DiskImageReference, ignitionRaw, fabricInterface string,
-) *privatev1.BareMetalInstance {
+) (*privatev1.BareMetalInstance, error) {
 	labels := map[string]string{clusterOrderLabel: co.Name}
 	annotations := map[string]string{ownerReferenceAnnotation: fmt.Sprintf("ClusterOrder/%s", co.Name)}
 
 	var netAttachments []*privatev1.BareMetalNetworkAttachment
 	if na := co.Spec.NetworkAttachment; na != nil && na.SubnetRef != "" {
+		subnetID, err := r.networkResourceID(
+			ctx, co, tenant, na.SubnetRef, "Subnet", subnetUUIDLabel, &v1alpha1.Subnet{},
+		)
+		if err != nil {
+			return nil, err
+		}
+
 		sgRefs := make([]*privatev1.SecurityGroupLocalReference, 0, len(na.SecurityGroupRefs))
 		for _, sg := range na.SecurityGroupRefs {
-			sgRefs = append(sgRefs, privatev1.SecurityGroupLocalReference_builder{Name: sg}.Build())
+			sgID, err := r.networkResourceID(
+				ctx, co, tenant, sg, "SecurityGroup", securityGroupUUIDLabel, &v1alpha1.SecurityGroup{},
+			)
+			if err != nil {
+				return nil, err
+			}
+			sgRefs = append(sgRefs, privatev1.SecurityGroupLocalReference_builder{Id: sgID}.Build())
 		}
 		primary := true
 		netAttachments = []*privatev1.BareMetalNetworkAttachment{
 			privatev1.BareMetalNetworkAttachment_builder{
-				Subnet:         privatev1.SubnetLocalReference_builder{Name: na.SubnetRef}.Build(),
+				Subnet:         privatev1.SubnetLocalReference_builder{Id: subnetID}.Build(),
 				SecurityGroups: sgRefs,
 				Interface:      &fabricInterface,
 				Primary:        &primary,
@@ -1076,7 +1093,7 @@ func (r *Reconciler) buildBMICreateRequest(
 			Annotations: annotations,
 		}.Build(),
 		Spec: specBuilder.Build(),
-	}.Build()
+	}.Build(), nil
 }
 
 func (r *Reconciler) setFulfillmentServiceUnavailable(

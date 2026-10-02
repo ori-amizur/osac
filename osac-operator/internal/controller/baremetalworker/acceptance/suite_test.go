@@ -27,6 +27,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -76,6 +77,32 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	// Most acceptance scenarios use these tenant-owned network CR references. Keep
+	// them in the envtest API server so BMI request construction exercises the same
+	// CR-name-to-Fulfillment-ID translation as production.
+	Expect(k8sClient.Create(ctx, &osacv1alpha1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-subnet",
+			Namespace: testNamespace,
+			Labels:    map[string]string{"osac.openshift.io/subnet-uuid": "test-subnet-resource-id"},
+			Annotations: map[string]string{
+				"osac.openshift.io/tenant": "tenant1",
+			},
+		},
+		Spec: osacv1alpha1.SubnetSpec{VirtualNetwork: "test-vnet", IPv4CIDR: "192.0.2.0/24"},
+	})).To(Succeed())
+	Expect(k8sClient.Create(ctx, &osacv1alpha1.SecurityGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sg-default",
+			Namespace: testNamespace,
+			Labels:    map[string]string{"osac.openshift.io/securitygroup-uuid": "test-security-group-resource-id"},
+			Annotations: map[string]string{
+				"osac.openshift.io/tenant": "tenant1",
+			},
+		},
+		Spec: osacv1alpha1.SecurityGroupSpec{VirtualNetwork: "test-vnet"},
+	})).To(Succeed())
 })
 
 var _ = AfterSuite(func() {

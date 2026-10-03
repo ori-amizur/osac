@@ -87,7 +87,10 @@ def pytest_configure(config: pytest.Config) -> None:
     e2e.log artifact.
     """
     config.addinivalue_line("markers", "metering: test verifies metering events via the test adapter HTTP API")
-    config.addinivalue_line("markers", "caas_cluster_create_focus: temporarily isolate the primary CaaS PR E2E")
+    config.addinivalue_line(
+        "markers",
+        "requires_caas_fabric: test provisions CaaS bare-metal workers and requires a fabric-backed NetworkClass",
+    )
     config.addinivalue_line("markers", "requires_caas: test requires the CaaS service to be enabled")
     config.addinivalue_line("markers", "requires_bmaas: test requires the BMaaS service to be enabled")
     config.addinivalue_line("markers", "requires_vmaas: test requires the VMaaS service to be enabled")

@@ -217,26 +217,25 @@ jobs:
       # test-source=osac prefixes tests/e2e/. PR/merge_group: full caas suite
       # (sanity + regression). Schedule: regression. workflow_dispatch: honor
       # input, else sanity (caas for the full suite).
-      # Temporary PR #1221 focus: run only test_cluster_create while validating
-      # its CaaS/BMaaS provisioning path. Restore full PR coverage after it works.
+      # The shared CaaS CI profile is k8s_only and has no fabric manager. Keep
+      # the deployed BMaaS worker journeys for the opt-in CaaS Netris workflow;
+      # those tests are marked requires_caas_fabric below.
       test-suite: >-
         ${{
           inputs.test-suite != '' && inputs.test-suite ||
-          github.event_name == 'pull_request' && github.event.pull_request.number == 1221 && 'caas/sanity' ||
           (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'caas' ||
           github.event_name == 'schedule' && 'caas/regression' ||
           'caas/sanity'
         }}
       test-filter: ${{ inputs.test-filter || '' }}
-      # The reusable workflow quotes -m properly but splits compound -k filters;
-      # a dedicated marker selects exactly one test without matching similarly
-      # named test_cluster_create_with_* cases. Other PRs and scheduled runs
-      # retain their normal CaaS and reference coverage.
+      # The shared caas-ci profile has no physical fabric. Exclude worker
+      # provisioning journeys that require one; run those through the
+      # e2e-caas-netris optional workflow.
       test-marker: >-
         ${{
-          inputs.test-marker != '' && inputs.test-marker ||
-          github.event_name == 'pull_request' && github.event.pull_request.number == 1221 && 'caas_cluster_create_focus' ||
-          'sanity or regression or requires_caas or reference_common'
+          inputs.test-marker != '' &&
+            format('({0}) and not requires_caas_fabric', inputs.test-marker) ||
+          '(sanity or regression or requires_caas or reference_common) and not requires_caas_fabric'
         }}
       # osac-installer now lives as a subdirectory of this same monorepo checkout
       # (its Chart.yaml deps resolve fulfillment-service/osac-operator/osac-aap/BMF

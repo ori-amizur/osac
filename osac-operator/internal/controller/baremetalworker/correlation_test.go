@@ -147,6 +147,67 @@ var _ = Describe("matchAgentToBMI", func() {
 	)
 })
 
+var _ = Describe("listAgents namespace isolation", func() {
+	const (
+		clusterOrderNamespace = "osac-e2e-ci"
+		discoveryNamespace    = "hardware-inventory"
+		clusterOrderName      = "ci-cluster"
+	)
+
+	makeAgent := func(name, namespace string, labels map[string]string) *unstructured.Unstructured {
+		agent := &unstructured.Unstructured{Object: map[string]interface{}{}}
+		agent.SetGroupVersionKind(agentGVK)
+		agent.SetName(name)
+		agent.SetNamespace(namespace)
+		agent.SetLabels(labels)
+		return agent
+	}
+
+	newClient := func(objects ...client.Object) client.Client {
+		s := runtime.NewScheme()
+		Expect(v1alpha1.AddToScheme(s)).To(Succeed())
+		s.AddKnownTypeWithName(agentGVK, &unstructured.Unstructured{})
+		agentListGVK := agentGVK
+		agentListGVK.Kind += "List"
+		s.AddKnownTypeWithName(agentListGVK, &unstructured.UnstructuredList{})
+		return clientfake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+	}
+
+	It("lists the ClusterOrder InfraEnv Agent and ignores a matching shared discovery Agent", func() {
+		co := &v1alpha1.ClusterOrder{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterOrderName, Namespace: clusterOrderNamespace},
+		}
+		infraEnvName := co.Name + infraEnvNameSuffix
+		orderAgent := makeAgent("order-agent", clusterOrderNamespace, map[string]string{
+			infraEnvAgentLabel: infraEnvName,
+		})
+		discoveryAgent := makeAgent("discovery-agent", discoveryNamespace, map[string]string{
+			infraEnvAgentLabel: infraEnvName,
+			clusterOrderLabel:  co.Name,
+		})
+		r := &Reconciler{Client: newClient(co, orderAgent, discoveryAgent)}
+
+		agents, err := r.listAgents(context.Background(), co)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(agents.Items).To(HaveLen(1))
+		Expect(agents.Items[0].GetName()).To(Equal("order-agent"))
+	})
+
+	It("does not use a shared discovery Agent as the ClusterOrder-label fallback", func() {
+		co := &v1alpha1.ClusterOrder{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterOrderName, Namespace: clusterOrderNamespace},
+		}
+		discoveryAgent := makeAgent("discovery-agent", discoveryNamespace, map[string]string{
+			clusterOrderLabel: co.Name,
+		})
+		r := &Reconciler{Client: newClient(co, discoveryAgent)}
+
+		agents, err := r.listAgents(context.Background(), co)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(agents.Items).To(BeEmpty())
+	})
+})
+
 var _ = Describe("extractAgentMACs", func() {
 	DescribeTable("extracts MAC addresses from agent inventory",
 		func(obj map[string]interface{}, want []string) {

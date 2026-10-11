@@ -852,6 +852,8 @@ var _ = Describe("BareMetalWorkerReconciler reconcileWorkers", func() {
 
 	It("creates BMIs with correct fields for a single-worker node set", func() {
 		preloadDiskImageChain()
+		orderIgnition := `{"ignition":{"version":"3.2.0"},"testMarker":"cluster-order-infraenv"}`
+		ign.SetContent([]byte(orderIgnition))
 		co := newBareMetalClusterOrder("bmw-create", 1)
 		create(co)
 		makeInfraEnvReady("bmw-create")
@@ -875,7 +877,7 @@ var _ = Describe("BareMetalWorkerReconciler reconcileWorkers", func() {
 		Expect(bmi.GetSpec().GetInstanceType().GetName()).To(Equal("bm-standard"))
 
 		userData := bmi.GetSpec().GetUserData()
-		Expect(userData).ToNot(BeEmpty())
+		Expect(userData).To(Equal(orderIgnition), "the BMI must receive the ignition fetched from its ClusterOrder InfraEnv")
 		Expect(json.Valid([]byte(userData))).To(BeTrue())
 
 		netAttachments := bmi.GetSpec().GetNetworkAttachments()

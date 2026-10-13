@@ -65,9 +65,9 @@
         that:
           - install_step_cluster_infra_default is defined
           - install_step_cluster_infra_default.name == "osac.service.cluster_infra"
-          - install_step_cluster_infra_default.tasks_from == "ci_create.yaml"
+          - install_step_cluster_infra_default.tasks_from == "ci/create.yaml"
           - install_step_cluster_network_default is not defined
         fail_msg: >-
           ocp_ci_small must define install_step_cluster_infra_default pointing
-          to osac.service.cluster_infra ci_create.yaml and must not define the
+          to osac.service.cluster_infra ci/create.yaml and must not define the
           old install_step_cluster_network_default (OSAC-5697).

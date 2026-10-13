@@ -54,7 +54,3 @@
   loop: "{{ ci_unapproved_agents }}"
   loop_control:
     label: "Approve agent {{ item.metadata.name }}"
-
-- name: Set cluster_infra_network_name
-  ansible.builtin.set_fact:
-    cluster_infra_network_name: "network-{{ cluster_infra_name }}"

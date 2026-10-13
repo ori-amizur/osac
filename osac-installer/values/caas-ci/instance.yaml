@@ -10,8 +10,12 @@ global:
   services:
     caas:
       enabled: true
+    # CaaS-over-BMaaS registers the RHCOS DiskImage through the VMaaS-owned
+    # DiskImages API even though it does not provision VMaaS instances.
     vmaas:
       enabled: true
+    # CaaS requires BMaaS API endpoints; the BMF operator itself runs with
+    # replicaCount: 0 because the CaaS CI cluster has no Metal3 infrastructure.
     bmaas:
       enabled: true
     maas:

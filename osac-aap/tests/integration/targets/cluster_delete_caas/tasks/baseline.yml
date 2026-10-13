@@ -61,10 +61,10 @@
         that:
           - delete_step_cluster_infra_default is defined
           - delete_step_cluster_infra_default.name == "osac.service.cluster_infra"
-          - delete_step_cluster_infra_default.tasks_from == "ci_delete.yaml"
+          - delete_step_cluster_infra_default.tasks_from == "ci/delete.yaml"
           - delete_step_cluster_network_default is not defined
           - delete_step_pre_delete_hook_default.tasks_from == "noop.yaml"
         fail_msg: >-
           ocp_ci_small must define delete_step_cluster_infra_default pointing
-          to osac.service.cluster_infra ci_delete.yaml and must not define the
+          to osac.service.cluster_infra ci/delete.yaml and must not define the
           old delete_step_cluster_network_default (OSAC-5697).

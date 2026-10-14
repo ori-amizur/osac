@@ -432,6 +432,14 @@ cluster = resource('ConfigMap', 'cluster-fulfillment-ig')['data']
 assert cluster['NETWORK_CLASS'] == 'agentless_net'
 assert cluster['NETWORK_STEPS_COLLECTION'] == 'agentless_net.steps'
 resource('ConfigMap', 'network-fulfillment-ig')
+operator = resource('Deployment', 'osac-operator')
+managers = [container for container in operator['spec']['template']['spec']['containers']
+            if container['name'] == 'manager']
+assert len(managers) == 1, 'expected one operator manager container'
+compute_controller = [entry for entry in managers[0]['env']
+                      if entry['name'] == 'OSAC_ENABLE_COMPUTE_INSTANCE_CONTROLLER']
+assert len(compute_controller) == 1 and compute_controller[0].get('value') == 'false', \
+    'CaaS CI without KubeVirt must disable the ComputeInstance controller'
 PY
 
 # caas-ci guards: a conflicting fabric class, disabled network managers,

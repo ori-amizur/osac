@@ -21,6 +21,7 @@
         kind: Agent
         namespace: "{{ cluster_infra_namespace }}-{{ cluster_infra_name }}"
       register: cluster_infra_ci_agents
+      no_log: true
 
     - name: Delete remaining agents
       kubernetes.core.k8s:
@@ -33,3 +34,4 @@
       loop_control:
         label: "{{ item.metadata.name }}"
       when: cluster_infra_ci_agents.resources | length > 0
+      no_log: true

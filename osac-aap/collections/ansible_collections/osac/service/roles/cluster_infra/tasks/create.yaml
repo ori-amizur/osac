@@ -30,11 +30,13 @@
      | map(attribute='numberOfNodes') | map('int') | sum)
   retries: 60
   delay: 10
+  no_log: true
 
 - name: Select unapproved agents
   ansible.builtin.set_fact:
     ci_unapproved_agents: >-
       {{ ci_agents.resources | selectattr('spec.approved', 'false') | list }}
+  no_log: true
 
 - name: Approve agents in cluster namespace
   kubernetes.core.k8s_json_patch:
@@ -49,3 +51,4 @@
   loop: "{{ ci_unapproved_agents }}"
   loop_control:
     label: "Approve agent {{ item.metadata.name }}"
+  no_log: true

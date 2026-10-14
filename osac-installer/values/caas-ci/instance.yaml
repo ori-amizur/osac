@@ -41,6 +41,7 @@ operator:
       clientIdKey: client-id
       clientSecretKey: client-secret
   controllers:
+    computeInstance: false
     tenant: true
     networking: true
     networkingProvisioning: false

@@ -46,6 +46,10 @@ operator:
     networking: true
     networkingProvisioning: false
     storage: true
+  # MCE's Assisted Service ignition URL uses the OpenShift ingress Route;
+  # trust its cluster-managed CA instead of bypassing TLS verification.
+  ignition:
+    trustIngressCA: true
   hubAccess:
     enabled: true
   # Network manager ConfigMaps are required for the Networking API dispatcher.

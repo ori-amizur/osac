@@ -18,3 +18,4 @@
     - "*.apps.{{ external_access_name }}.{{ external_access_base_domain }}"
   loop_control:
     label: "dns-record"
+  no_log: true

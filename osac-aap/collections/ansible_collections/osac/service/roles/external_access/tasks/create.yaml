@@ -9,6 +9,7 @@
     external_access_api_domain: "api.{{ external_access_name }}.{{ external_access_base_domain }}"
     external_access_api_int_domain: "api-int.{{ external_access_name }}.{{ external_access_base_domain }}"
     external_access_ingress_domain: "apps.{{ external_access_name }}.{{ external_access_base_domain }}"
+  no_log: true
 
 - name: Get kube-apiserver service
   kubernetes.core.k8s_info:
@@ -23,10 +24,12 @@
     - external_access_kube_apiserver_service.resources[0].status.loadBalancer.ingress[0].ip is defined
   retries: "{{ external_access_resource_wait_retries }}"
   delay: "{{ external_access_resource_wait_delay }}"
+  no_log: true
 
 - name: Set API IP
   ansible.builtin.set_fact:
     external_access_api_ip: "{{ external_access_kube_apiserver_service.resources[0].status.loadBalancer.ingress[0].ip }}"
+  no_log: true
 
 - name: Get agents assigned to this cluster
   kubernetes.core.k8s_info:
@@ -49,6 +52,7 @@
       | list | length > 0
   retries: "{{ external_access_resource_wait_retries }}"
   delay: "{{ external_access_resource_wait_delay }}"
+  no_log: true
 
 - name: Set ingress IP from first agent
   ansible.builtin.set_fact:
@@ -60,6 +64,7 @@
          | reject('match', '^127\.')
          | first
          | ansible.utils.ipaddr('address') }}
+  no_log: true
 
 - name: Create DNS records
   when: >-
@@ -83,6 +88,7 @@
       addr: "{{ external_access_ingress_ip }}"
   loop_control:
     label: "dns-record"
+  no_log: true
 
 - name: Wait for DNS records
   when: >-
@@ -98,6 +104,7 @@
     - "default-router.{{ external_access_ingress_domain }}"
   loop_control:
     label: "dns-record"
+  no_log: true
 
 - name: Get managed cluster admin kubeconfig secret
   ansible.builtin.include_role:
@@ -133,3 +140,4 @@
     - external_access_api_internal_ip | length > 0
     - (external_access_metallb_ingress_ip is defined and external_access_metallb_ingress_ip | length > 0) or
       (external_access_ingress_ip is defined and external_access_ingress_ip | length > 0)
+  no_log: true

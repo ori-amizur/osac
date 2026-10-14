@@ -8,10 +8,10 @@
       tasks_from: main.yaml
     delete_step_external_access_default:
       name: osac.service.external_access
-      tasks_from: ci/delete.yaml
+      tasks_from: delete.yaml
     delete_step_cluster_infra_default:
       name: osac.service.cluster_infra
-      tasks_from: ci/delete.yaml
+      tasks_from: delete.yaml
     delete_step_post_delete_hook_default:
       name: osac.templates.ocp_ci_small
       tasks_from: noop.yaml

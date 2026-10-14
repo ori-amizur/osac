@@ -47,6 +47,13 @@ operator:
     storage: true
   hubAccess:
     enabled: true
+  # Network manager ConfigMaps are required for the Networking API dispatcher.
+  # The operator subchart defaults networkManagers.enabled=true, but the CaaS
+  # CI profile states it explicitly so CI values are self-documenting.
+  # Individual k8s_only manager enablement is auto-derived by the Helm facade
+  # from global.networking (chart-default k8sManager=k8s_only).
+  networkManagers:
+    enabled: true
   tenants:
   - name: shared
   - name: osac-e2e-ci

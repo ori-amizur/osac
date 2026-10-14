@@ -448,6 +448,15 @@ compute_controller = [entry for entry in managers[0]['env']
                       if entry['name'] == 'OSAC_ENABLE_COMPUTE_INSTANCE_CONTROLLER']
 assert len(compute_controller) == 1 and compute_controller[0].get('value') == 'false', \
     'CaaS CI without KubeVirt must disable the ComputeInstance controller'
+ignition_trust = [entry for entry in managers[0]['env']
+                  if entry['name'] == 'OSAC_IGNITION_TRUST_INGRESS_CA']
+assert len(ignition_trust) == 1 and ignition_trust[0].get('value') == 'true', \
+    'CaaS CI must trust the OpenShift ingress CA for Assisted Service discovery ignition'
+ingress_ca_rules = [rule for rule in resource('ClusterRole', 'osac-operator-manager')['rules']
+                    if rule.get('apiGroups') == [''] and rule.get('resources') == ['configmaps']
+                    and rule.get('resourceNames') == ['default-ingress-cert']]
+assert len(ingress_ca_rules) == 1 and ingress_ca_rules[0].get('verbs') == ['get'], \
+    'CaaS CI must grant read-only access to the cluster-managed ingress CA bundle'
 PY
 
 # caas-ci guards: a conflicting fabric class, disabled network managers,

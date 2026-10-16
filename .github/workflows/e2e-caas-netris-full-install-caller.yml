@@ -8,6 +8,9 @@ permissions:
   pull-requests: read
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [test/combined-1221-osac-1447]
   pull_request_target:
     types: [labeled]
     branches: [main]

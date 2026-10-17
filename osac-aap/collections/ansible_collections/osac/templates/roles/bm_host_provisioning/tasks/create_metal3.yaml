@@ -64,6 +64,17 @@
               '{{ bare_metal_instance.metadata.namespace }}'
           when: user_data_secret_result.resources | length == 0
 
+        - name: Detect Assisted Installer ignition user data
+          block:
+            - name: Check whether user data is Assisted Installer ignition
+              ansible.builtin.set_fact:
+                wait_for_assisted_agent: >-
+                  {{ (user_data_secret_result.resources[0].data.userdata | b64decode | from_json).ignition is defined }}
+          rescue:
+            - name: Treat non-Ignition user data as cloud-init
+              ansible.builtin.set_fact:
+                wait_for_assisted_agent: false
+
         - name: Create userData Secret in BMH namespace
           kubernetes.core.k8s:
             state: present
@@ -124,6 +135,24 @@
       until: bmh_provision_status.resources[0].status.provisioning.state | default('') == "provisioned"
       retries: 120
       delay: 30
+
+    - name: Wait for the host's Assisted Agent to register
+      when: wait_for_assisted_agent | default(false) | bool
+      kubernetes.core.k8s_info:
+        api_version: agent-install.openshift.io/v1beta1
+        kind: Agent
+        namespace: "{{ bare_metal_instance.metadata.namespace }}"
+      register: bmh_assisted_agents
+      until: >-
+        bmh_assisted_agents.resources | default([])
+        | selectattr('status.inventory.interfaces', 'defined')
+        | map(attribute='status.inventory.interfaces')
+        | flatten
+        | selectattr('macAddress', 'equalto', bmh_info.spec.bootMACAddress)
+        | list
+        | length > 0
+      retries: 180
+      delay: 10
 
 - name: Metal3 provisioning completed
   ansible.builtin.debug:

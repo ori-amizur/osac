@@ -16,6 +16,7 @@ package baremetalworker
 import (
 	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -205,6 +206,42 @@ var _ = Describe("listAgents namespace isolation", func() {
 		agents, err := r.listAgents(context.Background(), co)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(agents.Items).To(BeEmpty())
+	})
+})
+
+var _ = Describe("workerPhaseStartTime", func() {
+	It("uses the worker creation timestamp instead of prior failure or order timestamps", func() {
+		orderCreated := metav1.NewTime(time.Date(2026, 10, 17, 12, 42, 51, 0, time.UTC))
+		workerCreated := metav1.NewTime(time.Date(2026, 10, 17, 13, 26, 35, 0, time.UTC))
+		priorFailure := metav1.NewTime(time.Date(2026, 10, 17, 13, 21, 34, 0, time.UTC))
+		co := &v1alpha1.ClusterOrder{
+			ObjectMeta: metav1.ObjectMeta{Name: "ci-cluster", CreationTimestamp: orderCreated},
+			Status: v1alpha1.ClusterOrderStatus{
+				Workers: []v1alpha1.WorkerStatus{{
+					Name:              "ci-cluster-worker-1",
+					Phase:             workerPhaseWaitingForAgent,
+					CreationTimestamp: workerCreated,
+					LastFailureTime:   &priorFailure,
+				}},
+			},
+		}
+
+		Expect((&Reconciler{}).workerPhaseStartTime(co, "ci-cluster-worker-1")).To(Equal(workerCreated.Time))
+	})
+
+	It("falls back to the ClusterOrder timestamp for legacy worker status", func() {
+		orderCreated := metav1.NewTime(time.Date(2026, 10, 17, 12, 42, 51, 0, time.UTC))
+		co := &v1alpha1.ClusterOrder{
+			ObjectMeta: metav1.ObjectMeta{Name: "ci-cluster", CreationTimestamp: orderCreated},
+			Status: v1alpha1.ClusterOrderStatus{
+				Workers: []v1alpha1.WorkerStatus{{
+					Name:  "ci-cluster-worker-1",
+					Phase: workerPhaseWaitingForAgent,
+				}},
+			},
+		}
+
+		Expect((&Reconciler{}).workerPhaseStartTime(co, "ci-cluster-worker-1")).To(Equal(orderCreated.Time))
 	})
 })
 

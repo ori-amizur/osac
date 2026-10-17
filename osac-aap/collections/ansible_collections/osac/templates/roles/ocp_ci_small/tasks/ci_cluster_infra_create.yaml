@@ -26,16 +26,16 @@
       - "infraenvs.agent-install.openshift.io={{ cluster_infra_name }}-infraenv"
   register: ci_agents
   until: >-
-    ci_agents.resources | length >=
+    (ci_agents.resources | default([])) | length >=
     (cluster_infra_node_requests
      | map(attribute='numberOfNodes') | map('int') | sum)
-  retries: 60
+  retries: 270
   delay: 10
 
 - name: Select unapproved agents
   ansible.builtin.set_fact:
     ci_unapproved_agents: >-
-      {{ ci_agents.resources | selectattr('spec.approved', 'false') | list }}
+      {{ (ci_agents.resources | default([])) | selectattr('spec.approved', 'false') | list }}
 
 - name: Approve unapproved agents for this order
   kubernetes.core.k8s_json_patch:

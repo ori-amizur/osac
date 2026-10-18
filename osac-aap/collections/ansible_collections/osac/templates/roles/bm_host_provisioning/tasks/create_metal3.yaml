@@ -27,6 +27,11 @@
   ansible.builtin.set_fact:
     bmh_info: "{{ bmh_result.resources[0] }}"
 
+- name: Set the default Metal3 image
+  ansible.builtin.set_fact:
+    bmh_image_url: "{{ template_params.imageURL }}"
+    bmh_image_format: ""
+
 - name: Default networkData to DHCP on discovered Metal3 interfaces
   ansible.builtin.include_tasks: default_network_data.yaml
 
@@ -40,7 +45,8 @@
   ansible.builtin.set_fact:
     already_provisioned: >-
       {{ (bmh_info.status.provisioning.state | default('') == 'provisioned') and
-         (bmh_info.status.provisioning.image.url | default('') == template_params.imageURL) }}
+         (bmh_info.status.provisioning.image.url | default('') == bmh_image_url) and
+         (bmh_info.status.provisioning.image.format | default('') == bmh_image_format) }}
 
 - name: Skip provisioning when BMH already has the desired image
   when: already_provisioned | bool
@@ -80,6 +86,7 @@
                 wait_for_assisted_agent: false
 
         - name: Create userData Secret in BMH namespace
+          when: not (wait_for_assisted_agent | default(false) | bool)
           kubernetes.core.k8s:
             state: present
             definition:
@@ -90,6 +97,62 @@
                 namespace: "{{ bmh_namespace }}"
               data:
                 userData: "{{ user_data_secret_result.resources[0].data.userdata }}"
+
+    - name: Resolve the Assisted Installer discovery ISO
+      when: wait_for_assisted_agent | default(false) | bool
+      block:
+        - name: Extract the owning ClusterOrder
+          ansible.builtin.set_fact:
+            cluster_order_owner: "{{ bare_metal_instance.metadata.annotations['osac.openshift.io/owner-reference'] | default('') }}"
+            cluster_order_name: "{{ cluster_order_owner.split('/')[1] | default('') }}"
+
+        - name: Fail when the Assisted worker has no ClusterOrder owner
+          ansible.builtin.fail:
+            msg: "Assisted worker '{{ bare_metal_instance.metadata.name }}' has no ClusterOrder owner-reference annotation"
+          when: not (cluster_order_owner.startswith('ClusterOrder/') and cluster_order_owner.split('/') | length == 2)
+
+        - name: Get the owning ClusterOrder
+          kubernetes.core.k8s_info:
+            api_version: osac.openshift.io/v1alpha1
+            kind: ClusterOrder
+            namespace: "{{ bare_metal_instance.metadata.namespace }}"
+            name: "{{ cluster_order_name }}"
+          register: cluster_order_result
+
+        - name: Fail when the owning ClusterOrder is not found
+          ansible.builtin.fail:
+            msg: "ClusterOrder '{{ cluster_order_name }}' not found in namespace '{{ bare_metal_instance.metadata.namespace }}'"
+          when: cluster_order_result.resources | length == 0
+
+        - name: Fail when the Assisted worker tenant does not own the ClusterOrder
+          ansible.builtin.fail:
+            msg: "Assisted worker '{{ bare_metal_instance.metadata.name }}' is not in the same tenant as ClusterOrder '{{ cluster_order_name }}'"
+          when: >-
+            cluster_order_result.resources[0].metadata.annotations['osac.openshift.io/tenant'] | default('')
+            != bare_metal_instance.metadata.annotations['osac.openshift.io/tenant'] | default('')
+
+        - name: Get the ClusterOrder InfraEnv
+          kubernetes.core.k8s_info:
+            api_version: agent-install.openshift.io/v1beta1
+            kind: InfraEnv
+            namespace: "{{ bare_metal_instance.metadata.namespace }}"
+            name: "{{ cluster_order_name }}-infraenv"
+          register: infraenv_result
+
+        - name: Fail when the ClusterOrder InfraEnv is not found
+          ansible.builtin.fail:
+            msg: "InfraEnv '{{ cluster_order_name }}-infraenv' not found in namespace '{{ bare_metal_instance.metadata.namespace }}'"
+          when: infraenv_result.resources | length == 0
+
+        - name: Select the Assisted discovery ISO as a live-iso image
+          ansible.builtin.set_fact:
+            bmh_image_url: "{{ infraenv_result.resources[0].status.isoDownloadURL | default('') }}"
+            bmh_image_format: "live-iso"
+
+        - name: Fail when the InfraEnv discovery ISO is not ready
+          ansible.builtin.fail:
+            msg: "InfraEnv '{{ infraenv_result.resources[0].metadata.name }}' has no discovery ISO URL"
+          when: bmh_image_url | length == 0
 
     - name: Create metaData Secret with SSH public key
       when: ssh_key | length > 0

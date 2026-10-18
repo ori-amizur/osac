@@ -48,7 +48,7 @@ def test_assisted_agent_wait_is_gated_to_ignition_and_matches_bmh_mac() -> None:
     assert wait["delay"] == 10
 
 
-def test_metal3_network_data_defaults_to_boot_interface_dhcp() -> None:
+def test_metal3_network_data_defaults_to_discovered_interface_dhcp() -> None:
     create_tasks = yaml.safe_load(CREATE_METAL3_TASKS.read_text())
     default_tasks = yaml.safe_load(DEFAULT_NETWORK_DATA_TASKS.read_text())
     patch_tasks = yaml.safe_load(BUILD_BMH_PATCH_TASKS.read_text())
@@ -62,7 +62,7 @@ def test_metal3_network_data_defaults_to_boot_interface_dhcp() -> None:
     )
     default = next(
         task for task in create_tasks
-        if task.get("name") == "Default networkData to DHCP on the Metal3 boot interface"
+        if task.get("name") == "Default networkData to DHCP on discovered Metal3 interfaces"
     )
     secret = next(
         task for task in provision_block if task.get("name") == "Create networkData Secret"
@@ -80,9 +80,10 @@ def test_metal3_network_data_defaults_to_boot_interface_dhcp() -> None:
         "{{ bmh_network_data }}"
     )
     assert patch["when"] == "bmh_network_data | default('') | length > 0"
-    assert default_tasks[0]["when"] == (
-        "bmh_network_data | default('') | length == 0 and bmh_info.spec.bootMACAddress | default('') | length > 0"
-    )
+    assert "bmh_info.status.hardware.nic" in default_tasks[0]["when"]
+    assert "bmh_info.spec.bootMACAddress | default('')" in default_tasks[0]["when"]
     network_data = default_tasks[0]["ansible.builtin.set_fact"]["bmh_network_data"]
     assert "ipv4_dhcp" in network_data
-    assert "ethernet_mac_address': bmh_info.spec.bootMACAddress" in network_data
+    assert "selectattr('mac', 'defined')" in network_data
+    assert "ethernet_mac_address': nic.mac" in network_data
+    assert "set interface_id = 'interface-' ~ loop.index" in network_data

@@ -78,7 +78,7 @@
           - bmh_patch.spec.image.checksumType == "md5"
         fail_msg: "Non-OCI image BMH patch must contain checksum and checksumType"
 
-- name: BMH Patch Construction - NetworkData defaults to boot-interface DHCP
+- name: BMH Patch Construction - NetworkData defaults to discovered-interface DHCP
   hosts: localhost
   gather_facts: false
 
@@ -98,14 +98,26 @@
         bmh_info:
           spec:
             bootMACAddress: "02:00:00:00:00:01"
+          status:
+            hardware:
+              nic:
+                - mac: "02:00:00:00:00:01"
+                - mac: "02:00:00:00:00:01"
+                - mac: "02:00:00:00:00:02"
         expected_network_data:
           links:
-            - id: boot-interface
+            - id: interface-1
               type: phy
               ethernet_mac_address: "02:00:00:00:00:01"
+            - id: interface-2
+              type: phy
+              ethernet_mac_address: "02:00:00:00:00:02"
           networks:
-            - id: boot-interface-dhcp
-              link: boot-interface
+            - id: interface-1-dhcp
+              link: interface-1
+              type: ipv4_dhcp
+            - id: interface-2-dhcp
+              link: interface-2
               type: ipv4_dhcp
           services: []
 
@@ -119,10 +131,10 @@
         name: osac.templates.bm_host_provisioning
         tasks_from: build_bmh_patch.yaml
 
-    - name: Assert boot-interface DHCP networkData is applied
+    - name: Assert discovered-interface DHCP networkData is applied
       ansible.builtin.assert:
         that:
           - bmh_network_data | from_json == expected_network_data
           - bmh_patch.spec.networkData.name == "test-bmh-network-data"
           - bmh_patch.spec.networkData.namespace == "test-ns"
-        fail_msg: "Metal3 must default to DHCP on the BareMetalHost boot interface"
+        fail_msg: "Metal3 must default to DHCP on every discovered BareMetalHost interface"

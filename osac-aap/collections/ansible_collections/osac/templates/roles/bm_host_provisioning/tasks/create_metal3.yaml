@@ -27,7 +27,7 @@
   ansible.builtin.set_fact:
     bmh_info: "{{ bmh_result.resources[0] }}"
 
-- name: Default networkData to DHCP on the Metal3 boot interface
+- name: Default networkData to DHCP on discovered Metal3 interfaces
   ansible.builtin.include_tasks: default_network_data.yaml
 
 - name: Display current BMH state

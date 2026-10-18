@@ -1,15 +1,14 @@
 ---
 # Cluster infrastructure deletion.
-# Agents live in the cluster namespace (created via per-cluster InfraEnv).
-# When the namespace is deleted as part of hosted cluster teardown, agents
-# are cleaned up automatically.  This task removes any remaining agents if
-# the namespace still exists.
+# Agents live in the ClusterOrder working namespace (created via the
+# per-cluster InfraEnv). Remove any remaining agents while that namespace
+# still exists; HyperShift's control-plane namespace is separate.
 
 - name: Check if cluster namespace still exists
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
-    name: "{{ cluster_infra_namespace }}-{{ cluster_infra_name }}"
+    name: "{{ cluster_infra_agent_namespace }}"
   register: cluster_ns
 
 - name: Clean up agents if namespace still exists
@@ -19,7 +18,7 @@
       kubernetes.core.k8s_info:
         api_version: agent-install.openshift.io/v1beta1
         kind: Agent
-        namespace: "{{ cluster_infra_namespace }}-{{ cluster_infra_name }}"
+        namespace: "{{ cluster_infra_agent_namespace }}"
       register: cluster_infra_ci_agents
       no_log: true
 
@@ -27,7 +26,7 @@
       kubernetes.core.k8s:
         api_version: agent-install.openshift.io/v1beta1
         kind: Agent
-        namespace: "{{ cluster_infra_namespace }}-{{ cluster_infra_name }}"
+        namespace: "{{ cluster_infra_agent_namespace }}"
         name: "{{ item.metadata.name }}"
         state: absent
       loop: "{{ cluster_infra_ci_agents.resources }}"

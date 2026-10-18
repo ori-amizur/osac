@@ -11,7 +11,6 @@ from tests.e2e.core.runner import run, run_unchecked
 
 PUBLIC_API: str = "osac.public.v1"
 PRIVATE_API: str = "osac.private.v1"
-CI_WORKER_RESOURCE_CLASS: str = "ci-worker"
 
 
 def _metadata(*, name: str, tenant: str | None = None) -> dict[str, str]:
@@ -591,7 +590,7 @@ class GRPCClient:
         tenant: str = "shared",
     ) -> str:
         """Create a BareMetalInstanceType via the private API."""
-        selector = host_label_selector or {"osac.openshift.io/resource_class": CI_WORKER_RESOURCE_CLASS}
+        selector = host_label_selector or {"osac.openshift.io/host-type": "default"}
         ports = network_ports or [
             {"name": "ens5", "role": "fabric", "type": "Ethernet", "speed": "10Gbps"},
             {"name": "ens4", "role": "management", "type": "Ethernet", "speed": "10Gbps"},
@@ -736,7 +735,7 @@ class GRPCClient:
     def create_baremetal_instance_type(
         self, *, name: str, fabric_port: str, host_label_selector: dict[str, str] | None = None
     ) -> str:
-        selector = host_label_selector or {"osac.openshift.io/resource_class": CI_WORKER_RESOURCE_CLASS}
+        selector = host_label_selector or {"osac.openshift.io/host-type": "default"}
         response = self.call(
             service=f"{PRIVATE_API}.BareMetalInstanceTypes/Create",
             data={

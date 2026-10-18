@@ -22,7 +22,7 @@
   kubernetes.core.k8s_info:
     api_version: agent-install.openshift.io/v1beta1
     kind: Agent
-    namespace: "{{ cluster_infra_namespace }}-{{ cluster_infra_name }}"
+    namespace: "{{ cluster_infra_agent_namespace }}"
   register: ci_agents
   until: >-
     ci_agents.resources | length >=

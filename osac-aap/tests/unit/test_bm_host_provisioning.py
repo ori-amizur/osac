@@ -72,6 +72,7 @@ def test_assisted_ignition_boots_the_infraenv_discovery_iso() -> None:
         if task.get("name") == "Resolve the Assisted Installer discovery ISO"
     )
     owner = next(task for task in resolve_iso["block"] if task.get("name") == "Extract the owning ClusterOrder")
+    owner_name = next(task for task in resolve_iso["block"] if task.get("name") == "Extract the owning ClusterOrder name")
     cluster_order = next(task for task in resolve_iso["block"] if task.get("name") == "Get the owning ClusterOrder")
     tenant_guard = next(
         task for task in resolve_iso["block"]
@@ -100,6 +101,10 @@ def test_assisted_ignition_boots_the_infraenv_discovery_iso() -> None:
     assert owner["ansible.builtin.set_fact"]["cluster_order_owner"] == (
         "{{ bare_metal_instance.metadata.annotations['osac.openshift.io/owner-reference'] | default('') }}"
     )
+    assert owner_name["ansible.builtin.set_fact"]["cluster_order_name"] == (
+        "{{ cluster_order_owner.split('/')[1] | default('') }}"
+    )
+    assert owner is not owner_name
     assert cluster_order["kubernetes.core.k8s_info"]["kind"] == "ClusterOrder"
     assert "osac.openshift.io/tenant" in tenant_guard["when"]
     assert infraenv["kubernetes.core.k8s_info"]["kind"] == "InfraEnv"

@@ -104,12 +104,18 @@
         - name: Extract the owning ClusterOrder
           ansible.builtin.set_fact:
             cluster_order_owner: "{{ bare_metal_instance.metadata.annotations['osac.openshift.io/owner-reference'] | default('') }}"
+
+        - name: Extract the owning ClusterOrder name
+          ansible.builtin.set_fact:
             cluster_order_name: "{{ cluster_order_owner.split('/')[1] | default('') }}"
 
         - name: Fail when the Assisted worker has no ClusterOrder owner
           ansible.builtin.fail:
             msg: "Assisted worker '{{ bare_metal_instance.metadata.name }}' has no ClusterOrder owner-reference annotation"
-          when: not (cluster_order_owner.startswith('ClusterOrder/') and cluster_order_owner.split('/') | length == 2)
+          when: >-
+            not (cluster_order_owner.startswith('ClusterOrder/')
+            and cluster_order_owner.split('/') | length == 2
+            and cluster_order_name | length > 0)
 
         - name: Get the owning ClusterOrder
           kubernetes.core.k8s_info:

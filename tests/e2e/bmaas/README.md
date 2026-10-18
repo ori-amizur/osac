@@ -8,8 +8,8 @@ with available hosts.
 
 When `OSAC_BMI_INSTANCE_TYPE` is unset, fixtures use the selected shared
 template's `instance_type` reference if present. Otherwise they create and
-clean up a shared type matching CI worker inventory labeled
-`osac.openshift.io/resource_class=ci-worker`, with a fabric port named `data-0`.
+clean up a shared type matching the CI virtual hosts labeled
+`osac.openshift.io/host-type=default`, with a fabric port named `data-0`.
 Set `OSAC_BMI_INSTANCE_TYPE` to select an existing type whose host selector
 and network port names match a different inventory. The sanity and serial
 suites create a temporary CatalogItem with the resolved type as its editable

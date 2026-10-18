@@ -394,12 +394,11 @@ render_failure \
   --set global.networking.fabricManager=netris \
   --set global.networking.k8sManager=
 
-# CaaS CI disables networking provisioning (networkingProvisioning: false) and
-# inherits the chart-default k8s_only manager. The facade still auto-derives
-# the agentless_net AAP backend from the effective k8s_only manager.
+# CaaS CI disables direct networking provisioning (networkingProvisioning:
+# false) and uses the CUDN fabric manager required by bare-metal workers.
 render_success \
   caas-no-provisioning-profile \
-  'k8s_manager\":\"k8s_only' \
+  'fabric_manager\":\"cudn_net' \
   --values "${SCRIPT_DIR}/../values/caas-ci/instance.yaml" \
   --set-string global.clusterDomain=apps.example.test \
   --set-string service.externalHostname=api.example.test \
@@ -424,13 +423,13 @@ assert len(containers) == 1, f"expected one create-network-class container, got 
 body_env = [e for e in containers[0]['env'] if e['name'] == 'NETWORK_CLASS_BODY']
 assert len(body_env) == 1 and 'value' in body_env[0], 'expected one literal NETWORK_CLASS_BODY env var'
 body = json.loads(body_env[0]['value'])
-assert body.get('k8s_manager') == 'k8s_only', 'default class must select k8s_only'
-assert not body.get('fabric_manager'), 'default class must have no fabric manager'
-manager = resource('ConfigMap', 'osac-network-k8s-manager-k8s-only')
-assert manager['data']['name'] == 'k8s_only'
+assert body.get('fabric_manager') == 'cudn_net', 'CaaS class must select cudn_net'
+assert not body.get('k8s_manager'), 'CaaS class must have no separate k8s manager'
+manager = resource('ConfigMap', 'osac-network-fabric-manager-cudn-net')
+assert manager['data']['name'] == 'cudn_net'
 cluster = resource('ConfigMap', 'cluster-fulfillment-ig')['data']
-assert cluster['NETWORK_CLASS'] == 'agentless_net'
-assert cluster['NETWORK_STEPS_COLLECTION'] == 'agentless_net.steps'
+assert cluster['NETWORK_CLASS'] == 'ci'
+assert cluster['NETWORK_STEPS_COLLECTION'] == 'ci.steps'
 resource('ConfigMap', 'network-fulfillment-ig')
 operator = resource('Deployment', 'osac-operator')
 managers = [container for container in operator['spec']['template']['spec']['containers']

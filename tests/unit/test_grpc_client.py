@@ -97,7 +97,7 @@ def test_create_and_delete_shared_baremetal_instance_type(monkeypatch: pytest.Mo
                                 {"name": "data-0", "role": "fabric", "type": "Ethernet", "speed": "10Gbps"}
                             ],
                         },
-                        "host_label_selector": {"match_labels": {"osac.openshift.io/resource_class": "ci-worker"}},
+                        "host_label_selector": {"match_labels": {"osac.openshift.io/host-type": "default"}},
                     },
                 }
             },
@@ -106,7 +106,7 @@ def test_create_and_delete_shared_baremetal_instance_type(monkeypatch: pytest.Mo
     ]
 
 
-def test_create_bare_metal_instance_type_defaults_to_ci_resource_class(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_bare_metal_instance_type_defaults_to_host_type(monkeypatch: pytest.MonkeyPatch) -> None:
     client = GRPCClient(address="fulfillment-api.example.test:443", token="test-token")
     captured: dict[str, Any] = {}
 
@@ -119,5 +119,5 @@ def test_create_bare_metal_instance_type_defaults_to_ci_resource_class(monkeypat
     assert client.create_bare_metal_instance_type(name="ci-worker-bm") == "bmit-ci-worker"
     assert captured["service"] == f"{PRIVATE_API}.BareMetalInstanceTypes/Create"
     assert captured["data"]["object"]["spec"]["host_label_selector"] == {
-        "match_labels": {"osac.openshift.io/resource_class": "ci-worker"}
+        "match_labels": {"osac.openshift.io/host-type": "default"}
     }

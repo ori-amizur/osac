@@ -4,10 +4,11 @@
     bmh_namespace: "{{ bare_metal_instance.spec.externalHostID.split('/')[0] }}"
     bmh_name: "{{ bare_metal_instance.spec.externalHostID.split('/')[1] }}"
 
-- name: Extract SSH public key and userDataSecret from template parameters
+- name: Extract SSH public key, userDataSecret, and networkData from template parameters
   ansible.builtin.set_fact:
     ssh_key: "{{ template_params.sshPublicKey | default('') }}"
     user_data_secret_ref: "{{ template_params.userDataSecret | default('') }}"
+    bmh_network_data: "{{ template_params.networkData | default('') }}"
 
 - name: Get BareMetalHost
   kubernetes.core.k8s_info:
@@ -25,6 +26,9 @@
 - name: Extract BMH info
   ansible.builtin.set_fact:
     bmh_info: "{{ bmh_result.resources[0] }}"
+
+- name: Default networkData to DHCP on the Metal3 boot interface
+  ansible.builtin.include_tasks: default_network_data.yaml
 
 - name: Display current BMH state
   ansible.builtin.debug:
@@ -101,7 +105,7 @@
             metaData: "{{ {'public_keys': {'osac': ssh_key}} | to_nice_yaml }}"
 
     - name: Create networkData Secret
-      when: template_params.networkData | default('') | length > 0
+      when: bmh_network_data | length > 0
       kubernetes.core.k8s:
         state: present
         definition:
@@ -111,7 +115,7 @@
             name: "{{ bmh_name }}-network-data"
             namespace: "{{ bmh_namespace }}"
           stringData:
-            networkData: "{{ template_params.networkData }}"
+            networkData: "{{ bmh_network_data }}"
 
     - name: Build BMH patch
       ansible.builtin.include_tasks: build_bmh_patch.yaml

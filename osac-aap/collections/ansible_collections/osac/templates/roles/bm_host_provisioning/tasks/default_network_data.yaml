@@ -1,0 +1,25 @@
+---
+- name: Default networkData to DHCP on the Metal3 boot interface
+  when: >-
+    bmh_network_data | default('') | length == 0
+    and
+    bmh_info.spec.bootMACAddress | default('') | length > 0
+  ansible.builtin.set_fact:
+    bmh_network_data: >-
+      {{ {
+           'links': [
+             {
+               'id': 'boot-interface',
+               'type': 'phy',
+               'ethernet_mac_address': bmh_info.spec.bootMACAddress
+             }
+           ],
+           'networks': [
+             {
+               'id': 'boot-interface-dhcp',
+               'link': 'boot-interface',
+               'type': 'ipv4_dhcp'
+             }
+           ],
+           'services': []
+         } | to_json }}

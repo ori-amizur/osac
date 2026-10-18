@@ -77,3 +77,52 @@
           - bmh_patch.spec.image.checksum == "deadbeef1234"
           - bmh_patch.spec.image.checksumType == "md5"
         fail_msg: "Non-OCI image BMH patch must contain checksum and checksumType"
+
+- name: BMH Patch Construction - NetworkData defaults to boot-interface DHCP
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    bm_host_metal3_default_image_url: "oci://quay.io/osac-project/fedora-cloud-bmi:44"
+
+  tasks:
+    - name: Set Metal3 context without explicit networkData
+      ansible.builtin.set_fact:
+        template_params:
+          imageURL: "{{ bm_host_metal3_default_image_url }}"
+        ssh_key: ""
+        user_data_secret_ref: ""
+        bmh_name: "test-bmh"
+        bmh_namespace: "test-ns"
+        bmh_network_data: ""
+        bmh_info:
+          spec:
+            bootMACAddress: "02:00:00:00:00:01"
+        expected_network_data:
+          links:
+            - id: boot-interface
+              type: phy
+              ethernet_mac_address: "02:00:00:00:00:01"
+          networks:
+            - id: boot-interface-dhcp
+              link: boot-interface
+              type: ipv4_dhcp
+          services: []
+
+    - name: Apply the networkData default using actual role code
+      ansible.builtin.include_role:
+        name: osac.templates.bm_host_provisioning
+        tasks_from: default_network_data.yaml
+
+    - name: Build BMH patch using actual role code
+      ansible.builtin.include_role:
+        name: osac.templates.bm_host_provisioning
+        tasks_from: build_bmh_patch.yaml
+
+    - name: Assert boot-interface DHCP networkData is applied
+      ansible.builtin.assert:
+        that:
+          - bmh_network_data | from_json == expected_network_data
+          - bmh_patch.spec.networkData.name == "test-bmh-network-data"
+          - bmh_patch.spec.networkData.namespace == "test-ns"
+        fail_msg: "Metal3 must default to DHCP on the BareMetalHost boot interface"

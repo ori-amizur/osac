@@ -1084,6 +1084,17 @@ func (s *PrivateClustersServer) injectDefaultNetworkAttachment(ctx context.Conte
 	if subnet == nil {
 		return nil
 	}
+	if clusterHasBareMetalNodeSets(cluster) {
+		networkClass, networkClassErr := findSingletonNetworkClass(ctx, s.networkClassesDao)
+		if networkClassErr != nil {
+			s.logger.ErrorContext(ctx, "failed to look up default NetworkClass", slog.Any("error", networkClassErr))
+			return grpcstatus.Errorf(grpccodes.Internal, "failed to look up default NetworkClass")
+		}
+		if networkClass != nil && !networkClass.HasFabricManager() {
+			s.logger.InfoContext(ctx, "skipped default network attachment for bare-metal cluster without a fabric manager")
+			return nil
+		}
+	}
 
 	attachment := privatev1.ClusterNetworkAttachment_builder{
 		Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
@@ -1111,6 +1122,15 @@ func (s *PrivateClustersServer) injectDefaultNetworkAttachment(ctx context.Conte
 	}
 	s.logger.LogAttrs(ctx, slog.LevelInfo, "auto-injected default network attachment", attrs...)
 	return nil
+}
+
+func clusterHasBareMetalNodeSets(cluster *privatev1.Cluster) bool {
+	for _, nodeSet := range cluster.GetSpec().GetNodeSets() {
+		if nodeSet.GetBaremetalInstanceType() != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // validateNetworkAttachmentState validates that the subnet referenced by the

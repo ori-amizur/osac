@@ -488,6 +488,7 @@ var _ = Describe("Private clusters server", func() {
 					Name:   "test-network-class",
 					Tenant: testTenant,
 				}.Build(),
+				K8SManager: new("k8s_only"),
 				Status: privatev1.NetworkClassStatus_builder{
 					State: privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
 					Hub:   "network-hub-a",
@@ -643,6 +644,48 @@ var _ = Describe("Private clusters server", func() {
 			Expect(nodeSets["gpu"].GetBaremetalInstanceType().GetId()).To(Equal("acme-gpu-bmit-id"))
 			Expect(nodeSets["gpu"].GetBaremetalInstanceType().GetName()).To(Equal("acme-gpu-name"))
 			Expect(nodeSets["gpu"].GetSize()).To(BeNumerically("==", 1))
+		})
+
+		It("Skips default network attachment for k8s-only bare-metal clusters", func() {
+			subnetsDao, err := dao.NewGenericDAO[*privatev1.Subnet]().
+				SetLogger(logger).
+				SetTenancyLogic(tenancy).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+			_, err = subnetsDao.Create().SetObject(privatev1.Subnet_builder{
+				Id: "default-caas-subnet",
+				Metadata: privatev1.Metadata_builder{
+					Name:   "default-caas-subnet",
+					Tenant: testTenant,
+					Labels: map[string]string{defaultLabel: "true"},
+				}.Build(),
+				Spec: privatev1.SubnetSpec_builder{
+					VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: "test-vnet"}.Build(),
+					Ipv4Cidr:       new("10.0.1.0/24"),
+				}.Build(),
+				Status: privatev1.SubnetStatus_builder{
+					State: privatev1.SubnetState_SUBNET_STATE_READY,
+					Hub:   "network-hub-a",
+				}.Build(),
+			}.Build()).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			response, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
+				Object: privatev1.Cluster_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name: fmt.Sprintf("test-%s", uuid.New()[24:32]),
+					}.Build(),
+					Spec: privatev1.ClusterSpec_builder{
+						Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+					}.Build(),
+					Status: privatev1.ClusterStatus_builder{
+						Hub: "my-hub-id",
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(response.GetObject().GetSpec().GetNodeSets()).ToNot(BeEmpty())
+			Expect(response.GetObject().GetSpec().GetNetworkAttachment()).To(BeNil())
 		})
 
 		It("rejects an IPv6-only pool for automatic ExternalIP allocation", func() {

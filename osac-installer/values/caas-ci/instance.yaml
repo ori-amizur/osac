@@ -184,15 +184,23 @@ validation:
   enabled: true
 
 # --- Bare Metal Fulfillment Operator ---
-# BMaaS is enabled (so CaaS satisfies the "requires VMaaS or BMaaS" constraint
-# and BMaaS API endpoints register), but the BMF operator runs with zero
-# replicas because the CaaS CI cluster has no Metal3 infrastructure.
+# BMaaS is enabled; the BMF operator manages virtual BareMetalHost resources
+# created by osac-test-infra setup-virtual-bmh.sh in the host-inventory
+# namespace.  The operator allocates BMHs from the pool when the
+# baremetalworker controller creates BareMetalInstance CRs.
 bmf:
-  replicaCount: 0
   image:
     repository: ghcr.io/osac-project/bare-metal-fulfillment-operator
     tag: latest
     pullPolicy: Always
+  env:
+    aapUrl: "http://osac-aap/api/controller"
+    aapInsecureSkipVerify: "true"
+    enableNetworkingProvisioning: "false"
+  metal3:
+    enabled: true
+    namespace: host-inventory
+    hostClass: metal3
 
 # --- Cluster Versions ---
 clusterVersions:

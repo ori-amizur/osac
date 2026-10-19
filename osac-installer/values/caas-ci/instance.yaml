@@ -7,6 +7,9 @@ global:
   osacDeploymentId: "ci/osac"
   fulfillmentTrust:
     enabled: false
+  networking:
+    fabricManager: agentless_net
+    k8sManager: ""
   services:
     caas:
       enabled: true
@@ -55,8 +58,9 @@ operator:
   # Network manager ConfigMaps are required for the Networking API dispatcher.
   # The operator subchart defaults networkManagers.enabled=true, but the CaaS
   # CI profile states it explicitly so CI values are self-documenting.
-  # Individual k8s_only manager enablement is auto-derived by the Helm facade
-  # from global.networking (chart-default k8sManager=k8s_only).
+  # Individual agentless_net manager enablement is auto-derived by the Helm
+  # facade from global.networking. The logical fabric manager is required for
+  # CaaS BMI validation even though provider networking is disabled.
   networkManagers:
     enabled: true
   tenants:

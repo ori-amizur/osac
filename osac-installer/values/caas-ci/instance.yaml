@@ -201,6 +201,10 @@ bmf:
     repository: ghcr.io/osac-project/bare-metal-fulfillment-operator
     tag: latest
     pullPolicy: Always
+  env:
+    aapUrl: "http://osac-aap/api/controller"
+    aapInsecureSkipVerify: "true"
+    enableNetworkingProvisioning: "false"
   metal3:
     enabled: true
     namespace: host-inventory

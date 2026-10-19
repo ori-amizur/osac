@@ -73,6 +73,53 @@ func agentPhaseFixture(worker string, installed bool) *unstructured.Unstructured
 	return a
 }
 
+var _ = It("binds Agents registered in the cluster reference namespace", func() {
+	ctx := context.Background()
+	co := &v1alpha1.ClusterOrder{
+		ObjectMeta: metav1.ObjectMeta{Name: "order", Namespace: "osac"},
+		Status: v1alpha1.ClusterOrderStatus{ClusterReference: &v1alpha1.ClusterOrderClusterReferenceType{
+			HostedClusterName: "hosted", Namespace: "workload",
+		}},
+	}
+	agent := agentPhaseFixture("", false)
+	agent.SetNamespace("workload")
+	agent.SetUID("agent-uid")
+	agent.SetLabels(map[string]string{infraEnvAgentLabel: co.Name + infraEnvNameSuffix})
+	Expect(unstructured.SetNestedSlice(agent.Object, []interface{}{
+		map[string]interface{}{"macAddress": "aa:bb:cc:dd:ee:ff"},
+	}, "status", "inventory", "interfaces")).To(Succeed())
+
+	scheme := runtime.NewScheme()
+	agentListGVK := agentGVK
+	agentListGVK.Kind = agentGVK.Kind + "List"
+	scheme.AddKnownTypeWithName(agentGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(agentListGVK, &unstructured.UnstructuredList{})
+	kube := clientfake.NewClientBuilder().WithScheme(scheme).WithObjects(agent).Build()
+	r := &Reconciler{Client: kube, apiReader: kube, recorder: events.NewFakeRecorder(10)}
+	r.SetMACResolver(func(context.Context, string) []string { return []string{"aa:bb:cc:dd:ee:ff"} })
+	workers := []v1alpha1.WorkerStatus{
+		newWorkerStatus("workers", "standard", "worker", "bmi-id", workerPhaseWaitingForAgent),
+	}
+
+	agents, err := r.listAgents(ctx, co)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(agents.Items).To(HaveLen(1))
+	got, result, err := reconcileAgentStage(r, co, workers, agents)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(result.IsZero()).To(BeTrue())
+	Expect(got[0].Phase).To(Equal(workerPhaseBinding))
+
+	bound := &unstructured.Unstructured{}
+	bound.SetGroupVersionKind(agentGVK)
+	Expect(kube.Get(ctx, client.ObjectKeyFromObject(agent), bound)).To(Succeed())
+	Expect(bound.GetLabels()[clusterOrderLabel]).To(Equal(co.Name))
+	Expect(bound.GetLabels()[workerNameLabel]).To(Equal("worker"))
+	approved, found, err := unstructured.NestedBool(bound.Object, "spec", "approved")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(approved).To(BeTrue())
+})
+
 var _ = Describe("Agent convergence", func() {
 	tests := []struct {
 		name, phase, kind, id string

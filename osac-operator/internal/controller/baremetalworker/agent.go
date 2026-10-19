@@ -195,8 +195,15 @@ func verifyAgentBinding(agent *unstructured.Unstructured, co *v1alpha1.ClusterOr
 // when the ownership/binding contract permits it. Observation, late binding and cleanup share it
 // so every consumer applies the same namespace, cluster and binding scope rules.
 func agentBindingConflict(agent *unstructured.Unstructured, co *v1alpha1.ClusterOrder, workerName string) error {
-	if agent.GetNamespace() != co.Namespace {
-		return fmt.Errorf("agent %s is outside cluster namespace %s", agent.GetName(), co.Namespace)
+	allowedNamespace := false
+	for _, namespace := range agentNamespaces(co) {
+		if agent.GetNamespace() == namespace {
+			allowedNamespace = true
+			break
+		}
+	}
+	if !allowedNamespace {
+		return fmt.Errorf("agent %s is outside cluster namespaces %v", agent.GetName(), agentNamespaces(co))
 	}
 	labels := agent.GetLabels()
 	for _, key := range []string{clusterOrderLabel, "osac.openshift.io/clusterorder"} {

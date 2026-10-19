@@ -13,12 +13,23 @@ import (
 	"github.com/osac-project/osac/osac-operator/api/v1alpha1"
 )
 
-// listAgents returns the union of both supported Agent selectors, scoped to the
-// cluster namespace. One observation stage issues two Kubernetes Lists — the
-// InfraEnv registration filter and the cluster-order watch filter — and unions
-// them by UID, so a mixed population is never truncated to whichever selector
-// matched first. If either List fails the observation is unknown: a partial list
-// is never treated as complete absence evidence.
+// agentNamespaces returns every namespace in which Agents may register for the
+// order. Discovery InfraEnvs can live beside the order or in the per-cluster
+// namespace referenced by HostedCluster resources.
+func agentNamespaces(co *v1alpha1.ClusterOrder) []string {
+	namespaces := []string{co.Namespace}
+	if ref := co.Status.ClusterReference; ref != nil && ref.Namespace != "" && ref.Namespace != co.Namespace {
+		namespaces = append(namespaces, ref.Namespace)
+	}
+	return namespaces
+}
+
+// listAgents returns the union of both supported Agent selectors across the
+// order's Agent namespaces. One observation stage issues Kubernetes Lists for
+// the InfraEnv registration filter and the cluster-order watch filter, then
+// unions them by UID, so a mixed population is never truncated to whichever
+// selector matched first. If any List fails the observation is unknown: a
+// partial list is never treated as complete absence evidence.
 func (r *Reconciler) listAgents(ctx context.Context, co *v1alpha1.ClusterOrder) (*unstructured.UnstructuredList, error) {
 	infraEnvName := co.Name + infraEnvNameSuffix
 	selectors := []client.MatchingLabels{
@@ -28,25 +39,27 @@ func (r *Reconciler) listAgents(ctx context.Context, co *v1alpha1.ClusterOrder) 
 	union := &unstructured.UnstructuredList{}
 	union.SetGroupVersionKind(agentGVK.GroupVersion().WithKind(agentGVK.Kind + "List"))
 	seen := make(map[string]bool)
-	for _, selector := range selectors {
-		listed := &unstructured.UnstructuredList{}
-		listed.SetGroupVersionKind(union.GroupVersionKind())
-		if err := r.List(ctx, listed, client.InNamespace(co.Namespace), selector); err != nil {
-			return nil, fmt.Errorf("listing agents for %s: %w", co.Name, err)
-		}
-		for i := range listed.Items {
-			agent := listed.Items[i]
-			// Production identity is the Kubernetes UID; a namespaced name only
-			// disambiguates fixtures that predate UIDs, so it is never a substitute.
-			key := string(agent.GetUID())
-			if key == "" {
-				key = agent.GetNamespace() + "/" + agent.GetName()
+	for _, namespace := range agentNamespaces(co) {
+		for _, selector := range selectors {
+			listed := &unstructured.UnstructuredList{}
+			listed.SetGroupVersionKind(union.GroupVersionKind())
+			if err := r.List(ctx, listed, client.InNamespace(namespace), selector); err != nil {
+				return nil, fmt.Errorf("listing agents for %s in %s: %w", co.Name, namespace, err)
 			}
-			if seen[key] {
-				continue
+			for i := range listed.Items {
+				agent := listed.Items[i]
+				// Production identity is the Kubernetes UID; a namespaced name only
+				// disambiguates fixtures that predate UIDs, so it is never a substitute.
+				key := string(agent.GetUID())
+				if key == "" {
+					key = agent.GetNamespace() + "/" + agent.GetName()
+				}
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				union.Items = append(union.Items, agent)
 			}
-			seen[key] = true
-			union.Items = append(union.Items, agent)
 		}
 	}
 	return union, nil

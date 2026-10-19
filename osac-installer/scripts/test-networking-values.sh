@@ -457,6 +457,20 @@ ingress_ca_rules = [rule for rule in resource('ClusterRole', 'osac-operator-mana
                     and rule.get('resourceNames') == ['default-ingress-cert']]
 assert len(ingress_ca_rules) == 1 and ingress_ca_rules[0].get('verbs') == ['get'], \
     'CaaS CI must grant read-only access to the cluster-managed ingress CA bundle'
+# BMF operator must be running (not zero replicas) and configured for Metal3
+# in host-inventory. setup-virtual-bmh.sh creates BMHs there with
+# osac.openshift.io/host-type=default.
+bmf_deps = [d for d in docs if d.get('kind') == 'Deployment'
+            and 'bmf' in d.get('metadata', {}).get('name', '')
+            and 'controller-manager' in d.get('metadata', {}).get('name', '')]
+assert len(bmf_deps) == 1, f'expected one BMF Deployment, got {len(bmf_deps)}'
+bmf_replicas = bmf_deps[0]['spec'].get('replicas', 1)
+assert bmf_replicas >= 1, \
+    f'BMF operator must have at least 1 replica, got {bmf_replicas}'
+bmi_controller = [entry for entry in managers[0]['env']
+                  if entry['name'] == 'OSAC_ENABLE_BAREMETAL_INSTANCE_CONTROLLER']
+assert len(bmi_controller) == 1 and bmi_controller[0].get('value') == 'true', \
+    'CaaS CI with bmaas.enabled must auto-enable the BareMetalInstance controller'
 PY
 
 # caas-ci guards: a conflicting fabric class, disabled network managers,

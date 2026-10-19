@@ -176,7 +176,7 @@ class _AvailableCluster(_ClusterResources):
 
 
 def _assert_worker_agent_installing(*, k8s: K8sClient, co_name: str, namespace: str) -> None:
-    logger.info("CaaS: waiting for Agent in ClusterOrder namespace")
+    logger.info("CaaS: waiting for Agent in cluster-reference namespace")
     agents = poll_until(
         fn=lambda: _cluster_order_agents(k8s=k8s, co_name=co_name, namespace=namespace),
         until=bool,
@@ -399,9 +399,10 @@ def _assert_worker_provisioning(
 
     co = k8s.get_json(resource="clusterorder", name=co_name)
     assert co["metadata"]["annotations"]["osac.openshift.io/tenant"] == cluster_tenant
-    namespace = co["metadata"]["namespace"]
-    assert namespace == k8s.namespace
-    _assert_worker_agent_installing(k8s=k8s, co_name=co_name, namespace=namespace)
+    assert co["metadata"]["namespace"] == k8s.namespace
+    agent_namespace = k8s.get_cluster_order_namespace(name=co_name)
+    assert agent_namespace, f"ClusterOrder {co_name} has no cluster-reference namespace"
+    _assert_worker_agent_installing(k8s=k8s, co_name=co_name, namespace=agent_namespace)
     _assert_operator_worker_metrics(k8s=k8s, co_name=co_name)
     return cluster_tenant, candidate_bmis
 

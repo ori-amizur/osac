@@ -394,19 +394,18 @@ render_failure \
   --set global.networking.fabricManager=netris \
   --set global.networking.k8sManager=
 
-# CaaS CI disables networking provisioning (networkingProvisioning: false) and
-# inherits the chart-default k8s_only manager. The facade still auto-derives
-# the agentless_net AAP backend from the effective k8s_only manager.
+# CaaS CI disables networking provisioning (networkingProvisioning: false) but
+# retains the logical agentless_net fabric manager required by BMI validation.
 render_success \
-  caas-no-provisioning-profile \
-  'k8s_manager\":\"k8s_only' \
+  caas-agentless-no-provisioning-profile \
+  'fabric_manager\":\"agentless_net' \
   --values "${SCRIPT_DIR}/../values/caas-ci/instance.yaml" \
   --set-string global.clusterDomain=apps.example.test \
   --set-string service.externalHostname=api.example.test \
   --set-string service.internalHostname=api-internal.example.test
 # Parse only whitelisted, non-secret documents/fields. Never print the render:
 # it may include credential-bearing Secrets from other chart components.
-python3 - "${TMP_DIR}/caas-no-provisioning-profile.yaml" <<'PY'
+python3 - "${TMP_DIR}/caas-agentless-no-provisioning-profile.yaml" <<'PY'
 import json
 import sys
 import yaml
@@ -424,10 +423,10 @@ assert len(containers) == 1, f"expected one create-network-class container, got 
 body_env = [e for e in containers[0]['env'] if e['name'] == 'NETWORK_CLASS_BODY']
 assert len(body_env) == 1 and 'value' in body_env[0], 'expected one literal NETWORK_CLASS_BODY env var'
 body = json.loads(body_env[0]['value'])
-assert body.get('k8s_manager') == 'k8s_only', 'default class must select k8s_only'
-assert not body.get('fabric_manager'), 'default class must have no fabric manager'
-manager = resource('ConfigMap', 'osac-network-k8s-manager-k8s-only')
-assert manager['data']['name'] == 'k8s_only'
+assert body.get('fabric_manager') == 'agentless_net', 'default class must select agentless_net'
+assert not body.get('k8s_manager'), 'default class must have no k8s manager'
+manager = resource('ConfigMap', 'osac-network-fabric-manager-agentless-net')
+assert manager['data']['name'] == 'agentless_net'
 cluster = resource('ConfigMap', 'cluster-fulfillment-ig')['data']
 assert cluster['NETWORK_CLASS'] == 'agentless_net'
 assert cluster['NETWORK_STEPS_COLLECTION'] == 'agentless_net.steps'
@@ -465,14 +464,14 @@ assert len(bmi_controller) == 1 and bmi_controller[0].get('value') == 'true', \
     'CaaS CI with bmaas.enabled must auto-enable the BareMetalInstance controller'
 PY
 
-# caas-ci guards: a conflicting fabric class, disabled network managers,
-# or a conflicting global fabricManager must fail against the chart-default
-# k8s_only manager inherited by the CaaS CI profile.
-for name in k8s-only-wrong-class k8s-only-disabled-managers k8s-only-conflicting-fabric; do
+# caas-ci guards: a conflicting fabric class, disabled network managers, or a
+# conflicting global fabricManager must fail against the profile's
+# agentless_net manager.
+for name in agentless-wrong-class agentless-disabled-managers agentless-conflicting-fabric; do
   case "${name}" in
-    k8s-only-wrong-class) overrides=(--set global.networking.networkClass.fabricManager=netris) ;;
-    k8s-only-disabled-managers) overrides=(--set operator.networkManagers.enabled=false) ;;
-    k8s-only-conflicting-fabric) overrides=(--set global.networking.fabricManager=netris) ;;
+    agentless-wrong-class) overrides=(--set global.networking.networkClass.fabricManager=netris) ;;
+    agentless-disabled-managers) overrides=(--set operator.networkManagers.enabled=false) ;;
+    agentless-conflicting-fabric) overrides=(--set global.networking.fabricManager=netris) ;;
   esac
   render_failure "${name}" \
     --values "${SCRIPT_DIR}/../values/caas-ci/instance.yaml" \

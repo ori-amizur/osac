@@ -106,7 +106,7 @@ def test_create_and_delete_shared_baremetal_instance_type(monkeypatch: pytest.Mo
     ]
 
 
-def test_create_bare_metal_instance_type_defaults_to_host_type(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_bare_metal_instance_type_uses_default_virtual_host_selector(monkeypatch: pytest.MonkeyPatch) -> None:
     client = GRPCClient(address="fulfillment-api.example.test:443", token="test-token")
     captured: dict[str, Any] = {}
 

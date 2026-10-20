@@ -1,5 +1,0 @@
----
-# Step-collection delegation was removed in OSAC-2351.
-# CaaS networking now goes through the OSAC Networking API and dispatcher;
-# the cluster_network service role is a no-op stub retained for backward
-# compatibility. CI-specific logic is inlined in the template task files.

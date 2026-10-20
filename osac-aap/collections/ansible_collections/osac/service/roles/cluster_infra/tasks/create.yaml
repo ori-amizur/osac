@@ -6,7 +6,7 @@
 # automatically when they boot against the InfraEnv.
 # Networking CRs (VirtualNetwork, Subnet, SecurityGroup, ExternalIP) are
 # handled separately by the Networking API dispatcher
-# (NetworkClass -> operator -> AAP -> k8s_only).
+# (NetworkClass -> operator -> AAP -> configured network manager).
 
 - name: Wait for control plane namespace
   kubernetes.core.k8s_info:

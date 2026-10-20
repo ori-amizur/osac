@@ -349,20 +349,10 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 		return caasDelResult, caasDelErr
 	}
 
-	// Guard: when tier resolution failed and any provisioning provider is
-	// configured, do not proceed — the downstream AAP calls would run
-	// without storage_tier_definitions and storage_backend_connections,
-	// creating incomplete or wrong resources. This matches the guard in
-	// handleCaaSDelete (OSAC-4855) and extends it to the provisioning paths.
-	// CaaS cluster deletion (above) already ran and is unaffected.
-	if tierErr != nil && (r.BackendProvider != nil || r.ClusterStorageProvider != nil) {
-		log.Error(tierErr, "tier resolution failed, deferring storage provisioning until fulfillment service recovers",
-			"tenant", tenantName)
-		instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
-			metav1.ConditionFalse,
-			"TierResolutionFailed",
-			fmt.Sprintf("Storage tier definitions could not be resolved from the fulfillment service: %v", tierErr))
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+	if result, deferReconcile := r.deferStorageUntilTierResolutionCompletes(
+		ctx, instance, tenantName, tierDefinitions, tierErr,
+	); deferReconcile {
+		return result, nil
 	}
 
 	// Stage 1: check hub Secret and route provisioning based on backend registration.
@@ -515,6 +505,40 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *StorageReconciler) deferStorageUntilTierResolutionCompletes(
+	ctx context.Context,
+	instance *v1alpha1.Tenant,
+	tenantName string,
+	tierDefinitions []provisioning.TierDefinition,
+	tierErr error,
+) (ctrl.Result, bool) {
+	log := ctrllog.FromContext(ctx)
+	if tierErr == nil {
+		emptyCatalog := r.TiersClient != nil && r.BackendsClient != nil && len(tierDefinitions) == 0 &&
+			(r.BackendProvider != nil || r.ClusterStorageProvider != nil)
+		if !emptyCatalog {
+			return ctrl.Result{}, false
+		}
+		log.Info("no storage tiers resolved yet, deferring storage provisioning",
+			"tenant", tenantName, "retryAfter", r.StatusPollInterval)
+		instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
+			metav1.ConditionFalse,
+			"TierResolutionFailed",
+			"No storage tiers are available yet")
+		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, true
+	}
+	if r.BackendProvider == nil && r.ClusterStorageProvider == nil {
+		return ctrl.Result{}, false
+	}
+	log.Error(tierErr, "tier resolution failed, deferring storage provisioning until fulfillment service recovers",
+		"tenant", tenantName)
+	instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
+		metav1.ConditionFalse,
+		"TierResolutionFailed",
+		fmt.Sprintf("Storage tier definitions could not be resolved from the fulfillment service: %v", tierErr))
+	return ctrl.Result{RequeueAfter: r.StatusPollInterval}, true
 }
 
 // handleCaaSUpdate provisions cluster-side storage on CaaS clusters belonging

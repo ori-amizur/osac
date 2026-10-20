@@ -1569,6 +1569,50 @@ var _ = Describe("Storage Controller", func() {
 				"condition message should carry the actual resolution error")
 		})
 
+		It("should defer storage provisioning when configured tier APIs return no tiers", func() {
+			name := "storage-test-guard-empty-tier-catalog"
+			createReadyTenantForStorage(ctx, name, testNamespace)
+			createHubSecret(ctx, name, secretsNamespace)
+
+			triggerCount := 0
+			clusterProvider := &mockProvisioningProvider{
+				name: "cluster-storage-mock",
+				triggerProvisionFunc: func(_ context.Context, _ client.Object) (*provisioning.ProvisionResult, error) {
+					triggerCount++
+					return &provisioning.ProvisionResult{JobID: "should-not-run", InitialState: v1alpha1.JobStatePending}, nil
+				},
+			}
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, clusterProvider, pollInterval,
+				provisioning.DefaultMaxJobHistory,
+			)
+			r.TiersClient = &mockStorageTiersLister{
+				listFunc: func(context.Context, *privatev1.StorageTiersListRequest, ...grpc.CallOption) (*privatev1.StorageTiersListResponse, error) {
+					return &privatev1.StorageTiersListResponse{}, nil
+				},
+			}
+			r.BackendsClient = registeredBackendsClient(1)
+
+			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
+			result, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(pollInterval),
+				"should requeue until the post-install storage tier registration completes")
+			Expect(triggerCount).To(Equal(0),
+				"AAP must not be called with an empty storage_tier_definitions payload")
+
+			tenant := &v1alpha1.Tenant{}
+			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
+			backendCond := tenant.GetStatusCondition(v1alpha1.TenantConditionStorageBackendReady)
+			Expect(backendCond).NotTo(BeNil())
+			Expect(backendCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(backendCond.Reason).To(Equal("TierResolutionFailed"))
+			Expect(backendCond.Message).To(ContainSubstring("No storage tiers are available yet"))
+			Expect(tenant.Status.ClusterStorageJobs).To(BeEmpty())
+		})
+
 		It("should proceed normally when tier clients are nil (backward compat)", func() {
 			name := "storage-test-guard-nil-clients"
 			createReadyTenantForStorage(ctx, name, testNamespace)

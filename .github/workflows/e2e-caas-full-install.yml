@@ -121,6 +121,10 @@ jobs:
       test-repository: ${{ inputs.repo || github.repository }}
       test-ref: ${{ inputs.sha || github.sha }}
       notify-on-failure: ${{ github.event_name == 'schedule' }}
+      # OSAC-5697: agents are created in the per-cluster
+      # namespace via InfraEnv and approved by
+      # osac.service.cluster_infra, not drawn from a
+      # shared hot pool.
       # Only a run on main (schedule, or a manual run against main): that is where the workload identity trusts this
       # workflow. A run for a pull request or a queue entry passes inputs.sha and never gets it.
       enable-ai-diagnostic: ${{ github.ref == 'refs/heads/main' && inputs.sha == '' }}

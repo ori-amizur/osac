@@ -56,15 +56,18 @@
           - template_id == "osac.templates.ocp_ci_small"
         fail_msg: "CaaS template ID not extracted correctly"
 
-    - name: Verify CaaS dispatches the cluster infrastructure step
+    - name: Verify CaaS dispatches its cluster infrastructure and external access steps
       ansible.builtin.assert:
         that:
           - delete_step_cluster_infra_default is defined
           - delete_step_cluster_infra_default.name == "osac.service.cluster_infra"
           - delete_step_cluster_infra_default.tasks_from == "delete.yaml"
           - delete_step_cluster_network_default is not defined
+          - delete_step_external_access_default is defined
+          - delete_step_external_access_default.name == "osac.templates.ocp_ci_small"
+          - delete_step_external_access_default.tasks_from == "delete_external_access.yaml"
           - delete_step_pre_delete_hook_default.tasks_from == "noop.yaml"
         fail_msg: >-
-          ocp_ci_small must define delete_step_cluster_infra_default pointing
-          to osac.service.cluster_infra delete.yaml and must not define the
-          old delete_step_cluster_network_default (OSAC-5697).
+          ocp_ci_small must use osac.service.cluster_infra for provisioning and
+          template-owned external access tasks, without the old
+          delete_step_cluster_network_default (OSAC-5697).

@@ -1,21 +1,16 @@
 ---
-# External access deletion.
-# Handles DNS record cleanup.
-
-- name: Delete DNS records
-  when: >-
-    external_access_base_domain in external_access_supported_base_domains | default([])
-  ansible.builtin.include_role:
-    name: "{{ dns_class }}"
-    tasks_from: delete
-  vars:
-    dns_zone: "{{ lookup('env', 'DNS_ZONE') | default(external_access_base_domain, true) }}"
-    dns_record_name: "{{ item }}"
-    dns_record_type: A
-  loop:
-    - "api.{{ external_access_name }}.{{ external_access_base_domain }}"
-    - "api-int.{{ external_access_name }}.{{ external_access_base_domain }}"
-    - "*.apps.{{ external_access_name }}.{{ external_access_base_domain }}"
-  loop_control:
-    label: "dns-record"
+# Clear the endpoint metadata published by create.yaml. Network resources are
+# owned by the configured NetworkClass; DNS lifecycle is owned by the caller.
+- name: Clear VIP annotations from ClusterOrder
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: osac.openshift.io/v1alpha1
+      kind: ClusterOrder
+      metadata:
+        name: "{{ cluster_order.metadata.name }}"
+        namespace: "{{ cluster_order.metadata.namespace }}"
+        annotations:
+          osac.openshift.io/api-endpoint: null
+          osac.openshift.io/ingress-endpoint: null
   no_log: true

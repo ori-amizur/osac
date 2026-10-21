@@ -60,14 +60,17 @@
           - template_id == "osac.templates.ocp_ci_small"
         fail_msg: "CaaS template ID not extracted correctly"
 
-    - name: Verify CaaS dispatches the cluster infrastructure step
+    - name: Verify CaaS dispatches its cluster infrastructure and external access steps
       ansible.builtin.assert:
         that:
           - install_step_cluster_infra_default is defined
           - install_step_cluster_infra_default.name == "osac.service.cluster_infra"
           - install_step_cluster_infra_default.tasks_from == "create.yaml"
           - install_step_cluster_network_default is not defined
+          - install_step_external_access_default is defined
+          - install_step_external_access_default.name == "osac.templates.ocp_ci_small"
+          - install_step_external_access_default.tasks_from == "create_external_access.yaml"
         fail_msg: >-
-          ocp_ci_small must define install_step_cluster_infra_default pointing
-          to osac.service.cluster_infra create.yaml and must not define the
-          old install_step_cluster_network_default (OSAC-5697).
+          ocp_ci_small must use osac.service.cluster_infra for provisioning and
+          template-owned external access tasks, without the old
+          install_step_cluster_network_default (OSAC-5697).

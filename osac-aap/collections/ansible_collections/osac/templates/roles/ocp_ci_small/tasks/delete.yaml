@@ -7,8 +7,8 @@
       name: osac.service.hosted_cluster
       tasks_from: main.yaml
     delete_step_external_access_default:
-      name: osac.service.external_access
-      tasks_from: delete.yaml
+      name: osac.templates.ocp_ci_small
+      tasks_from: delete_external_access.yaml
     delete_step_cluster_infra_default:
       name: osac.service.cluster_infra
       tasks_from: delete.yaml
@@ -36,7 +36,7 @@
     hosted_cluster_node_count: >-
       {{ cluster_order.spec.nodeRequests | map(attribute="numberOfNodes") | sum }}
 
-- name: Step - Remove port forwarding
+- name: Step - Remove external access
   ansible.builtin.include_role:
     name: "{{ (delete_step_external_access_override | default(delete_step_external_access_default)).name }}"
     tasks_from: "{{ (delete_step_external_access_override | default(delete_step_external_access_default)).tasks_from }}"

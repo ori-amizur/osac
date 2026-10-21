@@ -53,7 +53,7 @@
     cluster_infra_state: absent
     cluster_infra_name: "{{ cluster_order.metadata.name }}"
     cluster_infra_namespace: "{{ cluster_working_namespace }}"
-    cluster_infra_agent_namespace: "{{ cluster_working_namespace }}"
+    cluster_infra_agent_namespace: "{{ cluster_order.metadata.namespace }}"
     cluster_infra_node_requests: []
 
 - name: Step - Post-delete hook

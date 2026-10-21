@@ -1,12 +1,12 @@
 ---
 # Cluster infrastructure creation.
-# Agents are created directly in the cluster namespace via a per-cluster
+# Agents are created directly in the ClusterOrder namespace via a per-cluster
 # InfraEnv (matching the production flow).  No hot-pool selection or
-# labeling is needed — agents appear in the cluster namespace
+# labeling is needed — agents appear in the ClusterOrder namespace
 # automatically when they boot against the InfraEnv.
 # Networking CRs (VirtualNetwork, Subnet, SecurityGroup, ExternalIP) are
 # handled separately by the Networking API dispatcher
-# (NetworkClass -> operator -> AAP -> k8s_only).
+# (NetworkClass -> operator -> AAP -> agentless_net).
 
 - name: Wait for control plane namespace
   kubernetes.core.k8s_info:
@@ -18,7 +18,7 @@
   retries: 30
   delay: 10
 
-- name: Wait for agents in cluster namespace
+- name: Wait for agents in ClusterOrder namespace
   kubernetes.core.k8s_info:
     api_version: agent-install.openshift.io/v1beta1
     kind: Agent
@@ -38,7 +38,7 @@
       {{ ci_agents.resources | selectattr('spec.approved', 'false') | list }}
   no_log: true
 
-- name: Approve agents in cluster namespace
+- name: Approve agents in ClusterOrder namespace
   kubernetes.core.k8s_json_patch:
     api_version: agent-install.openshift.io/v1beta1
     kind: Agent

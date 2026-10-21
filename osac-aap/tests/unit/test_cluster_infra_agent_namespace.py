@@ -34,24 +34,27 @@ def _render(expression: str, context: dict) -> str:
 
 
 def test_agent_discovery_and_cleanup_use_cluster_order_namespace() -> None:
-    context = {"cluster_working_namespace": "osac-order-gqfhb", "cluster_order": {"metadata": {"name": "order-gqfhb"}}}
+    context = {
+        "cluster_working_namespace": "osac-order-gqfhb-control-plane",
+        "cluster_order": {"metadata": {"name": "order-gqfhb", "namespace": "osac-order-gqfhb"}},
+    }
     create_vars = _cluster_infra_vars(CI_INSTALL, "Step - Create cluster infrastructure")
     delete_vars = _cluster_infra_vars(CI_DELETE, "Step - Destroy cluster infrastructure")
 
     for role_vars in (create_vars, delete_vars):
-        assert _render(role_vars["cluster_infra_namespace"], context) == "osac-order-gqfhb"
+        assert _render(role_vars["cluster_infra_namespace"], context) == "osac-order-gqfhb-control-plane"
         assert _render(role_vars["cluster_infra_name"], context) == "order-gqfhb"
         assert _render(role_vars["cluster_infra_agent_namespace"], context) == "osac-order-gqfhb"
 
     create_tasks = {task["name"]: task for task in _load(INFRA_CREATE)}
     control_plane_wait = create_tasks["Wait for control plane namespace"]["kubernetes.core.k8s_info"]
-    agents_wait = create_tasks["Wait for agents in cluster namespace"]["kubernetes.core.k8s_info"]
+    agents_wait = create_tasks["Wait for agents in ClusterOrder namespace"]["kubernetes.core.k8s_info"]
     assert (
         _render(
             control_plane_wait["name"],
-            {"cluster_infra_namespace": "osac-order-gqfhb", "cluster_infra_name": "order-gqfhb"},
+            {"cluster_infra_namespace": "osac-order-gqfhb-control-plane", "cluster_infra_name": "order-gqfhb"},
         )
-        == "osac-order-gqfhb-order-gqfhb"
+        == "osac-order-gqfhb-control-plane-order-gqfhb"
     )
     assert _render(agents_wait["namespace"], {"cluster_infra_agent_namespace": "osac-order-gqfhb"}) == (
         "osac-order-gqfhb"
@@ -62,7 +65,7 @@ def test_agent_discovery_and_cleanup_use_cluster_order_namespace() -> None:
     assert delete_tasks["Check if cluster namespace still exists"]["kubernetes.core.k8s_info"]["name"] == (
         "{{ cluster_infra_agent_namespace }}"
     )
-    assert cleanup_tasks["Find agents in cluster namespace"]["kubernetes.core.k8s_info"]["namespace"] == (
+    assert cleanup_tasks["Find agents in ClusterOrder namespace"]["kubernetes.core.k8s_info"]["namespace"] == (
         "{{ cluster_infra_agent_namespace }}"
     )
     assert cleanup_tasks["Delete remaining agents"]["kubernetes.core.k8s"]["namespace"] == (

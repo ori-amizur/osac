@@ -1,6 +1,6 @@
 ---
 # Cluster infrastructure deletion.
-# Agents live in the ClusterOrder working namespace (created via the
+# Agents live in the ClusterOrder namespace (created via the
 # per-cluster InfraEnv). Remove any remaining agents while that namespace
 # still exists; HyperShift's control-plane namespace is separate.
 
@@ -14,7 +14,7 @@
 - name: Clean up agents if namespace still exists
   when: cluster_ns.resources | length > 0
   block:
-    - name: Find agents in cluster namespace
+    - name: Find agents in ClusterOrder namespace
       kubernetes.core.k8s_info:
         api_version: agent-install.openshift.io/v1beta1
         kind: Agent

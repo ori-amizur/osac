@@ -40,11 +40,17 @@ def test_agent_discovery_and_cleanup_use_cluster_order_namespace() -> None:
     }
     create_vars = _cluster_infra_vars(CI_INSTALL, "Step - Create cluster infrastructure")
     delete_vars = _cluster_infra_vars(CI_DELETE, "Step - Destroy cluster infrastructure")
+    external_access_create_vars = _cluster_infra_vars(CI_INSTALL, "Step - Configure external access")
+    external_access_delete_vars = _cluster_infra_vars(CI_DELETE, "Step - Remove external access")
 
     for role_vars in (create_vars, delete_vars):
         assert _render(role_vars["cluster_infra_namespace"], context) == "osac-order-gqfhb-control-plane"
         assert _render(role_vars["cluster_infra_name"], context) == "order-gqfhb"
         assert _render(role_vars["cluster_infra_agent_namespace"], context) == "osac-order-gqfhb"
+
+    for role_vars in (external_access_create_vars, external_access_delete_vars):
+        assert _render(role_vars["external_access_namespace"], context) == "osac-order-gqfhb-control-plane"
+        assert _render(role_vars["external_access_agent_namespace"], context) == "osac-order-gqfhb"
 
     create_tasks = {task["name"]: task for task in _load(INFRA_CREATE)}
     control_plane_wait = create_tasks["Wait for control plane namespace"]["kubernetes.core.k8s_info"]

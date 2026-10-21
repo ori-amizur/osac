@@ -61,7 +61,7 @@
     external_access_name: "{{ cluster_order.metadata.name }}"
     external_access_state: present
     external_access_namespace: "{{ cluster_working_namespace }}"
-    external_access_agent_namespace: "{{ cluster_working_namespace }}"
+    external_access_agent_namespace: "{{ cluster_order.metadata.namespace }}"
     external_access_ingress_internal_network: "network-{{ cluster_order.metadata.name }}"
 
 - name: Step - Retrieve kubeconfig

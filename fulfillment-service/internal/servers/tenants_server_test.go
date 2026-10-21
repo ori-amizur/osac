@@ -124,19 +124,18 @@ var _ = Describe("Public tenants server", func() {
 			Expect(getResponse.GetObject().GetMetadata().GetName()).To(Equal("my-tenant"))
 		})
 
-		It("Can't create a tenant, not implemented", func() {
-			// Try to create the tenant via the public server. It should fail with an Unimplemented error.
-			_, err := publicServer.Create(ctx, publicv1.TenantsCreateRequest_builder{
+		It("Creates a tenant", func() {
+			response, err := publicServer.Create(ctx, publicv1.TenantsCreateRequest_builder{
 				Object: publicv1.Tenant_builder{
 					Metadata: publicv1.Metadata_builder{
 						Name: "my-tenant",
 					}.Build(),
 				}.Build(),
 			}.Build())
-			Expect(err).To(HaveOccurred())
-			status, ok := grpcstatus.FromError(err)
-			Expect(ok).To(BeTrue())
-			Expect(status.Code()).To(Equal(grpccodes.Unimplemented))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(response.GetObject().GetId()).To(Equal("my-tenant"))
+			Expect(response.GetObject().GetMetadata().GetName()).To(Equal("my-tenant"))
+			Expect(response.GetObject().GetMetadata().GetTenant()).To(Equal("my-tenant"))
 		})
 
 		It("Can't update a tenant, not implemented", func() {

@@ -34,18 +34,11 @@ CALLER_CREATE_FILES = {
     "nico": COLLECTIONS / "nico" / "steps" / "roles" / "external_access" / "tasks" / "create.yaml",
     "ocp_ci_small": COLLECTIONS
     / "osac"
-    / "templates"
-    / "roles"
-    / "ocp_ci_small"
-    / "tasks"
-    / "create_external_access.yaml",
-    "ocp_small": COLLECTIONS
-    / "osac"
     / "service"
     / "roles"
     / "external_access"
     / "tasks"
-    / "create_dns.yaml",
+    / "caas_create.yaml",
     "agentless_net": COLLECTIONS
     / "agentless_net"
     / "steps"

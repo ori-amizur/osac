@@ -32,13 +32,13 @@
         name: osac.templates.ocp_ci_small
         tasks_from: delete.yaml
 
-    - name: Verify CI delete uses template-owned external access tasks
+    - name: Verify CI delete uses service-owned external access tasks
       ansible.builtin.assert:
         that:
           - delete_step_cluster_infra_default is defined
           - delete_step_cluster_infra_default.name == "osac.service.cluster_infra"
           - delete_step_cluster_infra_default.tasks_from == "delete.yaml"
           - delete_step_external_access_default is defined
-          - delete_step_external_access_default.name == "osac.templates.ocp_ci_small"
-          - delete_step_external_access_default.tasks_from == "delete_external_access.yaml"
+          - delete_step_external_access_default.name == "osac.service.external_access"
+          - delete_step_external_access_default.tasks_from == "caas_delete.yaml"
           - delete_step_cluster_network_default is not defined

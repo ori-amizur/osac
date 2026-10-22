@@ -1,5 +1,6 @@
 ---
-# DNS and endpoint discovery for templates that use the shared DNS flow.
+# CaaS owns DNS discovery and endpoint publication. Network resources remain
+# owned by the configured NetworkClass.
 - name: Set DNS names
   ansible.builtin.set_fact:
     external_access_api_domain: "api.{{ external_access_name }}.{{ external_access_base_domain }}"
@@ -123,5 +124,5 @@
     label: dns-record
   no_log: true
 
-- name: Publish discovered endpoints to ClusterOrder
-  ansible.builtin.include_tasks: create.yaml
+- name: Publish CaaS endpoints to ClusterOrder
+  ansible.builtin.include_tasks: publish.yaml

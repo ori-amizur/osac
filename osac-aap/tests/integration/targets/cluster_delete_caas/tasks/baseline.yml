@@ -64,10 +64,10 @@
           - delete_step_cluster_infra_default.tasks_from == "delete.yaml"
           - delete_step_cluster_network_default is not defined
           - delete_step_external_access_default is defined
-          - delete_step_external_access_default.name == "osac.templates.ocp_ci_small"
-          - delete_step_external_access_default.tasks_from == "delete_external_access.yaml"
+          - delete_step_external_access_default.name == "osac.service.external_access"
+          - delete_step_external_access_default.tasks_from == "caas_delete.yaml"
           - delete_step_pre_delete_hook_default.tasks_from == "noop.yaml"
         fail_msg: >-
           ocp_ci_small must use osac.service.cluster_infra for provisioning and
-          template-owned external access tasks, without the old
+          service-owned CaaS external access tasks, without the old
           delete_step_cluster_network_default (OSAC-5697).

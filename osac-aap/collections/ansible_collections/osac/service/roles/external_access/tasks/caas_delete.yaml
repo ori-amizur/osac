@@ -1,5 +1,5 @@
 ---
-# Remove CaaS CI DNS records. The NetworkClass owns networking resources.
+# Remove CaaS DNS records. The NetworkClass owns networking resources.
 - name: Delete DNS records
   when: >-
     external_access_base_domain in external_access_supported_base_domains | default([])
@@ -19,6 +19,4 @@
   no_log: true
 
 - name: Clear published CaaS endpoints from ClusterOrder
-  ansible.builtin.include_role:
-    name: osac.service.external_access
-    tasks_from: delete.yaml
+  ansible.builtin.include_tasks: clear.yaml

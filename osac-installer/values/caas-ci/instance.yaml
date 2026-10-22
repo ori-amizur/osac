@@ -17,8 +17,8 @@ global:
     # DiskImages API even though it does not provision VMaaS instances.
     vmaas:
       enabled: true
-    # CaaS requires BMaaS API endpoints; the BMF operator itself runs with
-    # replicaCount: 0 because the CaaS CI cluster has no Metal3 infrastructure.
+    # CaaS requires BMaaS API endpoints, and this profile runs the BMF
+    # operator with the Metal3 provider configured below.
     bmaas:
       enabled: true
     maas:

@@ -8,7 +8,7 @@
       tasks_from: main.yaml
     install_step_external_access_default:
       name: osac.service.external_access
-      tasks_from: create_dns.yaml
+      tasks_from: main.yaml
     install_step_retrieve_kubeconfig_default:
       name: osac.service.retrieve_kubeconfig
       tasks_from: main.yaml

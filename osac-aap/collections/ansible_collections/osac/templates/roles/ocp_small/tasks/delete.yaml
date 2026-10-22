@@ -8,7 +8,7 @@
       tasks_from: main.yaml
     delete_step_external_access_default:
       name: osac.service.external_access
-      tasks_from: delete_dns.yaml
+      tasks_from: main.yaml
     delete_step_post_delete_hook_default:
       name: osac.templates.ocp_small
       tasks_from: noop.yaml

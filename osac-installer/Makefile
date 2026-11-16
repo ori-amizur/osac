@@ -1517,8 +1517,9 @@ helm-validate: helm-lint service-account-idp-render-test csi-render-test helm-ne
 	@echo "Validation passed."
 
 .PHONY: helm-networking-test
-helm-networking-test: helm-deps ## Test global.networking values, validation, and networking manifests
+helm-networking-test: helm-deps ## Test networking values, CaaS DNS guard, and manifests
 	python3 scripts/test-networking-values.py
+	python3 scripts/test-caas-dns-guard.py
 	python3 scripts/test_it_networking_checks.py
 
 .PHONY: network-class-step-test

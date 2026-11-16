@@ -41,6 +41,16 @@ file and they are applied during `make install-osac`.
 | `DNS_CLASS` | `dns.route53.dns` | DNS backend driver role (see [DNS Backend](dns-backend.md)) |
 | `DNS_ZONE` | `EXTERNAL_ACCESS_BASE_DOMAIN` | DNS zone for record management |
 
+When CaaS is enabled, `EXTERNAL_ACCESS_BASE_DOMAIN` must equal
+`HOSTED_CLUSTER_BASE_DOMAIN` so published names match the HostedCluster
+certificates. `DNS_ZONE` may be an authoritative parent zone and does not have
+to equal either domain. During an upgrade, OSAC rejects changes to
+`EXTERNAL_ACCESS_BASE_DOMAIN`, `DNS_ZONE`, or `DNS_CLASS` while any Fulfillment
+Cluster exists. Delete every Cluster before changing one of these settings.
+The upgrade check reads the current instance-group ConfigMap and lists Clusters
+through the private Fulfillment API. It fails closed if the Cluster list is
+unavailable, or if the previous configuration is unknown while Clusters exist.
+
 ## Secret Variables
 
 Values must be **plaintext** — the script base64-encodes them when patching the

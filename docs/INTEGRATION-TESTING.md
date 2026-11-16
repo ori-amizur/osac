@@ -216,6 +216,10 @@ Read the [tests/e2e suite guide](testing/e2e.md).
 
 See [installer preflight setup and boundaries](testing/osac-installer.md#install-preflight-osac-6561).
 
+### CaaS DNS upgrade guard (OSAC-6828)
+
+See [CaaS DNS guard setup and boundaries](testing/osac-installer.md#caas-dns-upgrade-guard-osac-6828).
+
 ### NET-CLEAN-07 deployed OSAC cleanup
 
 See [operator cleanup setup and boundaries](testing/osac-operator.md#networking-cleanup-lifecycle-coverage-net-clean-07).

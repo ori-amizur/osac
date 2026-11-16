@@ -86,6 +86,15 @@ Coverage gaps:
   `helm template --dry-run=server -s templates/preflight/report.yaml` works
   anywhere; on Helm 4 the failing render's JSON line is the portable channel.
 
+## CaaS DNS upgrade guard (OSAC-6828)
+
+`make helm-networking-test` runs unit coverage for setting comparison and
+fail-closed behavior, plus Helm contract coverage for domain matching, parent
+DNS zones, and pre-upgrade hook rendering. Fulfillment Cluster List and OIDC
+calls are mocked in unit tests. No deployed installer runner currently
+exercises the hook against a live Fulfillment API; the component-integration
+runner remains TBD in [OSAC-6828](https://redhat.atlassian.net/browse/OSAC-6828).
+
 The `helm unittest` suites for the `osac-infra` chart run in the same
 helm-unit CI leg as the umbrella-chart unit tier. They render-test the
 monitoring and exporter templates only, not a live exporter or Prometheus;

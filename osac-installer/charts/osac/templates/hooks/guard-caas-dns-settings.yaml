@@ -1,0 +1,145 @@
+{{- $guardEnabled := .Values.aap.instanceGroups.clusterFulfillment.enabled -}}
+{{- if and .Release.IsUpgrade .Values.service.enabled .Values.global.services.caas.enabled (not $guardEnabled) -}}
+{{- $previousConfig := lookup "v1" "ConfigMap" .Release.Namespace "cluster-fulfillment-ig" -}}
+{{- if $previousConfig -}}
+{{- $previousData := $previousConfig.data | default dict -}}
+{{- if or (hasKey $previousData "HOSTED_CLUSTER_BASE_DOMAIN") (hasKey $previousData "EXTERNAL_ACCESS_BASE_DOMAIN") (hasKey $previousData "DNS_ZONE") (hasKey $previousData "DNS_CLASS") -}}
+{{- $guardEnabled = true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Release.IsUpgrade .Values.service.enabled $guardEnabled }}
+{{- $config := .Values.aap.instanceGroups.clusterFulfillment.config | default dict -}}
+{{- $externalDomain := $config.EXTERNAL_ACCESS_BASE_DOMAIN | default "box.massopen.cloud" -}}
+{{- $dnsZone := $config.DNS_ZONE | default $externalDomain -}}
+{{- $dnsClass := $config.DNS_CLASS | default "dns.route53.dns" -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caas-dns-guard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "osac.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-25"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  caas_dns_guard.py: |
+{{ .Files.Get "files/caas_dns_guard.py" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: caas-dns-guard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "osac.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-output-log-policy": hook-failed
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 180
+  template:
+    metadata:
+      labels:
+        {{- include "osac.labels" . | nindent 8 }}
+      annotations:
+        openshift.io/required-scc: restricted-v2
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        {{- if not (.Capabilities.APIVersions.Has "security.openshift.io/v1") }}
+        runAsUser: 1000
+        fsGroup: 1000
+        {{- end }}
+      containers:
+      - name: guard-caas-dns-settings
+        image: {{ .Values.cliImage }}
+        command:
+        - /bin/bash
+        - -euo
+        - pipefail
+        - -c
+        - exec python3 /scripts/caas_dns_guard.py
+        env:
+        - name: HOME
+          value: /tmp
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
+        - name: FULFILLMENT_URL
+          value: https://fulfillment-internal-api:8001
+        - name: FULFILLMENT_CA_FILE
+          value: /etc/ca-bundle/bundle.pem
+        - name: PROPOSED_EXTERNAL_ACCESS_BASE_DOMAIN
+          value: {{ $externalDomain | quote }}
+        - name: PROPOSED_DNS_ZONE
+          value: {{ $dnsZone | quote }}
+        - name: PROPOSED_DNS_CLASS
+          value: {{ $dnsClass | quote }}
+        - name: CURRENT_HOSTED_CLUSTER_BASE_DOMAIN
+          valueFrom:
+            configMapKeyRef:
+              name: cluster-fulfillment-ig
+              key: HOSTED_CLUSTER_BASE_DOMAIN
+              optional: true
+        - name: CURRENT_EXTERNAL_ACCESS_BASE_DOMAIN
+          valueFrom:
+            configMapKeyRef:
+              name: cluster-fulfillment-ig
+              key: EXTERNAL_ACCESS_BASE_DOMAIN
+              optional: true
+        - name: CURRENT_DNS_ZONE
+          valueFrom:
+            configMapKeyRef:
+              name: cluster-fulfillment-ig
+              key: DNS_ZONE
+              optional: true
+        - name: CURRENT_DNS_CLASS
+          valueFrom:
+            configMapKeyRef:
+              name: cluster-fulfillment-ig
+              key: DNS_CLASS
+              optional: true
+        {{- include "osac.fulfillmentAuthEnv" . | nindent 8 }}
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        - name: ca-bundle
+          mountPath: /etc/ca-bundle
+          readOnly: true
+        {{- include "osac.fulfillmentAuthVolumeMount" . | nindent 8 }}
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+      volumes:
+      - name: scripts
+        configMap:
+          name: caas-dns-guard
+      - name: tmp
+        emptyDir: {}
+      - name: ca-bundle
+        configMap:
+          name: {{ .Values.service.certs.caBundle.configMap | required "service.certs.caBundle.configMap is required" }}
+          items:
+          - key: bundle.pem
+            path: bundle.pem
+      {{- include "osac.fulfillmentAuthVolume" . | nindent 6 }}
+      restartPolicy: Never
+{{- end }}

@@ -301,6 +301,14 @@ as follows:
   remove manual endpoint records before deleting the Cluster or its automatic
   ExternalIP attachments. Operational endpoint-task failures use the retryable
   task path.
+  The installer requires `EXTERNAL_ACCESS_BASE_DOMAIN` to equal
+  `HOSTED_CLUSTER_BASE_DOMAIN` and blocks changes to that setting, `DNS_ZONE`,
+  or `DNS_CLASS` while Clusters exist. Its pre-upgrade hook compares the
+  current instance-group ConfigMap and lists Clusters through Fulfillment; it
+  fails closed when the list is unavailable or the current config is unknown
+  while Clusters exist. Unit and Helm coverage exists, while a deployed hook
+  runner remains TBD under
+  [OSAC-6828](https://redhat.atlassian.net/browse/OSAC-6828).
   Retry-safe persistence and orphan cleanup remain tracked by
   [OSAC-6655](https://redhat.atlassian.net/browse/OSAC-6655).
 - **CaaS workers:** worker BareMetalInstances live in tenant `system` and

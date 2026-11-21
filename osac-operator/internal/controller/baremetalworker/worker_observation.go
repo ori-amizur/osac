@@ -133,10 +133,14 @@ func (r *Reconciler) observeWorkerResources(ctx context.Context, co *v1alpha1.Cl
 	// CAPI handoff has completed, so do not hold the ClusterOrder on that stale
 	// condition. The list is scoped to the HostedControlPlane namespace recorded
 	// on this ClusterOrder.
-	if co.Status.ClusterReference != nil && co.Status.ClusterReference.Namespace != "" {
+	if ref := co.Status.ClusterReference; ref != nil && ref.Namespace != "" && ref.HostedClusterName != "" {
 		machines := &unstructured.UnstructuredList{}
 		machines.SetGroupVersionKind(agentMachineListGVK)
-		if err := r.List(ctx, machines, client.InNamespace(co.Status.ClusterReference.Namespace)); err != nil {
+		// AgentMachine and the Hive ClusterDeployment are created in the
+		// HostedControlPlane namespace (<order namespace>-<HostedCluster name>),
+		// not in the parent namespace recorded by ClusterReference.Namespace.
+		hcpNamespace := ref.Namespace + "-" + ref.HostedClusterName
+		if err := r.List(ctx, machines, client.InNamespace(hcpNamespace)); err != nil {
 			return o, ctrl.Result{}, fmt.Errorf("observing AgentMachines for %s: %w", co.Name, err)
 		}
 		for i := range machines.Items {

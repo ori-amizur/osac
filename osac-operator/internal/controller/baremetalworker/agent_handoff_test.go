@@ -69,6 +69,7 @@ var _ = Describe("CAP-Agent handoff phase projection", func() {
 
 	It("binds a new Agent to the HostedCluster ClusterDeployment namespace", func() {
 		co, _ := handoffFixture()
+		co.Spec.SupportsAutomaticCaaSEndpoints = true
 		agent := agentPhaseFixture("", false)
 		agent.SetName("unbound")
 		agent.SetNamespace(co.Namespace)
@@ -81,10 +82,10 @@ var _ = Describe("CAP-Agent handoff phase projection", func() {
 		bound := &unstructured.Unstructured{}
 		bound.SetGroupVersionKind(agentGVK)
 		Expect(c.Get(context.Background(), client.ObjectKeyFromObject(agent), bound)).To(Succeed())
-		got, found, err := unstructured.NestedString(bound.Object, "spec", "clusterDeploymentName", "namespace")
+		_, found, err := unstructured.NestedFieldNoCopy(bound.Object, "spec", "clusterDeploymentName")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(got).To(Equal("osac-order-hosted"))
+		Expect(found).To(BeFalse(), "CAP-Agent must own the initial ClusterDeployment binding")
+		Expect(bound.Object["spec"].(map[string]interface{})["approved"]).To(BeTrue())
 	})
 })
 

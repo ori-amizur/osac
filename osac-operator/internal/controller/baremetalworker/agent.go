@@ -279,19 +279,22 @@ func (r *Reconciler) bindAgent(
 	}
 	base := latest.DeepCopy()
 
-	clusterDeploymentNamespace := co.Namespace
-	if ref := co.Status.ClusterReference; ref != nil && ref.Namespace != "" && ref.HostedClusterName != "" {
-		// HyperShift creates the Hive ClusterDeployment in the hosted-control-
-		// plane namespace (<order namespace>-<HostedCluster name>). CAP-Agent
-		// resolves the AgentMachine handoff through that exact namespaced
-		// ClusterDeployment, not the order's parent namespace.
-		clusterDeploymentNamespace = ref.Namespace + "-" + ref.HostedClusterName
-	}
-	if err := unstructured.SetNestedMap(latest.Object, map[string]interface{}{
-		jsonNameField: co.Name,
-		"namespace":   clusterDeploymentNamespace,
-	}, "spec", "clusterDeploymentName"); err != nil {
-		return fmt.Errorf("setting agent clusterDeploymentName: %w", err)
+	// CAP-Agent owns the Agent -> ClusterDeployment handoff.  OSAC must not
+	// pre-bind the Agent: CAP-Agent only selects approved, validated Agents that
+	// are still unbound, then writes the HostedControlPlane ClusterDeployment
+	// reference and AgentMachine ownership itself. Legacy (non-CAP) flows retain
+	// the direct ClusterDeployment binding.
+	if !co.Spec.SupportsAutomaticCaaSEndpoints {
+		clusterDeploymentNamespace := co.Namespace
+		if ref := co.Status.ClusterReference; ref != nil && ref.Namespace != "" && ref.HostedClusterName != "" {
+			clusterDeploymentNamespace = ref.Namespace + "-" + ref.HostedClusterName
+		}
+		if err := unstructured.SetNestedMap(latest.Object, map[string]interface{}{
+			jsonNameField: co.Name,
+			"namespace":   clusterDeploymentNamespace,
+		}, "spec", "clusterDeploymentName"); err != nil {
+			return fmt.Errorf("setting agent clusterDeploymentName: %w", err)
+		}
 	}
 
 	if err := unstructured.SetNestedField(latest.Object, true, "spec", "approved"); err != nil {

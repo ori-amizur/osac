@@ -1034,6 +1034,9 @@ func (r *ClusterOrderReconciler) reconcileDeletingAutomaticEndpointDNS(
 	if !clusterOrderUsesEndpointLifecycle(instance) {
 		return false, ctrl.Result{}, nil
 	}
+	if handled, result, err := r.reconcileDeletingAutomaticAPIExternalIPDNS(ctx, instance); handled || err != nil {
+		return handled, result, err
+	}
 	if handled, result, err := r.reconcileDeletingAutomaticIngressExternalIPDNS(ctx, instance); handled || err != nil {
 		return handled, result, err
 	}
@@ -1107,6 +1110,55 @@ func (r *ClusterOrderReconciler) reconcileDeletingAutomaticEndpointDNS(
 		return true, ctrl.Result{}, err
 	}
 	return true, ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+}
+
+// reconcileDeletingAutomaticAPIExternalIPDNS releases the API ExternalIP DNS
+// hold even when Fulfillment has already removed the corresponding attachment.
+// The attachment normally drives this cleanup, but deletion races can remove
+// it before the ClusterOrder observes the deletion. The API ExternalIP itself
+// is still owned by this ClusterOrder and must not retain the finalizer.
+func (r *ClusterOrderReconciler) reconcileDeletingAutomaticAPIExternalIPDNS(
+	ctx context.Context, instance *v1alpha1.ClusterOrder,
+) (bool, ctrl.Result, error) {
+	clusterID := instance.Labels[osacClusterOrderIDLabel]
+	var ips v1alpha1.ExternalIPList
+	if err := r.List(ctx, &ips, client.InNamespace(r.NetworkingNamespace), client.MatchingLabels{
+		autoCreatedLabel:         labelValueTrue,
+		autoCreatedForLabel:      clusterID,
+		autoCreatedKindLabel:     autoCreatedKindCluster,
+		autoCreatedEndpointLabel: autoCreatedEndpointAPI,
+	}); err != nil {
+		return true, ctrl.Result{}, fmt.Errorf("list automatic API ExternalIPs for ClusterOrder %q: %w", instance.Name, err)
+	}
+	for i := range ips.Items {
+		ip := &ips.Items[i]
+		if ip.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(ip, clusterEndpointDNSFinalizer) {
+			continue
+		}
+		tenant := instance.Annotations[networktask.TenantAnnotation]
+		if tenant == "" || ip.Annotations[networktask.TenantAnnotation] != tenant ||
+			ip.Annotations[ownerReferenceAnnotation] != clusterID {
+			return true, ctrl.Result{}, fmt.Errorf("automatic API ExternalIP %q owner does not match ClusterOrder %q", ip.Name, instance.Name)
+		}
+		cancelled, retryAfter, err := r.cancelClusterEndpointJobsForDelete(ctx, instance, autoCreatedEndpointAPI)
+		if err != nil {
+			return true, ctrl.Result{}, err
+		}
+		if !cancelled {
+			return true, ctrl.Result{RequeueAfter: requeueAfterOutcome(networktask.Outcome{RequeueAfter: retryAfter}, r.StatusPollInterval)}, nil
+		}
+		removed, result, err := r.removePublishedClusterDNSForEndpoints(ctx, instance, autoCreatedEndpointAPI)
+		if err != nil || !removed {
+			return true, result, err
+		}
+		base := ip.DeepCopy()
+		controllerutil.RemoveFinalizer(ip, clusterEndpointDNSFinalizer)
+		if err := r.Patch(ctx, ip, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return true, ctrl.Result{}, fmt.Errorf("release DNS hold from automatic API ExternalIP %q: %w", ip.Name, err)
+		}
+		return true, ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
+	}
+	return false, ctrl.Result{}, nil
 }
 
 // reconcileDeletingAutomaticIngressExternalIPDNS removes bootstrap ingress

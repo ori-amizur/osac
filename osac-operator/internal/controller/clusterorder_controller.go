@@ -1372,6 +1372,16 @@ func (r *ClusterOrderReconciler) handleDelete(ctx context.Context, _ reconcile.R
 	if err := r.releaseAutomaticEndpointDNSHolds(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Release DNS holds from deleting automatic endpoint ExternalIPs as well as
+	// attachments. Fulfillment may remove an attachment before this pass sees
+	// it, so the ExternalIP finalizer must be handled from the ClusterOrder
+	// deletion path directly.
+	if usesCaaSEndpointLifecycle {
+		handled, endpointResult, endpointErr := r.reconcileDeletingAutomaticEndpointDNS(ctx, instance)
+		if endpointErr != nil || handled {
+			return endpointResult, endpointErr
+		}
+	}
 
 	// Delete auto-provisioned ExternalIPAttachments then ExternalIPs before deprovisioning.
 	done, cleanupResult, err := r.reconcileAutoExternalIPCleanup(ctx, instance)

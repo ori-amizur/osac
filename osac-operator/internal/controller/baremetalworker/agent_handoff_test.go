@@ -54,6 +54,18 @@ var _ = Describe("CAP-Agent handoff phase projection", func() {
 			Expect(a).To(Equal(before), "projection changed CAP-Agent's binding")
 		})
 	}
+
+	It("uses a Ready AgentMachine when Assisted retains a stale install error", func() {
+		co, a := handoffFixture()
+		Expect(unstructured.SetNestedField(a.Object, "error", "status", "debugInfo", "state")).To(Succeed())
+		worker := newWorkerStatus("standard", "workers", "worker", "bmi-id", workerPhaseWaitingForAgent)
+		worker.Agent = &v1alpha1.WorkerAgentReference{Name: a.GetName(), UID: string(a.GetUID())}
+		got, err := projectAgentWorkerPhasesWithCAP(co, []v1alpha1.WorkerStatus{worker},
+			&unstructured.UnstructuredList{Items: []unstructured.Unstructured{*a}},
+			map[string]bool{"osac/agent": true})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got[0].Phase).To(Equal(workerPhaseReady))
+	})
 })
 
 var _ = It("limits CAP-Agent handoff to the expected cluster and NodePool", func() {

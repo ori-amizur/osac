@@ -140,6 +140,7 @@ func (r *Reconciler) SetWorkerNetworkConfigGate(enabled bool) {
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=infraenvs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents,verbs=get;list;watch;patch;delete
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=nmstateconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=capi-provider.agent-install.openshift.io,resources=agentmachines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=baremetalinstances;networkattachments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=hypershift.openshift.io,resources=nodepools,verbs=get;list;watch;patch;update
 
@@ -257,6 +258,16 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		log.Info("watching Agent CRs for MAC correlation")
 	} else {
 		log.Info("Agent CRD not found, skipping Agent watch")
+	}
+
+	if crdExists(mgr, agentMachineGVK) {
+		agentMachineObj := &unstructured.Unstructured{}
+		agentMachineObj.SetGroupVersionKind(agentMachineGVK)
+		bld = bld.Watches(agentMachineObj, handler.EnqueueRequestsFromMapFunc(
+			r.labelToClusterOrderMapper("cluster.x-k8s.io/cluster-name")))
+		log.Info("watching AgentMachine CRs for CAP-Agent readiness")
+	} else {
+		log.Info("AgentMachine CRD not found, skipping AgentMachine watch")
 	}
 
 	bmiGVK := bmfov1alpha1.GroupVersion.WithKind("BareMetalInstance")

@@ -34,6 +34,7 @@ type workerObservation struct {
 	byName             map[string][]*privatev1.BareMetalInstance
 	gets               map[string]bmiGetResult
 	agents             *unstructured.UnstructuredList
+	capAgentReady      map[string]bool
 	hubBMIs            map[string]*bmfov1alpha1.BareMetalInstance
 	networkAttachments map[string]*v1alpha1.NetworkAttachment
 }
@@ -43,6 +44,7 @@ func indexWorkerBMIs(bmis []*privatev1.BareMetalInstance) *workerObservation {
 		byID:               make(map[string]*privatev1.BareMetalInstance),
 		byName:             make(map[string][]*privatev1.BareMetalInstance),
 		gets:               make(map[string]bmiGetResult),
+		capAgentReady:      make(map[string]bool),
 		hubBMIs:            make(map[string]*bmfov1alpha1.BareMetalInstance),
 		networkAttachments: make(map[string]*v1alpha1.NetworkAttachment),
 	}
@@ -123,7 +125,38 @@ func (r *Reconciler) observeWorkerResources(ctx context.Context, co *v1alpha1.Cl
 		}
 	}
 	o.agents, err = r.listAgents(ctx, co)
-	return o, ctrl.Result{}, err
+	if err != nil {
+		return o, ctrl.Result{}, err
+	}
+	// Once CAP-Agent has taken ownership, AgentMachine readiness is the durable
+	// worker signal. Assisted's Agent may retain an installation error after the
+	// CAPI handoff has completed, so do not hold the ClusterOrder on that stale
+	// condition. The list is scoped to the HostedControlPlane namespace recorded
+	// on this ClusterOrder.
+	if co.Status.ClusterReference != nil && co.Status.ClusterReference.Namespace != "" {
+		machines := &unstructured.UnstructuredList{}
+		machines.SetGroupVersionKind(agentMachineListGVK)
+		if err := r.List(ctx, machines, client.InNamespace(co.Status.ClusterReference.Namespace)); err != nil {
+			return o, ctrl.Result{}, fmt.Errorf("observing AgentMachines for %s: %w", co.Name, err)
+		}
+		for i := range machines.Items {
+			machine := &machines.Items[i]
+			ready, found, err := unstructured.NestedBool(machine.Object, "status", "ready")
+			if err != nil || !found || !ready {
+				continue
+			}
+			name, found, err := unstructured.NestedString(machine.Object, "status", "agentRef", "name")
+			if err != nil || !found || name == "" {
+				continue
+			}
+			agentNamespace, found, err := unstructured.NestedString(machine.Object, "status", "agentRef", "namespace")
+			if err != nil || !found || agentNamespace == "" {
+				agentNamespace = co.Namespace
+			}
+			o.capAgentReady[agentNamespace+"/"+name] = true
+		}
+	}
+	return o, ctrl.Result{}, nil
 }
 
 func (r *Reconciler) workerMACResolver(o *workerObservation) MACResolver {
@@ -195,7 +228,7 @@ func (r *Reconciler) observeExistingWorkers(ctx context.Context, co *v1alpha1.Cl
 	// supplies the snapshot and never re-derives phases elsewhere.
 	if o.agents != nil {
 		var err error
-		workers, err = projectAgentWorkerPhases(co, workers, o.agents)
+		workers, err = projectAgentWorkerPhasesWithCAP(co, workers, o.agents, o.capAgentReady)
 		if err != nil {
 			return nil, err
 		}

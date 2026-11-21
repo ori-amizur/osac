@@ -8,11 +8,20 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/osac-project/osac/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac/osac-operator/internal/controller/assistedservice"
 )
+
+var agentMachineGVK = schema.GroupVersionKind{
+	Group: "capi-provider.agent-install.openshift.io", Version: "v1beta1", Kind: "AgentMachine",
+}
+
+var agentMachineListGVK = schema.GroupVersionKind{
+	Group: "capi-provider.agent-install.openshift.io", Version: "v1beta1", Kind: "AgentMachineList",
+}
 
 // listAgents returns the union of both supported Agent selectors, scoped to the
 // cluster namespace. One observation stage issues two Kubernetes Lists — the
@@ -62,6 +71,18 @@ func (r *Reconciler) listAgents(ctx context.Context, co *v1alpha1.ClusterOrder) 
 func projectAgentWorkerPhases(
 	co *v1alpha1.ClusterOrder, workers []v1alpha1.WorkerStatus, agents *unstructured.UnstructuredList,
 ) ([]v1alpha1.WorkerStatus, error) {
+	return projectAgentWorkerPhasesWithCAP(co, workers, agents, nil)
+}
+
+// projectAgentWorkerPhasesWithCAP projects Assisted Agent phases while also
+// honoring a Ready AgentMachine for an established CAP-Agent handoff. CAPI's
+// AgentMachine is authoritative after it claims the Agent; Assisted can retain
+// an old installation condition while the worker is already installed and
+// reporting a node.
+func projectAgentWorkerPhasesWithCAP(
+	co *v1alpha1.ClusterOrder, workers []v1alpha1.WorkerStatus,
+	agents *unstructured.UnstructuredList, capAgentReady map[string]bool,
+) ([]v1alpha1.WorkerStatus, error) {
 	result := append([]v1alpha1.WorkerStatus(nil), workers...)
 	for i := range result {
 		w := &result[i]
@@ -93,7 +114,7 @@ func projectAgentWorkerPhases(
 				w.Phase = workerPhaseWaitingForAgent
 				continue
 			}
-			w.Phase = deriveWorkerPhase(association.agent, w.Name)
+			w.Phase = deriveWorkerPhaseWithCAP(association.agent, w.Name, co, capAgentReady)
 			continue
 		}
 		// No established association (absent or ambiguous): never advance readiness.
@@ -108,10 +129,21 @@ func eligibleForAgentObservation(w v1alpha1.WorkerStatus) bool {
 }
 
 func deriveWorkerPhase(agent *unstructured.Unstructured, workerName string) string {
+	return deriveWorkerPhaseWithCAP(agent, workerName, nil, nil)
+}
+
+func deriveWorkerPhaseWithCAP(
+	agent *unstructured.Unstructured, workerName string, co *v1alpha1.ClusterOrder,
+	capAgentReady map[string]bool,
+) string {
 	if agent == nil || agent.GetLabels()[workerNameLabel] != workerName {
 		return workerPhaseWaitingForAgent
 	}
-	if agentInstalled(agent) {
+	capReady := false
+	if co != nil && isCAPAgentWorkerBinding(agent, co, workerName) && capAgentReady != nil {
+		capReady = capAgentReady[agent.GetNamespace()+"/"+agent.GetName()]
+	}
+	if agentInstalled(agent) || capReady {
 		return workerPhaseReady
 	}
 	return workerPhaseBinding

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"path"
 	"sort"
@@ -72,6 +73,30 @@ type hostedClusterRegistryProbeResolver struct {
 	management client.Reader
 }
 
+// registryProbeManagementAPIURL returns the in-hub address used by the
+// management operator to administer the HostedCluster. The worker callback
+// continues to use the published APIURL: workers reach management publication
+// through the tenant NAT path and the public API name. The operator itself
+// must not hairpin through that public ExternalIP.
+func registryProbeManagementAPIURL(apiEndpoint string) (string, error) {
+	endpoint := strings.TrimSpace(apiEndpoint)
+	if endpoint == "" || strings.ContainsAny(endpoint, "/?#") || strings.Contains(endpoint, "://") {
+		return "", fmt.Errorf("ClusterOrder APIEndpoint is not a valid management API address")
+	}
+
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		// Production status stores the management VIP without a port. Keep
+		// accepting an IPv6 literal without a port for completeness.
+		host = strings.Trim(endpoint, "[]")
+		port = "6443"
+	}
+	if host == "" || port == "" {
+		return "", fmt.Errorf("ClusterOrder APIEndpoint is missing host or port")
+	}
+	return (&url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}).String(), nil
+}
+
 func (r hostedClusterRegistryProbeResolver) Resolve(
 	ctx context.Context, order *v1alpha1.ClusterOrder,
 ) (registryProbeGuestAPI, error) {
@@ -104,14 +129,29 @@ func (r hostedClusterRegistryProbeResolver) Resolve(
 	if err := validateRegistryProbeAPIURL(order.Status.APIURL); err != nil {
 		return registryProbeGuestAPI{}, err
 	}
+	publicAPIURL := strings.TrimRight(order.Status.APIURL, "/")
+	managementAPIURL, err := registryProbeManagementAPIURL(order.Status.ApiEndpoint)
+	if err != nil {
+		return registryProbeGuestAPI{}, err
+	}
 	restConfig, err := clientcmd.RESTConfigFromKubeConfig(data)
 	if err != nil {
 		return registryProbeGuestAPI{}, fmt.Errorf("build HostedControlPlane registry probe client config: %w", err)
 	}
 	// The HostedControlPlane kubeconfig uses the short kube-apiserver service
 	// name, which resolves only from its own namespace. The management operator
-	// reaches the same guest API through the published, certificate-valid URL.
-	restConfig.Host = strings.TrimRight(order.Status.APIURL, "/")
+	// uses the in-hub management VIP as the network destination and retains the
+	// published API hostname for TLS verification. The worker callback remains
+	// publicAPIURL so the worker follows the CaaS NAT/public-name path.
+	restConfig.Host = managementAPIURL
+	publicAPI, err := url.Parse(publicAPIURL)
+	if err != nil {
+		return registryProbeGuestAPI{}, fmt.Errorf("parse public HostedCluster API URL: %w", err)
+	}
+	if publicAPI.Hostname() == "" {
+		return registryProbeGuestAPI{}, fmt.Errorf("public HostedCluster API URL has no hostname")
+	}
+	restConfig.TLSClientConfig.ServerName = publicAPI.Hostname()
 	restConfig.Timeout = 15 * time.Second
 	guest, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
@@ -119,7 +159,7 @@ func (r hostedClusterRegistryProbeResolver) Resolve(
 	}
 	return registryProbeGuestAPI{
 		client: guest,
-		apiURL: strings.TrimRight(order.Status.APIURL, "/"),
+		apiURL: publicAPIURL,
 		caData: append([]byte(nil), cluster.CertificateAuthorityData...),
 	}, nil
 }

@@ -69,7 +69,8 @@ var _ = Describe("CaaS worker registry probe", func() {
 				ReleaseImage:                   image,
 			},
 			Status: v1alpha1.ClusterOrderStatus{
-				APIURL: "https://api.cluster.example.test:6443",
+				APIURL:      "https://api.cluster.example.test:6443",
+				ApiEndpoint: "192.168.40.240",
 				ClusterReference: &v1alpha1.ClusterOrderClusterReferenceType{
 					Namespace: "caas", HostedClusterName: "cluster",
 				},
@@ -83,7 +84,7 @@ var _ = Describe("CaaS worker registry probe", func() {
 		}
 	}
 
-	It("uses the published API URL to reach the guest API from the management namespace", func() {
+	It("uses the management API VIP while preserving the published callback URL", func() {
 		order := newOrder()
 		requestReceived := make(chan string, 1)
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +94,7 @@ var _ = Describe("CaaS worker registry probe", func() {
 		}))
 		defer server.Close()
 		order.Status.APIURL = server.URL
+		order.Status.ApiEndpoint = strings.TrimPrefix(server.URL, "https://")
 
 		caData := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 		kubeconfig, err := json.Marshal(map[string]any{
@@ -134,6 +136,24 @@ var _ = Describe("CaaS worker registry probe", func() {
 		_, err = guest.client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(<-requestReceived).To(Equal(strings.TrimPrefix(server.URL, "https://") + "/api/v1/namespaces"))
+	})
+
+	DescribeTable("builds a management API URL from the published endpoint",
+		func(endpoint, expected string) {
+			got, err := registryProbeManagementAPIURL(endpoint)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(expected))
+		},
+		Entry("IPv4 VIP", "192.168.40.240", "https://192.168.40.240:6443"),
+		Entry("endpoint with port", "127.0.0.1:7443", "https://127.0.0.1:7443"),
+		Entry("IPv6 literal", "2001:db8::10", "https://[2001:db8::10]:6443"),
+	)
+
+	It("rejects a missing or URL-shaped management endpoint", func() {
+		for _, endpoint := range []string{"", "https://192.168.40.240:6443", "192.168.40.240/path"} {
+			_, err := registryProbeManagementAPIURL(endpoint)
+			Expect(err).To(HaveOccurred())
+		}
 	})
 
 	It("limits the guest token to one worker ConfigMap and preserves probe results", func() {

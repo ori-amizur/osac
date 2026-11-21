@@ -66,6 +66,26 @@ var _ = Describe("CAP-Agent handoff phase projection", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got[0].Phase).To(Equal(workerPhaseReady))
 	})
+
+	It("binds a new Agent to the HostedCluster ClusterDeployment namespace", func() {
+		co, _ := handoffFixture()
+		agent := agentPhaseFixture("", false)
+		agent.SetName("unbound")
+		agent.SetNamespace(co.Namespace)
+		agent.SetUID("agent-uid")
+		worker := newWorkerStatus("standard", "workers", "worker", "bmi-id", workerPhaseWaitingForAgent)
+		c := clientfake.NewClientBuilder().WithObjects(agent).Build()
+		r := &Reconciler{Client: c, apiReader: c}
+
+		Expect(r.bindAgent(context.Background(), co, agent, &worker)).To(Succeed())
+		bound := &unstructured.Unstructured{}
+		bound.SetGroupVersionKind(agentGVK)
+		Expect(c.Get(context.Background(), client.ObjectKeyFromObject(agent), bound)).To(Succeed())
+		got, found, err := unstructured.NestedString(bound.Object, "spec", "clusterDeploymentName", "namespace")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got).To(Equal("osac-order-hosted"))
+	})
 })
 
 var _ = It("limits CAP-Agent handoff to the expected cluster and NodePool", func() {

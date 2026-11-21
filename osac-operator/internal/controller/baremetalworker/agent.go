@@ -280,8 +280,12 @@ func (r *Reconciler) bindAgent(
 	base := latest.DeepCopy()
 
 	clusterDeploymentNamespace := co.Namespace
-	if co.Status.ClusterReference != nil && co.Status.ClusterReference.Namespace != "" {
-		clusterDeploymentNamespace = co.Status.ClusterReference.Namespace
+	if ref := co.Status.ClusterReference; ref != nil && ref.Namespace != "" && ref.HostedClusterName != "" {
+		// HyperShift creates the Hive ClusterDeployment in the hosted-control-
+		// plane namespace (<order namespace>-<HostedCluster name>). CAP-Agent
+		// resolves the AgentMachine handoff through that exact namespaced
+		// ClusterDeployment, not the order's parent namespace.
+		clusterDeploymentNamespace = ref.Namespace + "-" + ref.HostedClusterName
 	}
 	if err := unstructured.SetNestedMap(latest.Object, map[string]interface{}{
 		jsonNameField: co.Name,

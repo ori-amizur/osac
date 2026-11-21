@@ -279,9 +279,13 @@ func (r *Reconciler) bindAgent(
 	}
 	base := latest.DeepCopy()
 
+	clusterDeploymentNamespace := co.Namespace
+	if co.Status.ClusterReference != nil && co.Status.ClusterReference.Namespace != "" {
+		clusterDeploymentNamespace = co.Status.ClusterReference.Namespace
+	}
 	if err := unstructured.SetNestedMap(latest.Object, map[string]interface{}{
 		jsonNameField: co.Name,
-		"namespace":   co.Namespace,
+		"namespace":   clusterDeploymentNamespace,
 	}, "spec", "clusterDeploymentName"); err != nil {
 		return fmt.Errorf("setting agent clusterDeploymentName: %w", err)
 	}

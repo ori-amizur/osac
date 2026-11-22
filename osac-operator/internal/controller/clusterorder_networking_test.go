@@ -405,6 +405,24 @@ var _ = Describe("ClusterOrder networking lifecycle", func() {
 		Expect(condition.Message).To(ContainSubstring("must belong to the same tenant"))
 	})
 
+	It("resolves the legacy tenant default subnet reference", func() {
+		h := newNetHarness(true)
+		vn := h.readyVirtualNetwork("legacy-default-vn", false)
+		subnet := h.readySubnet("legacy-default-subnet", "legacy-default-vn", false, testPlan)
+		instance := &v1alpha1.ClusterOrder{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{networktask.TenantAnnotation: "tenant-a"},
+		}}
+		reconciler := &ClusterOrderReconciler{Client: k8sClient, NetworkingNamespace: h.ns}
+
+		gotSubnet, gotVN, err := reconciler.clusterEndpointSubnet(ctx,
+			instanceWithSubnet(instance, "default-ipv4"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gotSubnet).NotTo(BeNil())
+		Expect(gotSubnet.Name).To(Equal(subnet.Name))
+		Expect(gotVN).NotTo(BeNil())
+		Expect(gotVN.Name).To(Equal(vn.Name))
+	})
+
 	It("reports endpoint tenant mismatches as a management failure", func() {
 		h := newNetHarness(true)
 		vn := h.readyVirtualNetwork("tenant-check-vn", false)

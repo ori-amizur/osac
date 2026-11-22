@@ -727,9 +727,35 @@ func (r *ClusterOrderReconciler) clusterEndpointSubnet(
 		subnet = &v1alpha1.Subnet{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: r.NetworkingNamespace, Name: subnetRef}, subnet); err != nil {
 			if apierrors.IsNotFound(err) {
-				return nil, nil, nil
+				// Older fulfillment records may carry the tenant default reference
+				// (default-ipv4), while the Kubernetes Subnet object was created
+				// with a generated name. Resolve that legacy reference only when
+				// there is exactly one ready Subnet for the order's tenant; this
+				// avoids guessing when a tenant has multiple networks.
+				if subnetRef != "default-ipv4" {
+					return nil, nil, nil
+				}
+				allSubnets := &v1alpha1.SubnetList{}
+				if listErr := r.List(ctx, allSubnets, client.InNamespace(r.NetworkingNamespace)); listErr != nil {
+					return nil, nil, fmt.Errorf("list tenant default Subnets: %w", listErr)
+				}
+				tenant := instance.GetAnnotations()[networktask.TenantAnnotation]
+				matches := make([]v1alpha1.Subnet, 0, 1)
+				for i := range allSubnets.Items {
+					candidate := allSubnets.Items[i]
+					if candidate.GetAnnotations()[networktask.TenantAnnotation] != tenant ||
+						!isReady(&candidate) || candidate.Status.IPAM == nil {
+						continue
+					}
+					matches = append(matches, candidate)
+				}
+				if len(matches) != 1 {
+					return nil, nil, nil
+				}
+				subnet = &matches[0]
+			} else {
+				return nil, nil, fmt.Errorf("get cluster endpoint Subnet %q: %w", subnetRef, err)
 			}
-			return nil, nil, fmt.Errorf("get cluster endpoint Subnet %q: %w", subnetRef, err)
 		}
 	}
 	virtualNetwork, err := findVirtualNetwork(ctx, r.Client, r.NetworkingNamespace, subnet.Spec.VirtualNetwork)

@@ -84,6 +84,19 @@ func clusterOrderUsesAutomaticEndpointLifecycle(instance *v1alpha1.ClusterOrder,
 	return clusterOrderUsesEndpointLifecycle(instance) && requested
 }
 
+// clusterIngressAddress returns the immutable Fulfillment allocation for new
+// orders. The status fallback keeps orders created before that field was added
+// convergent while they finish their endpoint lifecycle.
+func clusterIngressAddress(instance *v1alpha1.ClusterOrder) string {
+	if instance == nil {
+		return ""
+	}
+	if instance.Spec.IngressAllocatedAddress != "" {
+		return instance.Spec.IngressAllocatedAddress
+	}
+	return instance.Status.IngressEndpoint
+}
+
 func clusterEndpointDNSPublicationEstablished(instance *v1alpha1.ClusterOrder) bool {
 	if instance == nil || instance.Status.APIURL == "" || instance.Status.ConsoleURL == "" {
 		return false
@@ -345,7 +358,13 @@ func (r *ClusterOrderReconciler) reconcileClusterGuestIngress(
 			endpointReasonGuestIngressProgress, "Waiting for the cluster Subnet IPAM layout")
 		return false, nil
 	}
-	allocatedAddress := instance.Spec.IngressAllocatedAddress
+	allocatedAddress := clusterIngressAddress(instance)
+	if allocatedAddress == "" {
+		setClusterEndpointCondition(instance, metav1.ConditionFalse,
+			endpointReasonGuestIngressProgress,
+			"Waiting for the Fulfillment ingress address allocation")
+		return false, nil
+	}
 	if err := validateCommittedClusterIngressAddress(allocatedAddress, subnet); err != nil {
 		setClusterEndpointCondition(instance, metav1.ConditionFalse,
 			endpointReasonIngressAllocation, err.Error())

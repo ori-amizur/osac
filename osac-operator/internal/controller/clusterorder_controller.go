@@ -1500,7 +1500,8 @@ func (r *ClusterOrderReconciler) reconcileAutomaticExternalIPAttachmentsWithLook
 			// is intentionally unavailable at this point: bootstrap DNS must
 			// publish the reserved external address before Assisted installs
 			// the first worker.
-			autoCreatedEndpointIngress: cluster.GetSpec().GetIngressAllocatedAddress() != "",
+			autoCreatedEndpointIngress: cluster.GetSpec().GetIngressAllocatedAddress() != "" ||
+				instance.Status.IngressEndpoint != "",
 		},
 	}
 	return reconcileAutomaticExternalIPAttachments(ctx, r.Client, r.NetworkingNamespace,

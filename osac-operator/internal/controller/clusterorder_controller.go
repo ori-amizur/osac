@@ -787,6 +787,15 @@ func (r *ClusterOrderReconciler) handleHostedClusterWithClusterLookup(
 			return fmt.Errorf("get Fulfillment Cluster for endpoint lifecycle: %w", err)
 		}
 		if cluster != nil {
+			// The worker reconciler records transport outages on the shared
+			// ClusterOrder condition. A successful authoritative Cluster lookup is
+			// sufficient evidence that the service recovered; clear the stale gate
+			// here so readiness does not depend on a separate worker event.
+			if apimeta.IsStatusConditionTrue(instance.Status.Conditions,
+				v1alpha1.ConditionFulfillmentServiceUnavailable) {
+				instance.SetStatusCondition(v1alpha1.ConditionFulfillmentServiceUnavailable,
+					metav1.ConditionFalse, "fulfillment service recovered", "FulfillmentServiceRecovered")
+			}
 			autoExternalAccess = cluster.GetSpec().GetAutoExternalIpAttachment()
 			// Only a confirmed Cluster with the legacy flag disabled selects
 			// annotation-backed endpoint discovery. A missing lookup keeps the
